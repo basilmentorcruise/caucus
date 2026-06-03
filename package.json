@@ -17,7 +17,7 @@
     "clean": "tsc --build --clean",
     "test:integration": "node scripts/test-integration-placeholder.mjs",
     "changeset": "changeset",
-    "version": "changeset version",
+    "changeset:version": "changeset version",
     "release": "pnpm build && changeset publish"
   },
   "devDependencies": {

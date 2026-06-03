@@ -61,7 +61,9 @@ corepack pnpm changeset status
 When we're ready to cut a release, run:
 
 ```bash
-corepack pnpm version   # = changeset version
+corepack pnpm changeset:version   # = changeset version
+# (the script is deliberately NOT named `version` — that name collides with pnpm's
+#  built-in `pnpm version` command, which would silently not run changesets)
 ```
 
 This consumes all pending `.changeset/*.md` files, bumps every package's `version`, and
@@ -91,7 +93,7 @@ part of unrelated work.
 | Script | Command | Purpose |
 | --- | --- | --- |
 | `pnpm changeset` | `changeset` | Add a changeset for your change. |
-| `pnpm version` | `changeset version` | Consume changesets, bump versions, write changelogs. |
+| `pnpm changeset:version` | `changeset version` | Consume changesets, bump versions, write changelogs. |
 | `pnpm release` | `pnpm build && changeset publish` | Build then publish (no-op while packages are private; not run by CI). |
 
 ## Clean-machine install (quickstart artifacts)
