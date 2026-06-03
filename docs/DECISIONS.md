@@ -69,7 +69,7 @@ Status: ✅ Accepted · 🕓 Deferred (planned) · 🔄 Superseded
 ---
 
 ## Open risks tracked against these decisions
-- **Substrate spike (ADR-C2):** confirm atomic first-write-wins claim, cursor survival across discrete MCP calls, and acceptable turn-based latency before committing.
+- **Substrate spike (ADR-C2):** ✅ resolved — **GO**. Atomic first-write-wins claim, cursor survival across discrete MCP calls, and acceptable turn-based latency all empirically confirmed; transport = HTTP + cursor polling, store = append-only event log + projections. See [docs/spikes/cau-2-substrate/verdict.md](spikes/cau-2-substrate/verdict.md) (CAU-2).
 - **Hook capability (ADR-C3):** confirm a Claude Code hook can fetch-and-inject external context each turn; fallback is a "you have N new messages" nudge.
 - **Context flooding (ADR-C3/C4):** cap injected delta; overflow to an explicit read.
 - **Load-bearing assumption (ADR-C1):** validate that multi-engineer, each-with-own-Claude-Code incidents are common today.
