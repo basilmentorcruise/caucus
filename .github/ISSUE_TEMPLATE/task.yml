@@ -1,0 +1,24 @@
+name: Task / Chore
+description: Infrastructure, tooling, docs, or maintenance work.
+title: "CAU-<n> — <short imperative>"
+labels: ["type:chore", "needs-triage"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      value: |
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+  - type: input
+    id: depends
+    attributes:
+      label: Depends on

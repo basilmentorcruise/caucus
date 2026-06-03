@@ -1,0 +1,46 @@
+name: Feature
+description: A new capability or enhancement.
+title: "CAU-<n> — <short imperative>"
+labels: ["type:feature", "needs-triage"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What should this do and why?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Checklist that defines "done".
+      value: |
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+  - type: input
+    id: epic
+    attributes:
+      label: Epic
+      description: Parent epic (e.g. EPIC B — Backbone).
+  - type: input
+    id: depends
+    attributes:
+      label: Depends on
+      description: Tickets that must be Done first (e.g. CAU-4, CAU-6).
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [infra, backbone, schema, mcp, hook, identity, demo]
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options: [P0, P1, P2, P3]
+    validations:
+      required: true

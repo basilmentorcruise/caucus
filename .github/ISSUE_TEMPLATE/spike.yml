@@ -1,0 +1,28 @@
+name: Spike / Investigation
+description: Time-boxed research to answer a question or de-risk a decision. Deliverable is a documented verdict.
+title: "CAU-<n> — <question to answer>"
+labels: ["type:spike", "needs-triage"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question to answer
+      description: What decision does this unblock? Reference the relevant ADR if any.
+    validations:
+      required: true
+  - type: textarea
+    id: deliverable
+    attributes:
+      label: Deliverable
+      description: The recorded verdict and any follow-up tickets to file.
+      value: |
+        - [ ] Documented findings
+        - [ ] Explicit verdict / recommendation
+        - [ ] Follow-up tickets filed
+    validations:
+      required: true
+  - type: input
+    id: timebox
+    attributes:
+      label: Time box
+      description: Rough effort ceiling.
