@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: lint · typecheck · test+coverage · build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Enable corepack BEFORE actions/setup-node so the pnpm version pinned in
+      # package.json's "packageManager" field is the one that gets activated.
+      - name: Enable corepack (pnpm)
+        run: corepack enable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.20.2"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # Coverage gate is ENFORCED here: `pnpm test` runs
+      # `vitest run --coverage`, which exits non-zero (failing this step, and
+      # thus CI) if any coverage threshold in vitest.config.ts is unmet.
+      # Per docs/GITHUB_PROJECTS.md the coverage bar may not be lowered.
+      - name: Test with enforced coverage gate
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
