@@ -7,7 +7,7 @@
 - **Tickets live only on the GitHub Project board**, never in repo `.md` files. Repo: `basilmentorcruise/caucus`, Project #3. `CAU-N = issue #N`.
 
 ## How work is run
-This project is delivered by a coordinator + specialist agent team. **Run `/coordinate`** to pick up tickets and drive them through the SDLC. The specialists live in `.claude/agents/` (`caucus-architect`, `caucus-developer`, `caucus-tester`, `caucus-security`, `caucus-product`, `caucus-designer`, `caucus-reviewer`).
+This project is delivered by a coordinator + specialist agent team. **Run `/coordinator`** to pick up tickets and drive them through the SDLC. The specialists live in `.claude/agents/` (`caucus-architect`, `caucus-developer`, `caucus-tester`, `caucus-security`, `caucus-product`, `caucus-designer`, `caucus-reviewer`).
 
 ## Hard rules
 - **Testing/validation is a required gate.** Nothing reaches Done until tests cover the change, the CI coverage threshold is met, **every acceptance criterion is empirically validated** (run it, don't assume), and CI is green. See `docs/GITHUB_PROJECTS.md` → *Testing & validation gate*. Board flow: Backlog → Ready → In Progress → In Review → **Validating** → Done.
