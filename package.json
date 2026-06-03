@@ -1,0 +1,29 @@
+{
+  "name": "caucus",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Caucus — an agent war room for investigations & escalations.",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20.10.0"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --build --force",
+    "test": "vitest run --coverage",
+    "build": "tsc --build",
+    "clean": "tsc --build --clean",
+    "test:integration": "node scripts/test-integration-placeholder.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@types/node": "^20.17.10",
+    "@vitest/coverage-v8": "^2.1.8",
+    "eslint": "^9.17.0",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.1",
+    "vitest": "^2.1.8"
+  }
+}
