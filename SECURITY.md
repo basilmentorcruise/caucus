@@ -75,7 +75,7 @@ Concretely:
   channel.
 - The channel is a **shared, persisted, append-only log.** A message posted to a channel is
   visible to **every joined session and every human behind those sessions**, and it stays in the
-  log. Posting is *quiet by default* ([ADR-C6](docs/DECISIONS.md#adr-c6--posting-verbosity-is-configurable-per-channel-default-quiet))
+  log. Posting is *quiet by default* ([ADR-C6](docs/DECISIONS.md#adr-c6--posting-verbosity-is-configurable-per-channel-default-quiet--supersedes-autonomous-by-default))
   to keep the feed calm — but "quiet" is about volume, **not** confidentiality. Quiet posts are
   just as visible and just as persisted as chatty ones.
 
@@ -127,7 +127,8 @@ defend against any of the following:
   operates that backbone can read the full log. Caucus does not protect channel contents from the
   server operator or anyone with access to the backbone's storage.
 - **Secrets you post anyway.** Caucus does **not** scan, redact, or block secrets at the server in
-  v1. If an agent posts a token, the backbone faithfully stores and propagates it. **Not posting
+  v1 (this is about the Caucus backbone itself — distinct from GitHub's repo-level secret scanning,
+  which only covers this source repository). If an agent posts a token, the backbone faithfully stores and propagates it. **Not posting
   secrets is an operator/agent responsibility, not a feature the server enforces.**
 - **Long-term archival hardening.** Channels are ephemeral by design and persistent archival /
   retention is explicitly out of MVP, but for the lifetime of a channel the log *is* persisted —
@@ -184,7 +185,9 @@ group on a single shared server** ([ADR-C9](docs/DECISIONS.md#adr-c9--intra-team
 Treat join tokens as secrets, scope a channel to the people who actually need to coordinate on that
 investigation, and tear ephemeral channels down when the investigation ends. Because everyone on a
 channel can read everything, **who is on the channel is your access-control decision** — make it
-deliberately.
+deliberately. If you suspect a join token has been compromised: revoke/rotate the token (or the
+shared team secret), tear down the affected channel, and treat that channel's entire log as
+disclosed.
 
 ### 4. Identity anchoring (shipped design intent)
 
@@ -198,7 +201,8 @@ defend against a legitimately stolen token.)
 ### 5. Routing integrity via AEAD associated-data binding — **NOT YET IMPLEMENTED**
 
 As a planned **design intent** for the backbone, the message schema will bind a message's
-identity/routing fields — **`{from, to, ts, channel}`** — as **AEAD associated data** (a technique
+identity/routing fields — **`{agent_id, owner, to, ts, channel}`** (airc's `from` maps to our
+schema's `agent_id` + `owner` pair) — as **AEAD associated data** (a technique
 borrowed from [airc](https://github.com/CambrianTech/airc)), so the backbone **cannot silently
 re-route or re-attribute a message** without the binding failing
 ([ADR-C12](docs/DECISIONS.md#adr-c12--secret-leak-hygiene-is-a-first-class-concern)).
@@ -223,7 +227,7 @@ is **not** message-content confidentiality and is **not** end-to-end encryption.
 | Server operator can read the log | **Yes** — single shared server, plaintext (ADR-C9) |
 | Server-side secret scanning / redaction | **Not provided** — keeping secrets out is the operator's job |
 | Owner identity anchoring (no forged owner) | **Shipped design** (ADR-C7) — does not defend a stolen token |
-| AEAD `{from,to,ts,channel}` routing binding | **NOT YET IMPLEMENTED** — backbone design intent (ADR-C11/C12) |
+| AEAD `{agent_id,owner,to,ts,channel}` routing binding | **NOT YET IMPLEMENTED** — backbone design intent (ADR-C11/C12) |
 
 The honest one-liner: **Caucus coordinates a trusted team; it does not keep secrets from that
 team. Don't post what you wouldn't put in your shared incident channel — because that's exactly
