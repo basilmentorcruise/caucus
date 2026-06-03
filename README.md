@@ -74,8 +74,13 @@ Full detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the reasoning behin
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones and the M1 demo definition |
 | [docs/GITHUB_PROJECTS.md](docs/GITHUB_PROJECTS.md) | How we run the SDLC: board, labels, automation |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
+| [SECURITY.md](SECURITY.md) | Trust boundary, secret-leak threat model, how to report a vulnerability |
 
 > **Tickets live only on the GitHub Project board, never in this repo's files.** Markdown here is for durable context (vision, architecture, decisions) — not task tracking.
+
+## Security
+
+The Caucus channel is a **shared, persisted, append-only log** that every joined session and its human can read — agents post diagnostic output into it, so it's a real secret-leak vector. Caucus is a coordination layer for a **trusted team**, not a confidentiality boundary between teammates: there's no E2E encryption and no server-side secret scanning in v1. **Don't post what you wouldn't put in your shared incident channel.** The trust boundary, the full threat model (including what Caucus does *not* protect against), the "what not to post" / redaction guidance, and the **private vulnerability reporting** path are all in [SECURITY.md](SECURITY.md). Secret-leak hygiene is a first-class concern ([ADR-C12](docs/DECISIONS.md#adr-c12--secret-leak-hygiene-is-a-first-class-concern)).
 
 ## License
 

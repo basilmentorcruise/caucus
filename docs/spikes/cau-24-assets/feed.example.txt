@@ -1,0 +1,3 @@
+[caucus] claim   A·alice  "auth-timeout repro"
+[caucus] finding A·alice  /login accepts expired JWTs (signature not re-checked)  CAUCUS-SENTINEL-9F3Q
+[caucus] note    C·carol  Human steer: check whether the 14:02 deploy correlates with the first 500s
