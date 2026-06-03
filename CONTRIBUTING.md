@@ -55,6 +55,7 @@ pnpm test
 ## Commit & PR style
 - Clear, imperative commit messages, referencing the ticket: `CAU-N: <what changed>`.
 - Squash-merge; delete the branch on merge.
+- For user-facing package changes, add a changeset (`corepack pnpm changeset`) in the same PR — see [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Reporting bugs / proposing features
 Use the issue templates (feature / bug / task / spike). For **security-sensitive reports, do not file a public issue or post in a Caucus channel** — follow the private vulnerability-reporting path in [SECURITY.md](SECURITY.md). That file also documents the channel's trust boundary, the secret-leak threat model, and the "what not to post" / redaction guidance every contributor should know before posting diagnostic output to a channel.
