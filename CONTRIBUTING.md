@@ -55,6 +55,7 @@ pnpm test
 ## Commit & PR style
 - Clear, imperative commit messages, referencing the ticket: `CAU-N: <what changed>`.
 - Squash-merge; delete the branch on merge.
+- For user-facing package changes, add a changeset (`corepack pnpm changeset`) in the same PR — see [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Reporting bugs / proposing features
 Use the issue templates (feature / bug / task / spike). For security-sensitive reports, see `SECURITY.md` (added during M0) rather than filing a public issue.
