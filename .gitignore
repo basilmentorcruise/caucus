@@ -26,5 +26,8 @@ coverage/
 .idea/
 *.swp
 
-# Claude Code local state & agent memory (not published)
-.claude/
+# Claude Code: publish the agent team + commands, keep local state & memory private
+.claude/*
+!.claude/agents/
+!.claude/commands/
+.claude/settings.local.json
