@@ -5,16 +5,17 @@ How Caucus runs its software development lifecycle on GitHub. **Tickets live onl
 ## The flow
 
 ```
-   [Backlog] ──► [Ready] ──► [In Progress] ──► [In Review] ──► [Done]
-                   ▲             │                  │
-                   │     branch + draft PR   review + CI green
-                   └──── blocked? add `blocked` label, return to Backlog
+[Backlog] → [Ready] → [In Progress] → [In Review] → [Validating] → [Done]
+              ▲           │                              │
+              │   branch + draft PR          tests + coverage + AC validated
+              └──── blocked? add `blocked` label, return to Backlog
 ```
 
-- **Backlog → Ready:** a ticket is "Ready" when it has acceptance criteria and all `Depends on` issues are Done.
-- **Ready → In Progress:** an agent/contributor self-assigns, branches, and opens a **draft PR** linking the issue.
+- **Backlog → Ready:** acceptance criteria present and all `Depends on` issues are Done.
+- **Ready → In Progress:** self-assign, branch, and open a **draft PR** linking the issue.
 - **In Progress → In Review:** PR marked ready-for-review; CI green.
-- **In Review → Done:** approved + CI green + AC checklist complete → merge → issue auto-closes.
+- **In Review → Validating:** approved + CI green; now tests, coverage, and every acceptance criterion are empirically validated (see the **Testing & validation gate** below).
+- **Validating → Done:** validation passed → merge → issue auto-closes.
 
 ## Milestones
 
@@ -49,7 +50,21 @@ So a coordinator can dispatch work across multiple agents without collisions:
 3. **Respect dependencies.** Don't start a ticket whose `Depends on` aren't Done. If unavoidable, mark `blocked` and explain.
 4. **Small PRs.** If a ticket grows, split it and file follow-ups.
 5. **Spikes produce a written verdict**, not just code (e.g. the substrate spike CAU-2).
-6. **Definition of Done:** AC complete · CI green · docs updated if behavior changed · linked issue closes on merge.
+6. **Definition of Done:** tests cover the change · coverage threshold met · every acceptance criterion validated · CI green (lint/typecheck/test/build/coverage) · docs updated if behavior changed · linked issue closes on merge.
+
+## Testing & validation gate (required)
+
+Testing is a **first-class, required state** — not an afterthought. **No ticket reaches Done until it is tested and validated.** "Code written" is not "done."
+
+Before a ticket can leave **Validating**, all of the following must hold:
+- **Tests cover the new/changed behavior** — unit tests at minimum; **integration tests** wherever the ticket touches the backbone, the MCP tools, or the hook.
+- **The coverage threshold is met.** CI enforces a minimum coverage bar; a ticket may not lower it, and new code is expected to be covered.
+- **Every acceptance criterion is empirically validated** — demonstrated to actually work via a test, a script, or a recorded run, not merely implemented.
+- **CI is green** — lint, typecheck, test, build, and coverage all pass.
+
+`type:spike` tickets are exempt from the coverage bar but still must produce a written, validated verdict.
+
+**Coordinator rule:** do not advance a ticket to Done — and do not let dependent tickets start — until the blocking ticket has passed this gate. As work progresses, each ticket is tested and validated *before* the next dependent ticket begins. Validating is where that check happens.
 
 ## Coordinator responsibilities
 

@@ -22,8 +22,13 @@ Caucus runs a ticket-driven SDLC on GitHub Projects. The full playbook is in [do
 6. **Pass CI + review** — lint, typecheck, tests green; at least one approval.
 
 ## Definition of Done
-- All acceptance criteria met (checklist ticked).
-- CI green (lint / typecheck / test / build).
+
+A ticket is **not done until it is tested and validated** — "code written" is not done. Testing is a required state in our workflow (see [docs/GITHUB_PROJECTS.md](docs/GITHUB_PROJECTS.md) → *Testing & validation gate*).
+
+- Tests cover the new/changed behavior (unit always; **integration** wherever it touches the backbone, MCP, or hook).
+- Coverage threshold met (CI-enforced); new code is covered.
+- Every acceptance criterion is **empirically validated** — a test, script, or recorded run, not just implemented.
+- CI green (lint / typecheck / test / build / coverage).
 - Docs updated if behavior or interfaces changed.
 - Linked issue closes on merge.
 
