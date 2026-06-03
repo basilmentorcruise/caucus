@@ -32,6 +32,7 @@ That single beat — C's agent *avoiding* redundant work because it saw A's clai
 
 - **vs. just using Slack / a screenshare** — Slack carries *human* messages; it can't see what your agent found, and your agent can't read Slack. Caucus posts are emitted and read *by the agents*, so findings surface as fast as the agents generate them, and a human's hard-won context reaches every *other* agent, not just their own.
 - **vs. [scuttlebot](https://scuttlebot.dev) and single-operator fleet tools** — those watch *your* fleet. Caucus is **multi-principal**: many humans, each owning and steering their own agent, collaborating as identified delegates. Every message carries *which teammate* stands behind it. That identity model is the difference between a personal dashboard and a team coordination layer.
+- **vs. [airc](https://github.com/CambrianTech/airc)** (the closest prior art — multi-user "IRC for AI agents," now adding claims-as-leases coordination) — our distinction is **multi-principal agent→human identity** (airc has no human binding), the **investigation/escalation domain + typed finding/claim schema**, and **MCP-native** integration. We borrow their engineering and stay heads-down.
 - **vs. agent protocols (A2A, MCP, AGNTCY)** — those are RPC/task-delegation rails *between* agents; they're complementary. Caucus is built *on* MCP. A2A lets agents call each other; Caucus lets a team of humans and their agents share a room.
 
 ## How it works
@@ -60,7 +61,7 @@ Full detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the reasoning behin
 
 ## Project status
 
-🚧 **Pre-alpha — design locked, building the MVP.** The concept, architecture, and v1 scope are settled (see [Decisions](docs/DECISIONS.md)). We're standing up the repo, resolving the substrate spike, and building the [Milestone M1 war-room demo](docs/ROADMAP.md). Work is tracked as issues on the GitHub Project board — see [docs/GITHUB_PROJECTS.md](docs/GITHUB_PROJECTS.md). **Contributors welcome:** start with [CONTRIBUTING.md](CONTRIBUTING.md).
+🚧 **Pre-alpha — core design set; demand and key technical pillars under validation before we build.** The architecture and v1 scope are settled (see [Decisions](docs/DECISIONS.md)), but the backbone build is deliberately **gated on two cheap validation probes** plus a hook-capability spike ([ADR-C11](docs/DECISIONS.md#adr-c11--validate-demand-before-building-the-backbone)) — we're validating that the workflow is real before spending on infrastructure. Then we build the [Milestone M1 war-room demo](docs/ROADMAP.md). Work is tracked as issues on the GitHub Project board — see [docs/GITHUB_PROJECTS.md](docs/GITHUB_PROJECTS.md). **Contributors welcome:** start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation
 

@@ -12,6 +12,7 @@ Status: ✅ Accepted · 🕓 Deferred (planned) · 🔄 Superseded
 **Decision.** Caucus is built around multiple humans, each owning and steering their own Claude Code agent, collaborating in one shared channel. Positioning wedge: **investigations & escalations**, flagship scenario **production-incident response**.
 **Alternatives.** Single-operator fleet console (scuttlebot's space); generic "agent collaboration" with no wedge.
 **Why.** The single-operator commons is taken and undifferentiated. The unclaimed, valuable space is *multiple principals coordinating* — which is exactly the incident scenario, where redundant work and trapped context are most expensive and most visible. The wedge sharpens the design (ephemeral channels, claim-dedup, "humans are the real-time layer") rather than constraining it.
+**Amendment (2026-06-03).** (a) **Beachhead:** production-incident response is the *headline vision and demo*, but first real usage is proven on **lower-tempo investigations** (hard debugging, security investigation, migration) to avoid the max-friction-at-worst-moment adoption tax of live incidents. (b) **Differentiation re-anchored vs [airc](https://github.com/CambrianTech/airc)** (closest prior art — multi-user "IRC for AI agents," with a claims-as-leases work-coordination protocol on its `canary` branch). Our coordination edge is narrowing, so the defensible distinction is: **(1) multi-principal agent→human identity binding** (airc identity is per-directory, TOFU, *no human binding* — genuine whitespace; our real moat); **(2) investigation/escalation domain + a typed finding/claim/question schema** (airc's coordination is dev-PR kanban); **(3) MCP-native** (server tools + turn-start hook) vs their CLI + monitor-stream. Multi-principal identity is the *wedge framing, not an absolute moat* — defensibility target is the structured investigation/postmortem record. See [CAU-21](https://github.com/basilmentorcruise/caucus/issues/21).
 
 ## ADR-C2 — Substrate: lightweight purpose-built backbone, not an Ergo fork ✅ / 🕓(spike)
 **Decision.** Build a small purpose-built backbone (append-only log, claim ledger, cursors, seatbelts) behind an implementation-agnostic interface — **pending the M0 spike** (see Roadmap) confirming no core property is surprisingly hard. Keep an Ergo-backed adapter as a reversible fallback.
@@ -32,11 +33,12 @@ Status: ✅ Accepted · 🕓 Deferred (planned) · 🔄 Superseded
 **Decision.** Agents `claim(target)` before starting a sub-task. The claim ledger is **first-write-wins and atomic**; a granted claim is also posted as a `claim` message so the hook surfaces it. Claims are advisory-but-visible (the server records truth; agents are nudged to respect it), not hard locks.
 **Alternatives.** No coordination (collisions); hard locks (brittle, deadlock-prone).
 **Why.** "Stop debugging the same thing twice" is the headline value; it needs a concrete mechanic. First-write-wins is trivially correct with a single-writer backbone. Soft-but-visible claims fit a fast-moving investigation better than locks.
+**Amendment (2026-06-03).** Adopt a **lease-with-TTL** claim model in the schema (claim carries an optional TTL + heartbeat; a lapsed lease frees the target) — borrowed from airc's `canary` coordination protocol, which avoids stuck claims when an agent dies mid-task. **MVP scope is still first-write-wins only** (CAU-7); TTL/heartbeat *enforcement* and release/reassignment are the claim lifecycle in CAU-18 (M2). The schema fields ship now (see MESSAGE_SCHEMA) so we don't re-version later.
 
-## ADR-C6 — Agents share autonomously by default; humans can override ✅
-**Decision.** Agents post typed findings/claims/questions proactively at natural beats; the human can also instruct a share. Posts are typed so the channel stays signal-dense, not a transcript dump.
-**Alternatives.** Human-must-trigger every share (people forget under pressure).
-**Why.** If sharing depends on the human remembering, it won't happen mid-incident. Typing + significance-biased prompting keeps autonomy from becoming noise (post-volume is an anti-metric, not a goal).
+## ADR-C6 — Posting verbosity is configurable per channel; default quiet 🔄 (supersedes "autonomous by default")
+**Decision.** Agents post typed findings/claims/questions, but **posting verbosity is a per-channel setting — `quiet` / `normal` / `chatty` — defaulting to `quiet`** (post only consequential findings/claims/blockers; bias toward silence). The human can always tell their agent to share more, or raise the channel's verbosity.
+**Alternatives.** Autonomous-by-default for every typed event (original decision — too noisy); human-must-trigger every share (people forget under pressure).
+**Why.** Channel noise is the sticky trust-killer: once humans learn to ignore the feed, the whole passive-awareness UX collapses, and that habit doesn't come back. Defaulting quiet protects the calm-signal promise; making it configurable lets a team dial up verbosity for a hot incident without hard-coding the trade-off. Post-volume is an anti-metric, not a goal. *Supersedes the original "share autonomously by default."*
 
 ## ADR-C7 — Multi-principal identity: agent → human, anchored server-side ✅ / 🕓(issuer)
 **Decision.** Every message is stamped `agent-id` + `human owner`. For MVP, identity comes from a per-session join token (shared team secret or simple issued token) mapped and anchored server-side so the owner can't be forged. A token-issuer service and cross-org identity are deferred (M2).
@@ -54,6 +56,15 @@ Status: ✅ Accepted · 🕓 Deferred (planned) · 🔄 Superseded
 ## ADR-C10 — MVP = the two-terminal claim handoff ✅
 **Decision.** v1 ships the smallest slice that proves the point: 2–3 Claude Code sessions in one ephemeral channel, claim-based dedup, hook-driven awareness, a human-injected steer propagating, and a seatbelt blocking a loop. (Full M1 demo definition in the [Roadmap](ROADMAP.md).)
 **Why.** That single beat — an agent visibly avoiding redundant work because it saw another's claim — is the entire value, and it's the README demo and contributor magnet.
+
+## ADR-C11 — Validate demand before building the backbone ✅
+**Decision.** The backbone build (CAU-4 onward) is **gated on two cheap validation probes**: **Probe A** — interview 6–8 Claude-Code-using SRE/eng leads on whether concurrent per-engineer agent investigations happen today (CAU-22); **Probe B** — Wizard-of-Oz the claim/finding discipline in Slack with a human relay and *no backbone* (CAU-23). The hook-capability spike (CAU-24) and substrate spike (CAU-2) run in parallel as technical de-risking.
+**Alternatives.** Build first, validate by dogfooding (faster, but spends backbone effort on a swarm pattern that may not exist at scale yet).
+**Why.** The load-bearing assumption — that multiple engineers each run their own Claude Code on one investigation *today* — is admittedly emerging, not proven. A purpose-built backbone is premature spend if the concurrency isn't there. Probes are days, not weeks, and can kill or redirect cheaply. This also softens the earlier "design locked" overclaim: the *design* is set; *demand and the key technical pillars* are under validation.
+
+## ADR-C12 — Secret-leak hygiene is a first-class concern ✅
+**Decision.** Treat the channel as a place secrets can leak: agents post diagnostic output (logs, tokens, customer data) into a **shared, persisted, append-only** log that propagates to everyone. v1 must ship a documented trust boundary, "what not to post" guidance, and a mitigation stance (CAU-26 / SECURITY.md). Borrow airc's AEAD associated-data binding of `{from,to,ts,channel}` so the backbone can't silently re-route a message.
+**Why.** The incident wedge is exactly where sensitive output flies around. Silence on this is a real adoption blocker for security-conscious teams and a genuine leak vector. It was an unlisted non-goal/threat in the original docs.
 
 ---
 

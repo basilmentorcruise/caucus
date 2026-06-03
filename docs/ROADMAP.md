@@ -8,16 +8,24 @@ Caucus ships in vertical slices — each milestone is something you can *run*. M
 
 | Milestone | Theme | Outcome | Status |
 |-----------|-------|---------|--------|
-| **M0** | Foundations + substrate spike | Repo, CI, schema v0 frozen, backbone interface, **substrate decision proven** | ▶ Active |
+| **M0** | Validation & foundations | **Demand probes pass**, hook & substrate spikes pass, repo + CI (with coverage gate), schema v0, backbone interface | ▶ Active |
 | **M1** | War-room MVP demo | The two-terminal claim handoff runs end-to-end from the README | Planned |
-| **M2+** | Reach & durability | Native SDK, observability surface, claim lifecycle, digests, identity→federation | Future |
+| **M2+** | Reach & durability | Native SDK, observability surface, claim lifecycle (lease/TTL), digests, identity→federation | Future |
 
 ---
 
-## M0 — Foundations + substrate spike ▶
-**Goal:** stand up the skeleton and settle the one open architectural question before parallel build.
+## M0 — Validation & foundations ▶
+**Goal:** validate the demand & technical pillars **before** committing backbone code, and stand up the skeleton.
 
-**The gating spike** must prove, with throwaway code:
+**Validate first (gates the backbone build — [ADR-C11](DECISIONS.md#adr-c11--validate-demand-before-building-the-backbone)):**
+- **Probe A** ([CAU-22](https://github.com/basilmentorcruise/caucus/issues/22)) — interview 6–8 Claude-Code SRE/eng leads: do concurrent per-engineer agent investigations happen today?
+- **Probe B** ([CAU-23](https://github.com/basilmentorcruise/caucus/issues/23)) — Wizard-of-Oz the claim/finding discipline in Slack with a human relay, *no backbone*. Does the mechanic deliver value?
+- **Hook-capability spike** ([CAU-24](https://github.com/basilmentorcruise/caucus/issues/24)) — can a Claude Code hook fetch-and-inject context each turn? (ADR-C3's unproven pillar.)
+- **Prior-art input** ([CAU-21](https://github.com/basilmentorcruise/caucus/issues/21)) — airc findings feed the substrate spike.
+
+`CAU-4` (the first committed backbone work) depends on Probes A & B passing.
+
+**The substrate spike** ([CAU-2](https://github.com/basilmentorcruise/caucus/issues/2)) must prove, with throwaway code:
 1. The backbone accepts a typed message, appends it to a per-channel log, and returns it to a second subscriber via `read_channel(since=cursor)`.
 2. `claim` is **atomic first-write-wins** under two near-simultaneous callers.
 3. A `subscribe` cursor **survives across separate MCP request/response calls** (MCP has no persistent push — confirm the cursor/poll model).
@@ -27,9 +35,12 @@ Caucus ships in vertical slices — each milestone is something you can *run*. M
 Exit is a written go/no-go on "purpose-built"; if any of 1–3 is surprisingly hard, fall back to an Ergo adapter behind the same interface.
 
 **Exit criteria:**
-- Repo, CI (lint+typecheck+test+build), license, monorepo skeleton.
-- Substrate decision recorded with transport named.
-- Message schema `v0` ratified and frozen (types incl. `claim`).
+- **Probes A & B returned a go/early/kill verdict** on the load-bearing assumption; hook-capability spike confirmed (or fallback chosen).
+- Repo, CI (lint+typecheck+test+build+**coverage gate**), license, monorepo skeleton.
+- **Integration-test harness** ([CAU-25](https://github.com/basilmentorcruise/caucus/issues/25)) boots the backbone + ≥2 clients in CI — the testing gate depends on it.
+- **SECURITY.md + secret-leak stance** ([CAU-26](https://github.com/basilmentorcruise/caucus/issues/26)) written.
+- Substrate decision recorded with transport named (append-only event-log + projections evaluated, informed by airc).
+- Message schema `v0` ratified and frozen (types incl. `claim`; lease/TTL fields present, enforcement deferred).
 - Backbone interface (`append`/`readSince`/`claim`/`subscribe`/`describe`) defined as a typed contract with an in-memory reference impl.
 - End-to-end "hello": a script posts a message and reads it back.
 

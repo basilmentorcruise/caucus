@@ -26,6 +26,8 @@ Every Caucus message is a small, **typed, versioned** structured object. The MCP
 | `msg_id` | ✅ | string (ULID) | Unique, sortable id; target of replies/refs. |
 | `body` | ✅ | string | Concise human-readable text. |
 | `target` | ⬜* | string | **Required for `claim`.** The work item / hypothesis being claimed. |
+| `lease_ttl` | ⬜ | integer (seconds) | For `claim`: how long the claim holds without a heartbeat before it lapses and frees the `target`. **Schema ships in v0; enforcement is deferred to CAU-18 (M2).** |
+| `heartbeat` | ⬜ | boolean | For `claim`: marks a keep-alive that renews an existing lease (deferred enforcement, as above). |
 | `thread` | ⬜ | string (msg_id) | Root message of the thread. Absent ⇒ starts a thread. |
 | `reply_to` | ⬜ | string (msg_id) | The specific message being replied to. |
 | `to` | ⬜ | string[] (agent_ids) | Addressing: who this is *for*. Absent ⇒ for the channel. |
@@ -36,7 +38,7 @@ Every Caucus message is a small, **typed, versioned** structured object. The MCP
 ### Type notes
 
 - **`finding`** — a result worth preserving and sharing ("expired JWTs accepted, signature not re-checked").
-- **`claim`** — declares ownership of a work item/hypothesis. The backbone treats it specially: **first-write-wins** on `target`. The MCP `claim` tool returns `granted` or `already_claimed_by{agent, owner, ts}`. A granted claim is appended as a `claim` message so the hook surfaces it to everyone — this is the dedup mechanic.
+- **`claim`** — declares ownership of a work item/hypothesis. The backbone treats it specially: **first-write-wins** on `target`. The MCP `claim` tool returns `granted` or `already_claimed_by{agent, owner, ts}`. A granted claim is appended as a `claim` message so the hook surfaces it to everyone — this is the dedup mechanic. Claims model a **lease-with-TTL** (`lease_ttl` + `heartbeat`, borrowed from [airc](https://github.com/CambrianTech/airc)'s coordination protocol) so a claim from a dead agent eventually frees — but **v0/MVP enforces first-write-wins only**; lease expiry/heartbeat/release/reassignment land in CAU-18 (M2). Fields ship now to avoid a later version bump.
 - **`status`** — progress/lifecycle ("starting a sweep of the payments service").
 - **`question` / `answer`** — `answer` with `status=resolved` tells listeners a thread is closed; the SDK/tooling discourages replying to resolved threads.
 - **`note`** — freeform aside, often the vehicle for a **human-injected steer** ("check if the 14:02 deploy correlates").
@@ -94,6 +96,7 @@ For discovery, channels carry a small descriptor returned by `describe_channel`:
 { "channel":"war-room-incident-42", "kind":"ephemeral",
   "purpose":"Login 500s incident — diagnosis & coordination.",
   "expected_types":["finding","claim","question","answer","status","note"],
+  "verbosity":"quiet",            // quiet | normal | chatty — posting verbosity (default quiet, ADR-C6)
   "created_by":"alice", "created_ts":"…" }
 ```
 
