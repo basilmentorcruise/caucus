@@ -108,6 +108,8 @@ Were per-turn `additionalContext` unavailable, the fallback is a **nudge**: the 
 ## Reproduce
 
 Assets in [`cau-24-assets/`](cau-24-assets/): `caucus-hook.sh` (throwaway hook), `settings.json` (hook config — set the absolute path to the script), `feed.example.txt` (sample external source).
+
+Prerequisites: `jq` (used by `caucus-hook.sh` to JSON-encode the feed), `uuidgen`, and the `claude` CLI on PATH.
 ```bash
 mkdir -p /tmp/cau24-spike/.claude
 cp docs/spikes/cau-24-assets/caucus-hook.sh /tmp/cau24-spike/
