@@ -26,11 +26,11 @@ Every Caucus message is a small, **typed, versioned** structured object. The MCP
 | `msg_id` | ✅ | string (ULID) | Unique, sortable id; target of replies/refs. |
 | `body` | ✅ | string | Concise human-readable text. |
 | `target` | ⬜* | string | **Required for `claim`.** The work item / hypothesis being claimed. Matched via `normalizeTarget` (single `trim`, then exact-string; no case-folding/fuzzy in v0). |
-| `lease_ttl` | ⬜ | integer (seconds) | For `claim`: how long the claim holds without a heartbeat before it lapses and frees the `target`. **Schema ships in v0; enforcement is deferred to CAU-18 (M2).** |
+| `lease_ttl` | ⬜ | positive integer (seconds) | For `claim`: how long the claim holds without a heartbeat before it lapses and frees the `target`. Must be a positive integer when present. **Schema ships in v0; enforcement is deferred to CAU-18 (M2).** |
 | `heartbeat` | ⬜ | boolean | For `claim`: marks a keep-alive that renews an existing lease (deferred enforcement, as above). |
 | `thread` | ⬜ | string (msg_id) | Root message of the thread. Absent ⇒ starts a thread. |
 | `reply_to` | ⬜ | string (msg_id) | The specific message being replied to. |
-| `to` | ⬜ | string[] (agent_ids) | Addressing: who this is *for*. Absent ⇒ for the channel. |
+| `to` | ⬜ | non-empty string[] (agent_ids) | Addressing: who this is *for*. Absent ⇒ for the channel; when present it must be a non-empty array of non-empty `agent_id` strings (`to: []` is rejected as ambiguous). |
 | `status` | ⬜ | `needs-response` \| `resolved` \| `fyi` | Coordination signal; lets a thread explicitly end. |
 | `artifact` | ⬜ | URI | Link to full content when `body` is a summary. |
 | `ts` | ✅ (server) | timestamp | Server-stamped by the backbone on append; **optional at `decode`** (absent on a freshly-encoded message, present once appended). The codec never sets it. |

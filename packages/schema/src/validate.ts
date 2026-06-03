@@ -99,13 +99,16 @@ export function validate(value: unknown): asserts value is CaucusMessage {
     issues.push("reply_to must be a ULID");
   }
 
-  // Optional `to`: array of non-empty strings.
+  // Optional `to`: when present, a non-empty array of non-empty strings.
+  // An empty array is rejected — "absent" already means "for the channel",
+  // so `to: []` would be ambiguous on a frozen contract.
   if (value.to !== undefined) {
     if (
       !Array.isArray(value.to) ||
+      value.to.length === 0 ||
       !value.to.every((entry) => isNonEmptyString(entry))
     ) {
-      issues.push("to must be an array of non-empty strings");
+      issues.push("to must be a non-empty array of non-empty strings");
     }
   }
 
@@ -135,8 +138,11 @@ export function validate(value: unknown): asserts value is CaucusMessage {
     ) {
       issues.push("claim requires a non-empty target");
     }
-    if (value.lease_ttl !== undefined && typeof value.lease_ttl !== "number") {
-      issues.push("lease_ttl must be a number");
+    if (
+      value.lease_ttl !== undefined &&
+      !(Number.isInteger(value.lease_ttl) && (value.lease_ttl as number) > 0)
+    ) {
+      issues.push("lease_ttl must be a positive integer (seconds)");
     }
     if (value.heartbeat !== undefined && typeof value.heartbeat !== "boolean") {
       issues.push("heartbeat must be a boolean");

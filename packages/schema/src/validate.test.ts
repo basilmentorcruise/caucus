@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { MalformedMessageError } from "./errors.js";
+import { decode } from "./codec.js";
+import {
+  MalformedMessageError,
+  SchemaError,
+  UnsupportedVersionError,
+} from "./errors.js";
 import { validate } from "./validate.js";
 
 /** A minimal valid v0 message (already version-stamped). */
@@ -128,15 +133,25 @@ describe("validate — optional fields", () => {
   });
 
   it("rejects a non-array to", () => {
-    expectIssue({ ...validNote(), to: "sess-B" }, "to must be an array");
+    expectIssue({ ...validNote(), to: "sess-B" }, "to must be a non-empty array");
   });
 
   it("rejects a to array with a non-string entry", () => {
-    expectIssue({ ...validNote(), to: ["sess-B", 5] }, "to must be an array");
+    expectIssue({ ...validNote(), to: ["sess-B", 5] }, "to must be a non-empty array");
+  });
+
+  it("rejects an empty to array", () => {
+    expectIssue({ ...validNote(), to: [] }, "to must be a non-empty array");
   });
 
   it("rejects a to array with an empty-string entry", () => {
-    expectIssue({ ...validNote(), to: [""] }, "to must be an array");
+    expectIssue({ ...validNote(), to: [""] }, "to must be a non-empty array");
+  });
+
+  it("accepts a single-element to array", () => {
+    expect(() =>
+      validate({ ...validNote(), to: ["sess-A"] }),
+    ).not.toThrow();
   });
 
   it("accepts a valid to array", () => {
@@ -192,7 +207,57 @@ describe("validate — claim rules", () => {
   });
 
   it("rejects a non-number lease_ttl on a claim", () => {
-    expectIssue({ ...validClaim(), lease_ttl: "30" }, "lease_ttl must be a number");
+    expectIssue(
+      { ...validClaim(), lease_ttl: "30" },
+      "lease_ttl must be a positive integer",
+    );
+  });
+
+  it("rejects a NaN lease_ttl", () => {
+    expectIssue(
+      { ...validClaim(), lease_ttl: Number.NaN },
+      "lease_ttl must be a positive integer",
+    );
+  });
+
+  it("rejects a negative lease_ttl", () => {
+    expectIssue(
+      { ...validClaim(), lease_ttl: -1 },
+      "lease_ttl must be a positive integer",
+    );
+  });
+
+  it("rejects a zero lease_ttl", () => {
+    expectIssue(
+      { ...validClaim(), lease_ttl: 0 },
+      "lease_ttl must be a positive integer",
+    );
+  });
+
+  it("rejects a fractional lease_ttl", () => {
+    expectIssue(
+      { ...validClaim(), lease_ttl: 1.5 },
+      "lease_ttl must be a positive integer",
+    );
+  });
+
+  it("rejects an Infinity lease_ttl", () => {
+    expectIssue(
+      { ...validClaim(), lease_ttl: Number.POSITIVE_INFINITY },
+      "lease_ttl must be a positive integer",
+    );
+  });
+
+  it("accepts lease_ttl of 1", () => {
+    expect(() =>
+      validate({ ...validClaim(), lease_ttl: 1 }),
+    ).not.toThrow();
+  });
+
+  it("accepts lease_ttl of 3600", () => {
+    expect(() =>
+      validate({ ...validClaim(), lease_ttl: 3600 }),
+    ).not.toThrow();
   });
 
   it("accepts a claim with valid lease_ttl and heartbeat", () => {
@@ -203,6 +268,28 @@ describe("validate — claim rules", () => {
 
   it("rejects a non-boolean heartbeat on a claim", () => {
     expectIssue({ ...validClaim(), heartbeat: "yes" }, "heartbeat must be a boolean");
+  });
+});
+
+describe("schema errors share the SchemaError base class", () => {
+  it("MalformedMessageError is a SchemaError (consumers branch on the base)", () => {
+    try {
+      validate({ ...validNote(), body: "" });
+      expect.unreachable("validate should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(MalformedMessageError);
+      expect(err).toBeInstanceOf(SchemaError);
+    }
+  });
+
+  it("UnsupportedVersionError is a SchemaError (consumers branch on the base)", () => {
+    try {
+      decode({ ...validNote(), v: 1 });
+      expect.unreachable("decode should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnsupportedVersionError);
+      expect(err).toBeInstanceOf(SchemaError);
+    }
   });
 });
 

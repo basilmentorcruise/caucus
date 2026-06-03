@@ -4,6 +4,10 @@
  *
  * v0 policy (ADR-C5, ratified CAU-3): a single `trim()`, exact-string match
  * after that. No case-folding and no fuzzy matching in v0.
+ *
+ * Note: `normalizeTarget` is NOT applied by the codec — the stored `target`
+ * stays exactly as authored. The backbone/MCP derive the claim-ledger key by
+ * calling this themselves; storage is never pre-normalized.
  */
 import { MalformedMessageError } from "./errors.js";
 
