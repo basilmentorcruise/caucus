@@ -4,7 +4,15 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["**/dist/**", "**/coverage/**", "**/node_modules/**", "**/*.tsbuildinfo"],
+    // docs/spikes/** holds throwaway spike prototypes (plain Node .mjs, not part
+    // of the typed monorepo). They're run directly with `node`, not linted/built.
+    ignores: [
+      "**/dist/**",
+      "**/coverage/**",
+      "**/node_modules/**",
+      "**/*.tsbuildinfo",
+      "docs/spikes/**",
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

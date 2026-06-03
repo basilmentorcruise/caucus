@@ -1,0 +1,166 @@
+// CAU-2 SPIKE — throwaway purpose-built backbone prototype.
+//
+// THIS IS NOT THE REAL BACKBONE. It exists only to empirically prove the core
+// substrate properties for the ADR-C2 go/no-go (see ../verdict.md). The real
+// backbone is CAU-4+, gated on the demand probes (ADR-C11). Do not import this.
+//
+// Design under test (informed by CAU-21 / airc's pivot to a single-writer
+// event store): a single-process, single-writer, append-only event log with
+// in-memory projections (claim ledger + per-subscriber cursors), exposed over
+// HTTP + cursor polling on localhost.
+//
+// Stdlib only (node:http). No dependencies — keeps the spike trivially runnable
+// via `node backbone.mjs` and dependency-free per the ticket constraint.
+
+import http from "node:http";
+
+// ---------------------------------------------------------------------------
+// Store: append-only event log + projections.
+//
+// `log` is the single source of truth: an ordered, append-only array of events.
+// Everything else (claim ownership, channel listing) is a PROJECTION folded
+// from the log. The cursor a subscriber reads with is simply a log offset, so
+// "read since cursor" is an O(new) array slice and the projection is
+// reconstructable from the log alone. This is the event-log+projection shape
+// the ticket asks us to evaluate vs a naive mutable store.
+// ---------------------------------------------------------------------------
+const log = []; // [{ seq, channel, ...event }]
+const claimLedger = new Map(); // projection: `${channel}::${target}` -> {agent, owner, seq, ts}
+const channels = new Set(); // projection: known channels
+
+let seqCounter = 0;
+
+// The single-writer invariant. Node's event loop runs JS on one thread, so as
+// long as we never `await` *between* the read-check and the append inside a
+// claim, the check-then-append is atomic with respect to other requests. We
+// keep `claim` fully synchronous to guarantee this — that is the whole trick.
+function appendEvent(channel, event) {
+  const seq = seqCounter++;
+  const record = { seq, channel, ts: Date.now(), ...event };
+  log.push(record);
+  channels.add(channel);
+  return record;
+}
+
+// readSince(channel, cursor) — cursor is an exclusive log offset (seq).
+// Returns ordered new events for the channel and the advanced cursor.
+function readSince(channel, cursor, limit) {
+  const out = [];
+  let newCursor = cursor;
+  for (const rec of log) {
+    if (rec.seq < cursor) continue;
+    if (rec.channel !== channel) {
+      // Still advance the cursor past non-matching records so the subscriber
+      // doesn't re-scan them; cursor tracks global log position.
+      newCursor = Math.max(newCursor, rec.seq + 1);
+      continue;
+    }
+    out.push(rec);
+    newCursor = rec.seq + 1;
+    if (limit && out.length >= limit) break;
+  }
+  return { messages: out, cursor: newCursor };
+}
+
+// claim(channel, target, agent, owner) — ATOMIC first-write-wins.
+//
+// Synchronous: no `await` between the ownership check and the append, so two
+// near-simultaneous claims for the same target are serialized by the event
+// loop and exactly one wins. The granted claim is ALSO appended to the log as a
+// `claim` message (ADR-C5) so subscribers surface it.
+function claim(channel, target, agent, owner) {
+  const key = `${channel}::${target}`;
+  const existing = claimLedger.get(key);
+  if (existing) {
+    return { result: "already_claimed_by", by: existing };
+  }
+  const rec = appendEvent(channel, {
+    type: "claim",
+    target,
+    agent_id: agent,
+    owner,
+    body: `Claiming ${target}.`,
+  });
+  const owned = { agent, owner, seq: rec.seq, ts: rec.ts };
+  claimLedger.set(key, owned);
+  return { result: "granted", claim: owned, msg: rec };
+}
+
+// ---------------------------------------------------------------------------
+// HTTP transport: cursor-polling RPC on localhost. JSON request/response.
+// Stateless across calls — the cursor lives client-side and is passed back in,
+// proving cursor survival across discrete MCP-style request/response calls.
+// ---------------------------------------------------------------------------
+function readReqBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8");
+      try {
+        resolve(raw ? JSON.parse(raw) : {});
+      } catch (e) {
+        reject(e);
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+function send(res, code, obj) {
+  const data = JSON.stringify(obj);
+  res.writeHead(code, { "content-type": "application/json" });
+  res.end(data);
+}
+
+const server = http.createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url, "http://localhost");
+    const path = url.pathname;
+
+    if (req.method === "POST" && path === "/append") {
+      const b = await readReqBody(req);
+      const rec = appendEvent(b.channel, {
+        type: b.type ?? "note",
+        agent_id: b.agent_id,
+        owner: b.owner,
+        body: b.body,
+      });
+      return send(res, 200, { ok: true, msg: rec });
+    }
+
+    if (req.method === "GET" && path === "/read") {
+      const channel = url.searchParams.get("channel");
+      const cursor = Number(url.searchParams.get("cursor") ?? "0");
+      const limit = Number(url.searchParams.get("limit") ?? "0") || undefined;
+      const { messages, cursor: newCursor } = readSince(channel, cursor, limit);
+      return send(res, 200, { messages, cursor: newCursor });
+    }
+
+    if (req.method === "POST" && path === "/claim") {
+      const b = await readReqBody(req);
+      const out = claim(b.channel, b.target, b.agent_id, b.owner);
+      return send(res, 200, out);
+    }
+
+    if (req.method === "GET" && path === "/channels") {
+      return send(res, 200, { channels: [...channels] });
+    }
+
+    if (req.method === "GET" && path === "/health") {
+      return send(res, 200, { ok: true, log_len: log.length });
+    }
+
+    return send(res, 404, { error: "not_found", path });
+  } catch (e) {
+    return send(res, 400, { error: String(e?.message ?? e) });
+  }
+});
+
+const PORT = Number(process.env.PORT ?? 7457);
+server.listen(PORT, "127.0.0.1", () => {
+  // eslint-disable-next-line no-console
+  console.log(`[backbone] listening on http://127.0.0.1:${PORT}`);
+});
+
+export { server };
