@@ -44,6 +44,15 @@ importers:
 
   packages/hook: {}
 
+  packages/integration:
+    dependencies:
+      '@caucus/backbone':
+        specifier: workspace:*
+        version: link:../backbone
+      '@caucus/schema':
+        specifier: workspace:*
+        version: link:../schema
+
   packages/mcp-server: {}
 
   packages/schema: {}

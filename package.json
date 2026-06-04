@@ -16,7 +16,7 @@
     "test": "node scripts/check-md-anchors.mjs && vitest run --coverage",
     "build": "tsc --build",
     "clean": "tsc --build --clean",
-    "test:integration": "node scripts/test-integration-placeholder.mjs",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "changeset": "changeset",
     "changeset:version": "changeset version",
     "release": "pnpm build && changeset publish"
