@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@caucus/backbone": "workspace:*",
+    "@caucus/backbone-server": "workspace:*",
     "@caucus/schema": "workspace:*"
   }
 }

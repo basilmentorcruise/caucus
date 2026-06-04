@@ -84,6 +84,17 @@ channel are colleagues who are already in the same incident bridge / Slack huddl
 share this class of operational data. It is a coordination layer for a trusted team — not a
 confidentiality boundary between the people on it.
 
+### Network exposure
+
+The backbone is an **HTTP listener**. By default it binds **`127.0.0.1`** (loopback only), so
+nothing off-host can reach it. It is **unauthenticated** in v1 — identity anchoring
+([ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer))
+verifies who a message is *from*, but nothing gates who may *connect* (that lands with CAU-9 / CAU-13).
+The **`HOST` env var is the single knob that widens this**: setting it to a non-loopback address
+makes the unauthenticated backbone reachable by anyone on that interface. **Do not bind a
+non-loopback host off-host** — keep it on `127.0.0.1` and reach remote sessions through a tunnel you
+control, not by exposing the port.
+
 ### The secret-leak vector (why this document exists)
 
 The core risk is structural, and it comes straight from what makes Caucus useful:
