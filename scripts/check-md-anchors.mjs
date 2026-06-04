@@ -32,12 +32,15 @@ function findMarkdown(dir) {
   return out;
 }
 
-// Markdown files in scope: root-level *.md and everything under docs/**.
+// Markdown files in scope: root-level *.md and everything under docs/**,
+// examples/** and packages/** — kept symmetric with link resolution so an
+// in-scope file linking into e.g. examples/ can't false-positive as
+// "target file not in scope".
 const FILES = [
   ...readdirSync(ROOT, { withFileTypes: true })
     .filter((e) => e.isFile() && e.name.endsWith(".md"))
     .map((e) => e.name),
-  ...findMarkdown("docs"),
+  ...["docs", "examples", "packages"].flatMap((dir) => findMarkdown(dir)),
 ].sort();
 
 /**
@@ -70,6 +73,10 @@ function slugsForFile(text) {
 
 // Match markdown inline links `[text](target)`. The target is captured up to
 // the first whitespace (which would begin an optional "title") or `)`.
+// Caveat: only inline links are validated — reference-style definitions
+// (`[id]: path#anchor`), link text with nested `[...]`, and setext
+// (underlined) headings are NOT covered. The repo currently has none of
+// these; if you add them, extend this checker.
 const LINK_RE = /\[(?:[^\]]*)\]\(\s*([^)\s]+)[^)]*\)/g;
 
 /** Build slug index for all in-scope files, keyed by repo-relative path. */
@@ -91,7 +98,14 @@ for (const file of FILES) {
       const hashAt = target.indexOf("#");
       if (hashAt === -1) continue; // no anchor → out of scope
       const pathPart = target.slice(0, hashAt);
-      const anchor = decodeURIComponent(target.slice(hashAt + 1));
+      let anchor;
+      try {
+        anchor = decodeURIComponent(target.slice(hashAt + 1));
+      } catch {
+        // Malformed percent-sequence (e.g. a stray `%`): treat the anchor as
+        // literal so it reports as a broken link instead of crashing the run.
+        anchor = target.slice(hashAt + 1);
+      }
 
       // Skip external links (the path part has a scheme like http: / mailto:).
       if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("//")) {
