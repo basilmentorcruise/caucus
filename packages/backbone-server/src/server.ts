@@ -13,12 +13,12 @@
  * CAU-13; until then anyone who can reach the port can post as any principal.
  * Do not bind it to a public interface.
  *
- * The HTTP method/route handlers that CAU-5 ships are `createChannel`,
- * `listChannels`, `describeChannel`, `subscribe`, `append`, and `readSince`.
- * `claim` is intentionally NOT served here — its route returns a clean
- * `not_implemented` (501) and the real handler lands in CAU-7. The
- * {@link import("./http-client.js").HttpBackbone} client DOES implement `claim`
- * fully so it is ready the moment the server route exists.
+ * The HTTP method/route handlers are `createChannel`, `listChannels`,
+ * `describeChannel`, `subscribe`, `append`, `readSince` (CAU-5/CAU-6), and
+ * `claim` (CAU-7). The claim route answers BOTH outcomes — `granted` and
+ * `already_claimed` — as normal 200 results (the conflict is a value carrying
+ * the holder, never an error envelope); the
+ * {@link import("./http-client.js").HttpBackbone} client mirrors this.
  */
 import { createServer as createHttpServer, type Server } from "node:http";
 
@@ -110,13 +110,6 @@ function methodNotAllowed(): DispatchResult {
     error: { code: "method_not_allowed", message: "method not allowed" },
   };
   return { status: 405, json: body };
-}
-
-function notImplemented(what: string): DispatchResult {
-  const body: WireErrorBody = {
-    error: { code: "not_implemented", message: `${what} is not implemented yet` },
-  };
-  return { status: 501, json: body };
 }
 
 function invalidRequest(message: string): DispatchResult {
@@ -228,9 +221,15 @@ export async function dispatch(
             return { status: 200, json: result };
           }
           case "claim": {
-            // CAU-7 owns the server-side claim handler. The CLIENT implements
-            // claim fully; until the route lands it returns a clean 501.
-            return notImplemented("claim");
+            // Structural guard only — the backbone validates message fields and
+            // enforces first-write-wins atomically. BOTH outcomes (`granted`
+            // and `already_claimed`) are normal 200 results, never errors: the
+            // conflict carries the holder, and the client maps it as a value
+            // (see http-client.ts / wire-errors.ts). Only validation/not-found
+            // failures throw, and those flow through the centralized mapper.
+            if (!isPlainObject(body)) return invalidRequest(BODY_MUST_BE_OBJECT);
+            const result = await backbone.claim(channel, body as unknown as MessageInput);
+            return { status: 200, json: result };
           }
           default:
             return notFound();
