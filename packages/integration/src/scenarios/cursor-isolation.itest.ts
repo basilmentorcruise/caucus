@@ -1,5 +1,6 @@
 /**
- * Integration scenario — per-client cursor isolation (CAU-25).
+ * Integration scenario — per-client cursor isolation (CAU-25), parameterized
+ * over BOTH connectors (CAU-7).
  *
  * Two clients each subscribe (mint their own cursor). Alice appends two
  * findings and bob claims a target → three messages on the shared log. EACH
@@ -7,39 +8,49 @@
  * order, exactly once; its cursor advances by exactly three; and a re-read from
  * the advanced cursor returns zero. Cursors are per-client variables owned by
  * the test, against one shared backbone.
+ *
+ * Runs in-process AND over HTTP — the claim in the middle of the log exercises
+ * the CAU-7 claim route over the wire alongside cursor isolation.
  */
 import type { Cursor } from "@caucus/backbone";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  httpConnector,
   inProcessConnector,
   type ClientHandle,
+  type Connector,
   claimMsg,
   finding,
 } from "../index.js";
 
 const CH = "incident-cursor";
 
-const connector = inProcessConnector();
-let alice: ClientHandle;
-let bob: ClientHandle;
+const CONNECTORS: ReadonlyArray<readonly [string, () => Connector]> = [
+  ["in-process", inProcessConnector],
+  ["http", httpConnector],
+];
 
-beforeAll(async () => {
-  await connector.boot();
-  alice = await connector.connectClient("alice");
-  bob = await connector.connectClient("bob");
-  await alice.backbone.createChannel({
-    channel: CH,
-    purpose: "cursor isolation",
-    created_by: "alice",
+describe.each(CONNECTORS)("cursor isolation — %s connector", (_name, makeConnector) => {
+  const connector = makeConnector();
+  let alice: ClientHandle;
+  let bob: ClientHandle;
+
+  beforeAll(async () => {
+    await connector.boot();
+    alice = await connector.connectClient("alice");
+    bob = await connector.connectClient("bob");
+    await alice.backbone.createChannel({
+      channel: CH,
+      purpose: "cursor isolation",
+      created_by: "alice",
+    });
   });
-});
 
-afterAll(async () => {
-  await connector.teardown();
-});
+  afterAll(async () => {
+    await connector.teardown();
+  });
 
-describe("cursor isolation (independent per-client cursors)", () => {
   it("both clients see all 3 messages in order, once; re-read returns 0", async () => {
     // Each client mints its own cursor at the (currently empty) head.
     const aliceCursor: Cursor = await alice.backbone.subscribe(CH);

@@ -135,18 +135,28 @@ describe("dispatch — routing", () => {
     expect(res.json).toMatchObject({ error: { code: "invalid_cursor" } });
   });
 
-  it("POST /channels/:channel/claim → 501 not_implemented (CAU-7)", async () => {
+  it("POST /channels/:channel/claim → 200 granted (CAU-7)", async () => {
     const bb = await seeded();
     const res = await dispatch(bb, "POST", "/channels/c1/claim", {
       type: "claim",
       agent_id: "a",
       owner: "alice",
-      msg_id: "01HZZZZZZZZZZZZZZZZZZZZZZZZ",
+      msg_id: newMsgId(),
       body: "claiming",
-      target: "t",
+      target: "db",
     });
-    expect(res.status).toBe(501);
-    expect(res.json).toMatchObject({ error: { code: "not_implemented" } });
+    expect(res.status).toBe(200);
+    const result = res.json as {
+      outcome: string;
+      cursor: number;
+      message: { type: string; target: string };
+    };
+    expect(result.outcome).toBe("granted");
+    // ADR-C5: the granted claim is appended in the same atomic step, so the
+    // head advances and the claim message is the new head.
+    expect(result.cursor).toBe(1);
+    expect(result.message.type).toBe("claim");
+    expect(result.message.target).toBe("db");
   });
 
   it("percent-encoded channel segment is decoded before lookup", async () => {
@@ -340,6 +350,89 @@ describe("dispatch — backbone errors map cleanly", () => {
     const body = res.json as { error: { code: string; issues?: string[] } };
     expect(body.error.code).toBe("invalid_message");
     expect(Array.isArray(body.error.issues)).toBe(true);
+  });
+});
+
+describe("dispatch — claim route (CAU-7)", () => {
+  /** A valid claim message body for `target`. */
+  function claimBody(target: string, over: Record<string, unknown> = {}) {
+    return {
+      type: "claim",
+      agent_id: "a",
+      owner: "alice",
+      msg_id: newMsgId(),
+      body: "claiming",
+      target,
+      ...over,
+    };
+  }
+
+  it("conflict is a 200 `already_claimed` RESULT carrying the holder, NOT an error envelope", async () => {
+    const bb = await seeded();
+    const first = await dispatch(bb, "POST", "/channels/c1/claim", claimBody("db"));
+    expect(first.status).toBe(200);
+    expect((first.json as { outcome: string }).outcome).toBe("granted");
+
+    // A second claim on the same target loses first-write-wins. The HTTP layer
+    // must surface this as a normal 200 value (the client maps it as a result,
+    // never a throw), and the value must identify the holder.
+    const second = await dispatch(
+      bb,
+      "POST",
+      "/channels/c1/claim",
+      claimBody("db", { agent_id: "b", owner: "bob" }),
+    );
+    expect(second.status).toBe(200);
+    const body = second.json as {
+      outcome: string;
+      by?: { agent_id: string; owner: string; ts: string; msg_id: string };
+      error?: unknown;
+    };
+    expect(body.error).toBeUndefined();
+    expect(body.outcome).toBe("already_claimed");
+    expect(body.by).toMatchObject({ agent_id: "a", owner: "alice" });
+    expect(typeof body.by?.ts).toBe("string");
+    expect(typeof body.by?.msg_id).toBe("string");
+  });
+
+  it("non-object claim body → 400 invalid_request (structural guard)", async () => {
+    const bb = await seeded();
+    for (const b of [undefined, 42, [], "str", null] as const) {
+      const res = await dispatch(bb, "POST", "/channels/c1/claim", b);
+      expect(res.status).toBe(400);
+      expect(res.json).toMatchObject({ error: { code: "invalid_request" } });
+    }
+  });
+
+  it("malformed claim message → 400 invalid_message with issues", async () => {
+    const bb = await seeded();
+    const res = await dispatch(
+      bb,
+      "POST",
+      "/channels/c1/claim",
+      claimBody("db", { msg_id: "not-a-ulid" }),
+    );
+    expect(res.status).toBe(400);
+    const body = res.json as { error: { code: string; issues?: string[] } };
+    expect(body.error.code).toBe("invalid_message");
+    expect(Array.isArray(body.error.issues)).toBe(true);
+  });
+
+  it("claim on an unknown channel → 404 unknown_channel", async () => {
+    const bb = new InMemoryBackbone();
+    const res = await dispatch(bb, "POST", "/channels/ghost/claim", claimBody("db"));
+    expect(res.status).toBe(404);
+    expect(res.json).toMatchObject({ error: { code: "unknown_channel" } });
+  });
+
+  it("a `claim`-typed message via /append is rejected (locks the transport split)", async () => {
+    // ADR-C5: claim messages must go through claim(), never append(). The
+    // backbone enforces this; this test locks that the HTTP append route does
+    // NOT become a side door for minting claim messages.
+    const bb = await seeded();
+    const res = await dispatch(bb, "POST", "/channels/c1/append", claimBody("db"));
+    expect(res.status).toBe(400);
+    expect(res.json).toMatchObject({ error: { code: "invalid_message" } });
   });
 });
 

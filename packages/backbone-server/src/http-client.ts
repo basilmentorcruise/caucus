@@ -152,8 +152,7 @@ export class HttpBackbone implements Backbone {
 
   async claim(channel: string, msg: MessageInput): Promise<ClaimResult> {
     // `already_claimed` is a normal 200 result, never a throw (see #request,
-    // which only throws on non-2xx). The server route is CAU-7; this client
-    // method is complete and will work the moment that route exists.
+    // which only throws on non-2xx).
     return (await this.#request(
       "POST",
       `/channels/${encodeURIComponent(channel)}/claim`,
