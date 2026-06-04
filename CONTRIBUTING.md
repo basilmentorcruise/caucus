@@ -17,7 +17,7 @@ Caucus runs a ticket-driven SDLC on GitHub Projects. The full playbook is in [do
 1. **Find a ticket** on the board that's `Ready` (acceptance criteria present, dependencies done).
 2. **Claim it** — self-assign so two people don't collide.
 3. **Branch:** `cau-<n>-<slug>` (e.g. `cau-7-claim-ledger`).
-4. **Build** — match the surrounding code's style; add tests; update docs if behavior changes.
+4. **Build** — match the surrounding code's style; add tests; update docs if behavior changes. **New workspace package?** It must carry a `tsconfig.test.json` (copy one from an existing package) — `pnpm typecheck` runs `tsc -p tsconfig.test.json` in every package and fails with TS5058 if it's missing.
 5. **Open a PR** — use the template, link the issue with `Closes #<n>`, tick the acceptance-criteria checklist.
 6. **Pass CI + review** — lint, typecheck, tests green; at least one approval.
 
