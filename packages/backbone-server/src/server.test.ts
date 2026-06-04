@@ -173,6 +173,94 @@ describe("dispatch — routing", () => {
   });
 });
 
+describe("dispatch — request-body coercion (CAU-6)", () => {
+  it("POST /channels with a missing / non-object body → 400 invalid_request", async () => {
+    const bb = new InMemoryBackbone();
+    for (const body of [undefined, 42, [], "str", null] as const) {
+      const res = await dispatch(bb, "POST", "/channels", body);
+      expect(res.status).toBe(400);
+      expect(res.json).toMatchObject({ error: { code: "invalid_request" } });
+    }
+  });
+
+  it("POST /channels/:c/append with a missing / non-object body → 400 invalid_request", async () => {
+    const bb = await seeded();
+    for (const body of [undefined, 42, [], "str", null] as const) {
+      const res = await dispatch(bb, "POST", "/channels/c1/append", body);
+      expect(res.status).toBe(400);
+      expect(res.json).toMatchObject({ error: { code: "invalid_request" } });
+    }
+  });
+
+  it("POST /channels/:c/read with no body defaults to {} → invalid_cursor 400 (locks current behavior)", async () => {
+    const bb = await seeded();
+    const res = await dispatch(bb, "POST", "/channels/c1/read", undefined);
+    expect(res.status).toBe(400);
+    expect(res.json).toMatchObject({ error: { code: "invalid_cursor" } });
+  });
+
+  it("POST /channels/:c/read with a present non-object body → 400 invalid_request", async () => {
+    const bb = await seeded();
+    for (const body of [42, [], "str", null] as const) {
+      const res = await dispatch(bb, "POST", "/channels/c1/read", body);
+      expect(res.status).toBe(400);
+      expect(res.json).toMatchObject({ error: { code: "invalid_request" } });
+    }
+  });
+
+  it('read with a bad limit (0 / -1 / 1.5 / "2") → 400 invalid_cursor', async () => {
+    const bb = await seeded();
+    for (const limit of [0, -1, 1.5, "2"] as const) {
+      const res = await dispatch(bb, "POST", "/channels/c1/read", {
+        cursor: 0,
+        limit,
+      });
+      expect(res.status).toBe(400);
+      expect(res.json).toMatchObject({ error: { code: "invalid_cursor" } });
+    }
+  });
+
+  it("read with a valid limit on a multi-message log → limited slice + advanced cursor", async () => {
+    const bb = await seeded();
+    for (let i = 0; i < 5; i += 1) {
+      await bb.append("c1", {
+        type: "finding",
+        agent_id: "a",
+        owner: "alice",
+        msg_id: newMsgId(),
+        body: `m${i}`,
+      });
+    }
+    const res = await dispatch(bb, "POST", "/channels/c1/read", {
+      cursor: 0,
+      limit: 2,
+    });
+    expect(res.status).toBe(200);
+    const result = res.json as { messages: unknown[]; cursor: number };
+    expect(result.messages).toHaveLength(2);
+    expect(result.cursor).toBe(2);
+  });
+
+  it("a valid createChannel / append body still succeeds (happy-path regression)", async () => {
+    const bb = new InMemoryBackbone();
+    const created = await dispatch(bb, "POST", "/channels", {
+      channel: "c1",
+      purpose: "p",
+      created_by: "alice",
+    });
+    expect(created.status).toBe(201);
+    const appended = await dispatch(bb, "POST", "/channels/c1/append", {
+      type: "finding",
+      agent_id: "a",
+      owner: "alice",
+      msg_id: newMsgId(),
+      body: "found it",
+    });
+    expect(appended.status).toBe(201);
+    expect(appended.json).toMatchObject({ cursor: 1 });
+  });
+});
+
 describe("dispatch — not found / method not allowed", () => {
   it("unknown top-level path → 404 not_found", async () => {
     const bb = new InMemoryBackbone();

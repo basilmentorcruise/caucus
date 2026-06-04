@@ -26,3 +26,17 @@ export const STATUS_VALUES = ["needs-response", "resolved", "fyi"] as const;
  * number.
  */
 export const INJECTED_DELTA_CAP_CHARS = 8000 as const;
+
+/**
+ * Cap on the number of *unknown-field* issues `validate` reports for a single
+ * message (CAU-6).
+ *
+ * The unknown-key scan pushes one issue per unrecognized top-level field, which
+ * is otherwise unbounded: a near-max body packed with thousands of unknown keys
+ * would inflate the validation error far beyond the offending body itself. After
+ * this many unknown-field issues, `validate` stops collecting individual names
+ * and appends a single "…and N more unknown fields" summary. Only the
+ * unknown-key loop is capped — every other check targets a fixed field set and
+ * is inherently bounded.
+ */
+export const MAX_REPORTED_ISSUES = 10 as const;
