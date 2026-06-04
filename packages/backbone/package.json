@@ -16,5 +16,8 @@
   "files": ["dist"],
   "scripts": {
     "build": "tsc --build"
+  },
+  "dependencies": {
+    "@caucus/schema": "workspace:*"
   }
 }

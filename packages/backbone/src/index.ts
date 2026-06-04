@@ -1,13 +1,29 @@
 /**
- * @caucus/backbone — Channel service: append-only log, claim ledger, cursors, seatbelts.
+ * @caucus/backbone — the channel service behind one implementation-agnostic
+ * interface: append-only log, first-write-wins claim ledger, and cursors.
  *
- * Placeholder only. Real behavior arrives in later tickets; this package
- * currently exports just its identity so the workspace and coverage gate have
- * something to exercise.
+ * CAU-4 ships the contract (`Backbone` + envelope types), the error taxonomy,
+ * and the `InMemoryBackbone` reference implementation. Durability (SQLite), the
+ * MCP transport, seatbelts, identity anchoring, and lease enforcement arrive in
+ * later tickets (CAU-5/6/7/18). Normative semantics: `docs/BACKBONE_CONTRACT.md`.
  */
-export const PACKAGE_NAME = "@caucus/backbone" as const;
-
-/** Returns the package name. Trivial placeholder used to seed the coverage gate. */
-export function packageName(): typeof PACKAGE_NAME {
-  return PACKAGE_NAME;
-}
+export type {
+  AppendedMessage,
+  AppendResult,
+  Backbone,
+  ChannelDescriptor,
+  ClaimResult,
+  CreateChannelOptions,
+  Cursor,
+  ReadResult,
+  Verbosity,
+} from "./contract.js";
+export {
+  BackboneError,
+  ChannelExistsError,
+  InvalidChannelNameError,
+  InvalidCursorError,
+  InvalidMessageError,
+  UnknownChannelError,
+} from "./errors.js";
+export { InMemoryBackbone, MAX_BODY_CHARS } from "./in-memory.js";
