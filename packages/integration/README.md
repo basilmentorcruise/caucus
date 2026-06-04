@@ -26,8 +26,12 @@ in-process today and over HTTP/MCP later.
   `teardown()`. `connectClient` returns a `ClientHandle { id, backbone }`; every
   handle from one boot wraps the **same** backbone instance (shared log +
   claim ledger), which is what makes multi-client assertions meaningful.
-- `inProcessConnector()` (`src/connectors/in-process.ts`) — the only
-  implementation today: one `InMemoryBackbone`.
+- `inProcessConnector()` (`src/connectors/in-process.ts`) — one
+  `InMemoryBackbone`, in this process (zero network).
+- `httpConnector()` (`src/connectors/http.ts`, CAU-5) — boots a real
+  `@caucus/backbone-server` on an ephemeral port; each `connectClient` returns a
+  handle whose `backbone` is an `HttpBackbone` pointed at that server, so the
+  clients share the one server's log/ledger **over the wire**.
 - `Scenario` (`src/scenario.ts`) + `runScenarios()` (`src/harness.ts`) — a
   programmatic runner that boots a connector, runs scenarios, and **always**
   tears down in a `finally`.
@@ -56,9 +60,16 @@ Conventions that keep scenarios correct:
 - Claims go through `claim()` (`type: "claim"` + non-empty `target`); `append()`
   rejects claim-typed messages.
 
+The `channels-join.itest.ts` scenario (CAU-5) runs over the `httpConnector` and
+covers the CAU-5 acceptance criteria end-to-end (create + 3-client join,
+descriptor/list correctness, mid-session join). The claim/cursor scenarios run
+in-process because they exercise `claim()`, whose server-side route is CAU-7;
+they will be parameterized over HTTP once that route lands.
+
 ## Adding a connector
 
-Implement `Connector` (e.g. `src/connectors/http.ts` booting the MCP server and
-returning handles whose `backbone` is a remote client). The existing scenarios
-are written against the interface, so they run unchanged on the new connector
-once you point them at it.
+Implement `Connector` — see `src/connectors/http.ts` (CAU-5), which boots the
+HTTP backbone server and returns handles whose `backbone` is an `HttpBackbone`.
+The existing scenarios are written against the interface, so they run unchanged
+on a new connector once you point them at it (subject to the connector serving
+the operations the scenario uses).

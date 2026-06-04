@@ -1,0 +1,17 @@
+{
+  // Typecheck-only config for *.test.ts / *.spec.ts (mirrors backbone/integration).
+  //
+  // The build tsconfig.json EXCLUDES test files so they never leak into `dist`;
+  // this config re-includes them and type-checks with `noEmit`, so the root
+  // `typecheck` step (`pnpm -r exec tsc -p tsconfig.test.json`) covers tests too.
+  // It is never part of the `tsc --build` graph. REQUIRED — without it the root
+  // typecheck fails with TS5058 for this package.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "incremental": false
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["dist"]
+}
