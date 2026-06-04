@@ -4,6 +4,7 @@
     { "path": "./packages/schema" },
     { "path": "./packages/backbone" },
     { "path": "./packages/mcp-server" },
-    { "path": "./packages/hook" }
+    { "path": "./packages/hook" },
+    { "path": "./packages/integration" }
   ]
 }

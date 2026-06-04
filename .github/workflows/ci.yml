@@ -47,3 +47,10 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      # Cross-package integration harness (CAU-25): boots the backbone + ≥2
+      # clients and runs the concurrent-claim / cursor scenarios. Kept inside
+      # this single job so branch protection's existing required check still
+      # covers it (no new job / check name).
+      - name: Integration harness
+        run: pnpm test:integration

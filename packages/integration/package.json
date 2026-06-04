@@ -1,0 +1,15 @@
+{
+  "name": "@caucus/integration",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Cross-package integration-test harness: boots the backbone + ≥2 clients (CAU-25).",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "@caucus/backbone": "workspace:*",
+    "@caucus/schema": "workspace:*"
+  }
+}
