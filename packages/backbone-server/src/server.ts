@@ -126,6 +126,14 @@ function invalidRequest(message: string): DispatchResult {
   return { status: 400, json: body };
 }
 
+/** A non-null, non-array object — the only structurally valid JSON request body. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Reusable 400 for a body that is absent or not a JSON object. */
+const BODY_MUST_BE_OBJECT = "request body must be a JSON object";
+
 /**
  * Pure request dispatch — NO sockets. Given a method, path, and already-parsed
  * JSON body (or `undefined` when there was no body), call the backbone and
@@ -160,8 +168,13 @@ export async function dispatch(
       // /channels
       if (segments.length === 1) {
         if (method === "POST") {
+          // Reject a structurally impossible body (undefined / array / scalar)
+          // at the transport with a typed 400, before it reaches the backbone
+          // as a raw `TypeError` → generic 500. The backbone remains the single
+          // SEMANTIC validation authority; this only guards the body's shape.
+          if (!isPlainObject(body)) return invalidRequest(BODY_MUST_BE_OBJECT);
           const descriptor = await backbone.createChannel(
-            body as Parameters<Backbone["createChannel"]>[0],
+            body as unknown as Parameters<Backbone["createChannel"]>[0],
           );
           return { status: 201, json: descriptor };
         }
@@ -194,10 +207,19 @@ export async function dispatch(
             return { status: 200, json: { cursor } };
           }
           case "append": {
-            const result = await backbone.append(channel, body as MessageInput);
+            // Structural guard only — the backbone validates message fields.
+            if (!isPlainObject(body)) return invalidRequest(BODY_MUST_BE_OBJECT);
+            const result = await backbone.append(channel, body as unknown as MessageInput);
             return { status: 201, json: result };
           }
           case "read": {
+            // A missing body coerces to `{}` (→ cursor undefined →
+            // invalid_cursor 400 at the backbone, the established behavior). A
+            // PRESENT-but-non-object body (array / scalar) is structurally
+            // impossible and rejected here as invalid_request.
+            if (body !== undefined && !isPlainObject(body)) {
+              return invalidRequest(BODY_MUST_BE_OBJECT);
+            }
             const { cursor, limit } = (body ?? {}) as {
               cursor: Cursor;
               limit?: number;

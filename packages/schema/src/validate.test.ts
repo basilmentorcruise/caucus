@@ -5,6 +5,7 @@ import {
   SchemaError,
   UnsupportedVersionError,
 } from "./errors.js";
+import { MAX_REPORTED_ISSUES } from "./constants.js";
 import { validate } from "./validate.js";
 
 /** A minimal valid v0 message (already version-stamped). */
@@ -62,6 +63,30 @@ describe("validate — structural", () => {
 
   it("rejects an unknown top-level key", () => {
     expectIssue({ ...validNote(), bogus: 1 }, 'unknown field "bogus"');
+  });
+
+  it("caps unknown-field issues at MAX_REPORTED_ISSUES + 1 summary (CAU-6)", () => {
+    const msg = validNote();
+    const UNKNOWN = 50;
+    for (let i = 0; i < UNKNOWN; i += 1) {
+      msg[`extra_${i}`] = i;
+    }
+    try {
+      validate(msg);
+      expect.unreachable("validate should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(MalformedMessageError);
+      const issues = (err as MalformedMessageError).issues;
+      // At most MAX_REPORTED_ISSUES named fields + one summary line. Every other
+      // check passes for a valid note, so the only issues are unknown-field ones.
+      expect(issues.length).toBeLessThanOrEqual(MAX_REPORTED_ISSUES + 1);
+      const named = issues.filter((i) => i.startsWith("unknown field"));
+      expect(named).toHaveLength(MAX_REPORTED_ISSUES);
+      // The last issue summarizes the remainder rather than naming a field.
+      expect(issues[issues.length - 1]).toBe(
+        `…and ${UNKNOWN - MAX_REPORTED_ISSUES} more unknown fields`,
+      );
+    }
   });
 
   it("rejects a wrong v at the field layer", () => {

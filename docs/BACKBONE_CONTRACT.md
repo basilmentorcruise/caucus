@@ -4,7 +4,7 @@
 
 The backbone holds the shared state of a war room behind one interface so the implementation is swappable: the in-memory reference, a future SQLite-durable build, or an adapter. This document is the **normative** specification of that interface's semantics. The TypeScript types live in `packages/backbone/src/contract.ts`; the error taxonomy in `errors.ts`; the reference implementation in `in-memory.ts`.
 
-The backbone owns only the **log + claim ledger + cursors**. It does NOT define the message shape (that is [`@caucus/schema`](MESSAGE_SCHEMA.md)), and in v0 it does NOT do identity anchoring, seatbelts, or lease enforcement (CAU-6/7/18).
+The backbone owns only the **log + claim ledger + cursors**. It does NOT define the message shape (that is [`@caucus/schema`](MESSAGE_SCHEMA.md)), and in v0 it does NOT do identity anchoring, seatbelts, or lease enforcement (CAU-8/9/18).
 
 ## The interface
 
@@ -83,10 +83,11 @@ A **claim conflict is not in this table** — it is the `already_claimed` result
 - **Short free-text fields:** the claim `target`, the channel `purpose`, and every `to[]` entry are short identifiers/descriptions, not payloads, so they are capped at `MAX_FIELD_CHARS` (1024) — well below the `body` cap. The `target` cap also bounds the otherwise-unbounded ledger key. Over-cap values are rejected with `InvalidMessageError`.
 - **`append()`** rejects `type:"claim"` messages — `claim()` is the only ledger path.
 - **`claim()`** requires `type:"claim"` and a target that is non-empty after `normalizeTarget` and `<= MAX_FIELD_CHARS`.
+- **HTTP request body (transport, CAU-5/6):** `POST /channels` and `POST /channels/:c/append` require a JSON-object body — a missing or non-object body (array / scalar) is rejected at the transport with a typed `invalid_request` 400 *before* the backbone, rather than surfacing as a generic 500. `POST /channels/:c/read` coerces a missing body to `{}` (→ `invalid_cursor`), but rejects a present-but-non-object body the same way. This is a structural guard only; the backbone remains the single authority for semantic field validation.
 
 ## Out of scope for v0 (later tickets)
 
-No HTTP/MCP transport (CAU-5), no SQLite durability, no seatbelts/rate-limit (CAU-6), no identity anchoring (CAU-7), no lease/heartbeat enforcement (CAU-18). The schema ships `lease_ttl`/`heartbeat` fields, but the backbone enforces first-write-wins only.
+No HTTP/MCP transport (CAU-5), no SQLite durability, no seatbelts/rate-limit (CAU-8), no identity anchoring (CAU-9), no lease/heartbeat enforcement (CAU-18). The schema ships `lease_ttl`/`heartbeat` fields, but the backbone enforces first-write-wins only.
 
-- **Identity is trusted input.** The backbone does **not** authenticate `agent_id`/`owner`; the caller MUST anchor `agent_id`/`owner` before calling `append`/`claim`, and the backbone treats them as trusted input (CAU-7/CAU-9). It validates shape, never provenance.
-- **Unbounded growth is a seatbelt concern (CAU-6).** `readSince` has no maximum `limit`, the channel count is unbounded, and a channel's log grows without bound (the per-field caps above bound individual messages, not totals). These resource limits — max `limit`, channel/log caps, retention — are **CAU-6 seatbelt** items, not v0 backbone behavior.
+- **Identity is trusted input.** The backbone does **not** authenticate `agent_id`/`owner`; the caller MUST anchor `agent_id`/`owner` before calling `append`/`claim`, and the backbone treats them as trusted input (CAU-9/CAU-13). It validates shape, never provenance.
+- **Unbounded growth is a seatbelt concern (CAU-8).** `readSince` has no maximum `limit`, the channel count is unbounded, and a channel's log grows without bound (the per-field caps above bound individual messages, not totals). These resource limits — max `limit`, channel/log caps, retention — are **CAU-8 seatbelt** items, not v0 backbone behavior.

@@ -6,7 +6,7 @@
  * rejected, claim-only fields are rejected on non-claim types, and `target` is
  * required on `claim`. All problems are collected and thrown together.
  */
-import { MESSAGE_TYPES, STATUS_VALUES } from "./constants.js";
+import { MAX_REPORTED_ISSUES, MESSAGE_TYPES, STATUS_VALUES } from "./constants.js";
 import { MalformedMessageError } from "./errors.js";
 import type { CaucusMessage } from "./types.js";
 import { isUlid } from "./ulid.js";
@@ -55,11 +55,22 @@ export function validate(value: unknown): asserts value is CaucusMessage {
     throw new MalformedMessageError(["message must be a JSON object"]);
   }
 
-  // Unknown top-level keys.
+  // Unknown top-level keys. The number of unknown fields is attacker-controlled
+  // (one issue each is otherwise unbounded), so report at most
+  // MAX_REPORTED_ISSUES individually, then a single summary line — the error
+  // can never dwarf the body that caused it (CAU-6).
+  let unknownReported = 0;
+  let unknownTotal = 0;
   for (const key of Object.keys(value)) {
-    if (!ALLOWED_KEYS.has(key)) {
+    if (ALLOWED_KEYS.has(key)) continue;
+    unknownTotal += 1;
+    if (unknownReported < MAX_REPORTED_ISSUES) {
       issues.push(`unknown field "${key}"`);
+      unknownReported += 1;
     }
+  }
+  if (unknownTotal > unknownReported) {
+    issues.push(`…and ${unknownTotal - unknownReported} more unknown fields`);
   }
 
   // `v` must be exactly the supported version (the gate should guarantee this,
