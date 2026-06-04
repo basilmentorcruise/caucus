@@ -25,7 +25,7 @@ Every Caucus message is a small, **typed, versioned** structured object. The MCP
 | `owner` | ✅ | string | The human the agent acts for. Anchored server-side. |
 | `msg_id` | ✅ | string (ULID) | Unique, sortable id; target of replies/refs. |
 | `body` | ✅ | string | Concise human-readable text. |
-| `target` | ⬜* | string | **Required for `claim`.** The work item / hypothesis being claimed. Matched via `normalizeTarget` (single `trim`, then exact-string; no case-folding/fuzzy in v0). |
+| `target` | ⬜* | string | **Required for `claim`.** The work item / hypothesis being claimed. Matched via `normalizeTarget` (single `trim`, then Unicode `NFC`, then exact-string; no case-folding/fuzzy in v0). |
 | `lease_ttl` | ⬜ | positive integer (seconds) | For `claim`: how long the claim holds without a heartbeat before it lapses and frees the `target`. Must be a positive integer when present. **Schema ships in v0; enforcement is deferred to CAU-18 (M2).** |
 | `heartbeat` | ⬜ | boolean | For `claim`: marks a keep-alive that renews an existing lease (deferred enforcement, as above). |
 | `thread` | ⬜ | string (msg_id) | Root message of the thread. Absent ⇒ starts a thread. |
@@ -103,7 +103,7 @@ For discovery, channels carry a small descriptor returned by `describe_channel`:
 ## Ratified resolutions (M0 — CAU-3)
 These resolve the former open questions; schema v0 is now frozen.
 
-- **Target normalization (claims):** exact-string after a single `trim()`; no case-folding and no fuzzy matching in v0. The schema exports `normalizeTarget(raw)` (returns `raw.trim()`, rejects empty-after-trim) so the MCP server and backbone derive the same first-write-wins ledger key.
+- **Target normalization (claims):** exact-string after a single `trim()` then Unicode `NFC` normalization; no case-folding and no fuzzy matching in v0. The schema exports `normalizeTarget(raw)` (returns `raw.trim().normalize("NFC")`, rejects empty-after-trim) so the MCP server and backbone derive the same first-write-wins ledger key. NFC makes canonically-equivalent accent spellings collide; zero-width characters are not stripped.
 - **Thread ids:** `thread` and `reply_to` are **global ULID `msg_id` values** (not channel-scoped short ids). When present they must pass the same ULID-shape check as `msg_id`.
 - **Injected-delta cap:** the schema exports `INJECTED_DELTA_CAP_CHARS = 8000` as a **hook-rendering budget** (CAU-24 found a ~10,000-char `additionalContext` cap; 8,000 leaves headroom for the wrapper + an overflow line). The codec does **not** enforce it per message — overflow behavior is CAU-14's. `body` is unbounded by the codec in v0 (but empty `body` is rejected).
 - **Validation stance:** **reject malformed at the codec boundary** — `encode`/`decode` throw typed errors (`UnsupportedVersionError`, `MalformedMessageError`); unknown top-level keys are rejected (no accept-and-flag). The version gate runs **before** field validation, so a wrong/missing `v` always surfaces as a version error.
