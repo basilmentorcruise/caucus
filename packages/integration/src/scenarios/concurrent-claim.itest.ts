@@ -1,5 +1,5 @@
 /**
- * Integration scenario 1 — concurrent claim across multiple clients (CAU-25).
+ * Integration scenario — concurrent claim across multiple clients (CAU-25).
  *
  * Several distinct client handles onto the SAME backbone race to `claim()` the
  * same target via `Promise.all`. First-write-wins must hold across clients:

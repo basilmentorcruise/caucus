@@ -1,5 +1,5 @@
 /**
- * Integration scenario 3 — subscribe mints at head; cross-client claim-grant
+ * Integration scenario — subscribe mints at head; cross-client claim-grant
  * visibility (CAU-25, ADR-C5).
  *
  * Alice appends a finding BEFORE bob subscribes. Bob's subscription mints at the

@@ -1,5 +1,5 @@
 /**
- * Integration scenario 2 — per-client cursor isolation (CAU-25).
+ * Integration scenario — per-client cursor isolation (CAU-25).
  *
  * Two clients each subscribe (mint their own cursor). Alice appends two
  * findings and bob claims a target → three messages on the shared log. EACH
