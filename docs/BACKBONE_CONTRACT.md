@@ -89,5 +89,5 @@ A **claim conflict is not in this table** — it is the `already_claimed` result
 
 No HTTP/MCP transport (CAU-5), no SQLite durability, no seatbelts/rate-limit (CAU-8), no identity anchoring (CAU-9), no lease/heartbeat enforcement (CAU-18). The schema ships `lease_ttl`/`heartbeat` fields, but the backbone enforces first-write-wins only.
 
-- **Identity is trusted input.** The backbone does **not** authenticate `agent_id`/`owner`; the caller MUST anchor `agent_id`/`owner` before calling `append`/`claim`, and the backbone treats them as trusted input (CAU-7/CAU-9). It validates shape, never provenance.
+- **Identity is trusted input.** The backbone does **not** authenticate `agent_id`/`owner`; the caller MUST anchor `agent_id`/`owner` before calling `append`/`claim`, and the backbone treats them as trusted input (CAU-9/CAU-13). It validates shape, never provenance.
 - **Unbounded growth is a seatbelt concern (CAU-8).** `readSince` has no maximum `limit`, the channel count is unbounded, and a channel's log grows without bound (the per-field caps above bound individual messages, not totals). These resource limits — max `limit`, channel/log caps, retention — are **CAU-8 seatbelt** items, not v0 backbone behavior.
