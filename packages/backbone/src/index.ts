@@ -26,4 +26,4 @@ export {
   InvalidMessageError,
   UnknownChannelError,
 } from "./errors.js";
-export { InMemoryBackbone, MAX_BODY_CHARS } from "./in-memory.js";
+export { InMemoryBackbone, MAX_BODY_CHARS, MAX_FIELD_CHARS } from "./in-memory.js";

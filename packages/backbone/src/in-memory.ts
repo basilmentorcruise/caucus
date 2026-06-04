@@ -45,6 +45,33 @@ import {
 /** Maximum number of characters allowed in a message `body` at the boundary. */
 export const MAX_BODY_CHARS = 16_000;
 
+/**
+ * Maximum number of characters allowed in each short free-text identifier
+ * field stored by the backbone: a claim `target` (also the unbounded ledger
+ * key), a channel `purpose`, and every `to[]` entry. These are short
+ * identifiers / descriptions, not payloads, so they get a much tighter cap than
+ * `body`.
+ */
+export const MAX_FIELD_CHARS = 1_024;
+
+/**
+ * Recursively `Object.freeze` a value and every nested object/array it owns, so
+ * a stored log message (and every reference handed back to a caller) is deeply
+ * immutable. This is the in-memory equivalent of a durable store handing back a
+ * fresh row: callers must never be able to mutate the log by holding a returned
+ * message. Cheaper than `structuredClone` since the stored object IS the
+ * returned one. Returns its argument for convenient inline use.
+ */
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const v of Object.values(value as Record<string, unknown>)) {
+      deepFreeze(v);
+    }
+  }
+  return value;
+}
+
 /** Channel slug grammar (lowercase alnum, internal hyphens, 1–64 chars). */
 const CHANNEL_NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
@@ -79,13 +106,21 @@ export class InMemoryBackbone implements Backbone {
    * Monotonic counter backing the `ts` stamp. Bare `Date.toISOString()` ties
    * under a tight loop (same millisecond), which would break the
    * strictly-increasing `ts` guarantee; we append a zero-padded sequence so each
-   * stamp is unique and ordered. The result is still a sortable ISO-ish string.
+   * stamp is unique and ordered.
    */
   #seq = 0;
 
   /**
    * Produce a server-monotonic timestamp. Strictly increasing across calls,
    * independent of clock resolution.
+   *
+   * The returned string is an opaque monotonic stamp, NOT a parseable
+   * ISO-8601 instant: it has a `#<seq>` suffix, so `Date.parse(ts)` is `NaN`.
+   * Do not parse it as a date. Lexical (string) sort agrees with append order
+   * only because the sequence is zero-padded to a fixed 12 digits — that pad
+   * width is the lexical-sort bound (it overflows past 1e12 appends per
+   * process). Even so, the authoritative ordering is the cursor / log index,
+   * not a `ts` string comparison; `ts` ordering is a convenience.
    */
   #stamp(): string {
     const seq = (++this.#seq).toString().padStart(12, "0");
@@ -134,6 +169,26 @@ export class InMemoryBackbone implements Backbone {
         `body exceeds ${MAX_BODY_CHARS} characters`,
       ]);
     }
+    // Short free-text identifier fields get a tight cap so an oversized
+    // `target` (the unbounded ledger key) or `to[]` entry can't be stored.
+    if (
+      msg.type === "claim" &&
+      typeof msg.target === "string" &&
+      msg.target.length > MAX_FIELD_CHARS
+    ) {
+      throw new InvalidMessageError([
+        `target exceeds ${MAX_FIELD_CHARS} characters`,
+      ]);
+    }
+    if (Array.isArray(msg.to)) {
+      for (const recipient of msg.to) {
+        if (typeof recipient === "string" && recipient.length > MAX_FIELD_CHARS) {
+          throw new InvalidMessageError([
+            `to[] entry exceeds ${MAX_FIELD_CHARS} characters`,
+          ]);
+        }
+      }
+    }
     return stamped;
   }
 
@@ -144,7 +199,15 @@ export class InMemoryBackbone implements Backbone {
    * section.
    */
   #appendSync(state: ChannelState, message: CaucusMessage): AppendedMessage {
-    const appended: AppendedMessage = { ...message, ts: this.#stamp() };
+    // Deep-freeze BEFORE push so the single stored object — which is also the
+    // exact reference returned to callers and re-handed by `readSince` — is
+    // immutable. This upholds the contract's log-immutability guarantee
+    // (see AppendedMessage / ReadResult TSDoc and docs/BACKBONE_CONTRACT.md):
+    // a caller holding a returned message cannot mutate the stored log.
+    const appended = deepFreeze({
+      ...message,
+      ts: this.#stamp(),
+    }) as AppendedMessage;
     state.log.push(appended);
     state.descriptor.head = state.log.length;
     return appended;
@@ -156,6 +219,16 @@ export class InMemoryBackbone implements Backbone {
     this.#assertChannelName(opts.channel);
     if (this.#channels.has(opts.channel)) {
       throw new ChannelExistsError(opts.channel);
+    }
+    // `purpose` is a short free-text description stored on the descriptor; cap
+    // it like the other identifier fields so a 2MB purpose can't be stored.
+    if (
+      typeof opts.purpose === "string" &&
+      opts.purpose.length > MAX_FIELD_CHARS
+    ) {
+      throw new InvalidMessageError([
+        `purpose exceeds ${MAX_FIELD_CHARS} characters`,
+      ]);
     }
     const state: ChannelState = {
       descriptor: {

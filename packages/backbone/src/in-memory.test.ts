@@ -14,6 +14,7 @@ import {
   InvalidCursorError,
   InvalidMessageError,
   MAX_BODY_CHARS,
+  MAX_FIELD_CHARS,
   UnknownChannelError,
 } from "./index.js";
 
@@ -92,6 +93,31 @@ describe("claim — first-write-wins", () => {
   it("does NOT collide on case-differing targets (no case-fold)", async () => {
     const first = await b.claim(CH, claim("a1", "Payments"));
     const second = await b.claim(CH, claim("a2", "payments"));
+    expect(first.outcome).toBe("granted");
+    expect(second.outcome).toBe("granted");
+    expect((await b.describeChannel(CH)).head).toBe(2);
+  });
+
+  it("collides on NFC- vs NFD-spelled targets (Unicode-normalized key)", async () => {
+    // Precomposed "café" (caf + U+00E9) vs decomposed "cafe" + U+0301.
+    const nfc = "caf\u00e9"; // precomposed
+    const nfd = "cafe\u0301"; // decomposed: e + combining acute
+    expect(nfc).not.toBe(nfd); // distinct code-point sequences
+    const first = await b.claim(CH, claim("a1", nfc));
+    const second = await b.claim(CH, claim("a2", nfd));
+    expect(first.outcome).toBe("granted");
+    expect(second.outcome).toBe("already_claimed");
+    if (second.outcome === "already_claimed" && first.outcome === "granted") {
+      expect(second.by.msg_id).toBe(first.message.msg_id);
+    }
+    expect((await b.describeChannel(CH)).head).toBe(1);
+  });
+
+  it("does NOT collide across a zero-width character (accepted v0 behavior)", async () => {
+    const plain = "payments";
+    const withZwsp = "pay\u200bments";
+    const first = await b.claim(CH, claim("a1", plain));
+    const second = await b.claim(CH, claim("a2", withZwsp));
     expect(first.outcome).toBe("granted");
     expect(second.outcome).toBe("granted");
     expect((await b.describeChannel(CH)).head).toBe(2);
@@ -233,6 +259,128 @@ describe("channels", () => {
     const sorted = [...stamps].sort();
     expect(stamps).toEqual(sorted);
     expect(new Set(stamps).size).toBe(stamps.length);
+  });
+});
+
+describe("log immutability (returned references are frozen)", () => {
+  it("a returned AppendResult.message is frozen and cannot mutate the log", async () => {
+    const res = await b.append(CH, finding("a1", "original"));
+    const msg = res.message;
+    expect(Object.isFrozen(msg)).toBe(true);
+    // Mutating any field throws in strict mode (test files are ESM = strict).
+    expect(() => {
+      (msg as { owner: string }).owner = "mallory";
+    }).toThrow(TypeError);
+    expect(() => {
+      (msg as { body: string }).body = "tampered";
+    }).toThrow(TypeError);
+    expect(() => {
+      (msg as { ts: string }).ts = "0";
+    }).toThrow(TypeError);
+    // A subsequent read shows the stored log unchanged.
+    const read = await b.readSince(CH, 0);
+    expect(read.messages[0]?.owner).toBe("alice");
+    expect(read.messages[0]?.body).toBe("original");
+  });
+
+  it("a message read back via readSince is frozen too", async () => {
+    await b.append(CH, finding("a1", "kept"));
+    const read = await b.readSince(CH, 0);
+    const msg = read.messages[0]!;
+    expect(Object.isFrozen(msg)).toBe(true);
+    expect(() => {
+      (msg as { body: string }).body = "nope";
+    }).toThrow(TypeError);
+    const reread = await b.readSince(CH, 0);
+    expect(reread.messages[0]?.body).toBe("kept");
+  });
+
+  it("deep-freezes nested fields so to[] cannot be mutated", async () => {
+    const withTo: MessageInput = {
+      type: "finding",
+      agent_id: "a1",
+      owner: "alice",
+      msg_id: newMsgId(),
+      body: "addressed",
+      to: ["a2"],
+    };
+    const res = await b.append(CH, withTo);
+    const to = res.message.to as string[];
+    expect(Object.isFrozen(to)).toBe(true);
+    expect(() => {
+      to.push("a3");
+    }).toThrow(TypeError);
+    expect(() => {
+      to[0] = "a9";
+    }).toThrow(TypeError);
+    const read = await b.readSince(CH, 0);
+    expect(read.messages[0]?.to).toEqual(["a2"]);
+  });
+
+  it("a granted claim message is frozen and cannot mutate the log", async () => {
+    const res = await b.claim(CH, claim("alice", "db-shard-7"));
+    expect(res.outcome).toBe("granted");
+    if (res.outcome !== "granted") return;
+    const msg = res.message;
+    expect(Object.isFrozen(msg)).toBe(true);
+    expect(() => {
+      (msg as { owner: string }).owner = "mallory";
+    }).toThrow(TypeError);
+    expect(() => {
+      (msg as { target: string }).target = "something-else";
+    }).toThrow(TypeError);
+    const read = await b.readSince(CH, 0);
+    expect(read.messages[0]?.owner).toBe("alice");
+    expect(read.messages[0]?.target).toBe("db-shard-7");
+    expect(read.messages[0]?.type).toBe("claim");
+  });
+});
+
+describe("field size caps", () => {
+  it("accepts a target at the cap and rejects one over it", async () => {
+    const atCap = await b.claim(CH, claim("a1", "t".repeat(MAX_FIELD_CHARS)));
+    expect(atCap.outcome).toBe("granted");
+    await expect(
+      b.claim(CH, claim("a2", "t".repeat(MAX_FIELD_CHARS + 1))),
+    ).rejects.toBeInstanceOf(InvalidMessageError);
+  });
+
+  it("accepts a purpose at the cap and rejects one over it", async () => {
+    const ok = await b.createChannel({
+      channel: "cap-ok",
+      purpose: "p".repeat(MAX_FIELD_CHARS),
+      created_by: "alice",
+    });
+    expect(ok.channel).toBe("cap-ok");
+    await expect(
+      b.createChannel({
+        channel: "cap-bad",
+        purpose: "p".repeat(MAX_FIELD_CHARS + 1),
+        created_by: "alice",
+      }),
+    ).rejects.toBeInstanceOf(InvalidMessageError);
+  });
+
+  it("accepts a to[] entry at the cap and rejects one over it", async () => {
+    const atCap: MessageInput = {
+      type: "finding",
+      agent_id: "a1",
+      owner: "alice",
+      msg_id: newMsgId(),
+      body: "x",
+      to: ["r".repeat(MAX_FIELD_CHARS)],
+    };
+    await expect(b.append(CH, atCap)).resolves.toMatchObject({ cursor: 1 });
+
+    const over: MessageInput = {
+      type: "finding",
+      agent_id: "a1",
+      owner: "alice",
+      msg_id: newMsgId(),
+      body: "x",
+      to: ["r".repeat(MAX_FIELD_CHARS + 1)],
+    };
+    await expect(b.append(CH, over)).rejects.toBeInstanceOf(InvalidMessageError);
   });
 });
 

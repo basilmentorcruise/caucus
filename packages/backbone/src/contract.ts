@@ -34,7 +34,17 @@ export type Cursor = number;
  * present (the schema type leaves it optional for the pre-append form). `ts` is
  * a **server-monotonic** stamp: strictly increasing within a channel even under
  * a tight append loop, so it can be used to order messages without consulting
- * the log index.
+ * the log index. It is an **opaque** stamp, NOT a parseable ISO-8601 instant
+ * (`Date.parse(ts)` is `NaN`) — treat it only as an ordering token.
+ *
+ * **Immutability guarantee.** An appended message is the backbone's stored log
+ * record. Implementations MUST return it (and the copies in
+ * {@link ReadResult.messages}) such that callers cannot mutate the stored log
+ * through the returned reference: the reference implementation deep-freezes the
+ * record at append time, so mutating any field (`owner`, `agent_id`, `body`,
+ * `ts`, nested `to[]`, …) throws in strict mode and is a no-op otherwise. A
+ * durable implementation that hands back fresh per-call rows satisfies the same
+ * contract. Do not rely on being able to mutate a returned message.
  */
 export type AppendedMessage = CaucusMessage & { readonly ts: string };
 
@@ -43,6 +53,8 @@ export interface ReadResult {
   /**
    * The messages appended strictly after the supplied cursor, in append order,
    * capped by the `limit` argument. Empty when the cursor is already at head.
+   * Each element is deeply immutable (see {@link AppendedMessage}'s immutability
+   * guarantee): mutating one cannot alter the stored log.
    */
   readonly messages: readonly AppendedMessage[];
   /**
@@ -189,7 +201,8 @@ export interface Backbone {
 
   /**
    * Attempt to claim a target, first-write-wins. The ledger key is
-   * `normalizeTarget(msg.target)` (trim only, no case-fold — ADR-C5). On a win,
+   * `normalizeTarget(msg.target)` (trim + Unicode NFC, no case-fold — ADR-C5).
+   * On a win,
    * the `claim` message is appended in the same atomic step and the result is
    * `granted`; on contention the result is `already_claimed` with the winner's
    * identity and nothing is appended.

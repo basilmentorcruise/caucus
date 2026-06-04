@@ -2,7 +2,7 @@
   "name": "@caucus/backbone",
   "version": "0.0.0",
   "private": true,
-  "description": "Channel service: append-only log, claim ledger, cursors, seatbelts.",
+  "description": "Channel service: append-only log, claim ledger, cursors.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",

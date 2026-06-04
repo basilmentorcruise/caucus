@@ -34,9 +34,11 @@ A `Cursor` is an **opaque**, monotonically non-decreasing position in a channel'
 
 `claim()` is the dedup primitive ([ADR-C5](DECISIONS.md#adr-c5--claim-before-you-work-as-the-dedup-primitive)) and the **only** path that writes the claim ledger — `append()` rejects `claim`-typed messages so there is exactly one way to touch the ledger.
 
-- **Ledger key.** The key is `normalizeTarget(target)` from `@caucus/schema`: a single `trim()`, exact-string match thereafter. Consequences (v0, frozen):
+- **Ledger key.** The key is `normalizeTarget(target)` from `@caucus/schema`: a single `trim()` then **Unicode NFC** normalization, exact-string match thereafter. Consequences (v0, frozen):
   - Whitespace-only differences **collide**: `"  payments  "` and `"payments"` claim the same key.
+  - Canonically-equivalent Unicode spellings **collide**: a precomposed `"café"` (U+00E9) and its decomposed NFD form (`"cafe"` + U+0301) derive the **same** key — NFC defeats accent-form dedup gaps.
   - Case differences do **NOT** collide (no case-fold): `"Payments"` and `"payments"` are distinct targets.
+  - **Zero-width characters are NOT stripped** (accepted v0 behavior): a target containing a zero-width space (U+200B) is a **distinct** key from one without it. Stripping invisible/confusable characters is out of scope for v0; NFC handles canonical equivalence only.
 - **First-write-wins.** The first claim to reach the ledger for a key wins and is appended as a `claim` message. Every subsequent claim for that key returns `already_claimed`.
 - **Single append, no dual-write.** A granted claim's `claim` message is appended in the **same atomic step** as the ledger write — never a separate ledger-write-then-message-append. On conflict, **nothing is appended**.
 - **Losers see the winner.** An `already_claimed` result carries `by: { agent_id, owner, ts, msg_id }` identifying the winning claim, so a loser can attribute the work and react.
@@ -53,7 +55,11 @@ The correctness of first-write-wins rests on one invariant:
 
 ## `ts` — server-monotonic timestamps
 
-`append` (and the granted-claim append) is the only operation that stamps `ts`. `ts` is **server-monotonic**: strictly increasing within a channel even under a tight append loop. A bare `Date.toISOString()` ties under sub-millisecond loops, so the reference implementation backs the stamp with a monotonic sequence counter. Callers may rely on `ts` to order messages without consulting the cursor/index. An `AppendedMessage` therefore always has `ts` present (the schema's pre-append form leaves it optional).
+`append` (and the granted-claim append) is the only operation that stamps `ts`. `ts` is **server-monotonic**: strictly increasing within a channel even under a tight append loop. A bare `Date.toISOString()` ties under sub-millisecond loops, so the reference implementation backs the stamp with a monotonic sequence counter (a zero-padded 12-digit `#<seq>` suffix). Callers may rely on `ts` to order messages without consulting the cursor/index, but the **authoritative ordering is the cursor / log index**, not a `ts` string comparison. An `AppendedMessage` therefore always has `ts` present (the schema's pre-append form leaves it optional). Note `ts` is an **opaque** monotonic stamp, **not** a parseable ISO-8601 instant — `Date.parse(ts)` returns `NaN` because of the `#<seq>` suffix. Do not parse it as a date.
+
+## Log immutability
+
+A message returned by `append`/`claim` (and every element of `readSince`'s `messages`) is **deeply immutable**: a caller holding a returned message MUST NOT be able to mutate the stored log through it. The reference implementation `Object.freeze`es each stored message (and recursively freezes nested objects/arrays such as `to[]`) **at append time**, so the single stored object is also the frozen reference handed to every caller. Mutating any field — `owner`, `agent_id`, `body`, `ts`, a nested `to[]` entry — throws a `TypeError` in strict mode and is a silent no-op otherwise; a subsequent `readSince` shows the log unchanged. A future durable implementation that returns fresh per-call rows satisfies the same guarantee by construction; either way, **callers must treat returned messages as read-only**.
 
 ## Validation at the boundary & error taxonomy
 
@@ -65,7 +71,7 @@ Every method validates inputs at the boundary. Errors are typed `BackboneError` 
 | `UnknownChannelError` | `unknown_channel` | any operation targets a channel that does not exist. |
 | `ChannelExistsError` | `channel_exists` | `createChannel` name is already taken. |
 | `InvalidCursorError` | `invalid_cursor` | cursor is not an integer in `[0, head]`, or `limit` is supplied and is not a positive integer. |
-| `InvalidMessageError` | `invalid_message` | message fails schema `validate`; `body` exceeds `MAX_BODY_CHARS` (16000); `append` is given a `claim`-typed message ("use claim() for claim messages"); `claim` is given a non-`claim` message; or the claim target is empty after `normalizeTarget`. Carries `.issues: readonly string[]`. |
+| `InvalidMessageError` | `invalid_message` | message fails schema `validate`; `body` exceeds `MAX_BODY_CHARS` (16000); a `target`, `purpose`, or any `to[]` entry exceeds `MAX_FIELD_CHARS` (1024); `append` is given a `claim`-typed message ("use claim() for claim messages"); `claim` is given a non-`claim` message; or the claim target is empty after `normalizeTarget`. Carries `.issues: readonly string[]`. |
 
 A **claim conflict is not in this table** — it is the `already_claimed` result, not an error.
 
@@ -74,9 +80,13 @@ A **claim conflict is not in this table** — it is the `already_claimed` result
 - **Channel name:** non-empty, validated against `^[a-z0-9][a-z0-9-]{0,63}$` before any lookup.
 - **Cursor:** integer, `0 <= cursor <= head`. `limit`, when supplied, must be a positive integer.
 - **Message:** must pass schema `validate` (the backbone stamps `v` first); `body` length `<= MAX_BODY_CHARS` (16000).
+- **Short free-text fields:** the claim `target`, the channel `purpose`, and every `to[]` entry are short identifiers/descriptions, not payloads, so they are capped at `MAX_FIELD_CHARS` (1024) — well below the `body` cap. The `target` cap also bounds the otherwise-unbounded ledger key. Over-cap values are rejected with `InvalidMessageError`.
 - **`append()`** rejects `type:"claim"` messages — `claim()` is the only ledger path.
-- **`claim()`** requires `type:"claim"` and a target that is non-empty after `normalizeTarget`.
+- **`claim()`** requires `type:"claim"` and a target that is non-empty after `normalizeTarget` and `<= MAX_FIELD_CHARS`.
 
 ## Out of scope for v0 (later tickets)
 
 No HTTP/MCP transport (CAU-5), no SQLite durability, no seatbelts/rate-limit (CAU-6), no identity anchoring (CAU-7), no lease/heartbeat enforcement (CAU-18). The schema ships `lease_ttl`/`heartbeat` fields, but the backbone enforces first-write-wins only.
+
+- **Identity is trusted input.** The backbone does **not** authenticate `agent_id`/`owner`; the caller MUST anchor `agent_id`/`owner` before calling `append`/`claim`, and the backbone treats them as trusted input (CAU-7/CAU-9). It validates shape, never provenance.
+- **Unbounded growth is a seatbelt concern (CAU-6).** `readSince` has no maximum `limit`, the channel count is unbounded, and a channel's log grows without bound (the per-field caps above bound individual messages, not totals). These resource limits — max `limit`, channel/log caps, retention — are **CAU-6 seatbelt** items, not v0 backbone behavior.
