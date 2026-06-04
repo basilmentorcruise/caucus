@@ -17,7 +17,7 @@ Caucus ships in vertical slices — each milestone is something you can *run*. M
 ## M0 — Validation & foundations ▶
 **Goal:** validate the demand & technical pillars **before** committing backbone code, and stand up the skeleton.
 
-**Validate first (gates the backbone build — [ADR-C11](DECISIONS.md#adr-c11--validate-demand-before-building-the-backbone)):**
+**Validate first (gates the backbone build — [ADR-C11](DECISIONS.md#adr-c11--validate-demand-before-building-the-backbone-)):**
 - **Probe A** ([CAU-22](https://github.com/basilmentorcruise/caucus/issues/22)) — interview 6–8 Claude-Code SRE/eng leads: do concurrent per-engineer agent investigations happen today?
 - **Probe B** ([CAU-23](https://github.com/basilmentorcruise/caucus/issues/23)) — Wizard-of-Oz the claim/finding discipline in Slack with a human relay, *no backbone*. Does the mechanic deliver value?
 - **Hook-capability spike** ([CAU-24](https://github.com/basilmentorcruise/caucus/issues/24)) — can a Claude Code hook fetch-and-inject context each turn? (ADR-C3's unproven pillar.)

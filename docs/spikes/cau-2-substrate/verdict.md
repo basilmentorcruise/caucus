@@ -1,7 +1,7 @@
 # CAU-2 — Substrate spike verdict
 
 **Ticket:** [CAU-2 / #2](https://github.com/basilmentorcruise/caucus/issues/2) ·
-**ADR under test:** [ADR-C2](../../DECISIONS.md#adr-c2--substrate-lightweight-purpose-built-backbone-not-an-ergo-fork) ·
+**ADR under test:** [ADR-C2](../../DECISIONS.md#adr-c2--substrate-lightweight-purpose-built-backbone-not-an-ergo-fork---spike) ·
 **Prior-art input:** [CAU-21 / #21](https://github.com/basilmentorcruise/caucus/issues/21) (airc) ·
 **Date:** 2026-06-03 · **Node:** v20.20.2 · **Status:** complete.
 

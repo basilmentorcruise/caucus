@@ -56,7 +56,7 @@ A turn-start hook that calls `read_channel(since = checkpoint)`, formats the del
 ### Backbone (single process — see substrate decision below)
 Holds the shared state behind one implementation-agnostic interface:
 - **Append-only message log** per channel, with `readSince(cursor)` returning ordered new messages.
-- **Claim ledger** — keyed, **first-write-wins**, atomic. The dedup mechanic. A granted claim is also emitted as a `claim`-type message so the hook surfaces it to everyone. The schema models a **lease-with-TTL** (so a dead agent's claim eventually frees), but MVP enforces first-write-wins only; lease expiry/release is M2 ([ADR-C5](DECISIONS.md#adr-c5--claim-before-you-work-as-the-dedup-primitive)).
+- **Claim ledger** — keyed, **first-write-wins**, atomic. The dedup mechanic. A granted claim is also emitted as a `claim`-type message so the hook surfaces it to everyone. The schema models a **lease-with-TTL** (so a dead agent's claim eventually frees), but MVP enforces first-write-wins only; lease expiry/release is M2 ([ADR-C5](DECISIONS.md#adr-c5--claim-before-you-work-as-the-dedup-primitive-)).
 - **Subscribe cursors** — per-session checkpoints that survive discrete MCP request/response calls.
 - **Seatbelts** — per-agent rate limit; loop/duplicate detection (drop near-identical consecutive posts).
 - **Identity** — a per-session join token maps to `agent-id` + `human owner`, anchored server-side so the owner can't be forged.
@@ -76,8 +76,8 @@ subscribe(channel)                -> cursor               (stateless head-mint)
 `claim()` is the only path that writes the ledger (`append` rejects `claim`-typed messages); a lost claim is the `already_claimed` result, not an error. Cursors are opaque and client-carried; a granted claim advances the head like any append. Errors are typed `BackboneError` subclasses with stable `.code`s; schema failures are wrapped as `InvalidMessageError`. See [BACKBONE_CONTRACT.md](BACKBONE_CONTRACT.md) for the CAS invariant and the full error taxonomy.
 
 ### Cross-cutting: posting verbosity, security, testing
-- **Posting verbosity** is a per-channel setting (`quiet`/`normal`/`chatty`, default `quiet`) carried on the channel descriptor; agents bias toward silence so the feed stays trustworthy ([ADR-C6](DECISIONS.md#adr-c6)).
-- **Security / trust boundary.** The channel is a shared, persisted, append-only log; agents must not post secrets. v1 ships `SECURITY.md` + a documented stance, and the schema binds identity/routing fields so the backbone can't silently re-route ([ADR-C12](DECISIONS.md#adr-c12--secret-leak-hygiene-is-a-first-class-concern)).
+- **Posting verbosity** is a per-channel setting (`quiet`/`normal`/`chatty`, default `quiet`) carried on the channel descriptor; agents bias toward silence so the feed stays trustworthy ([ADR-C6](DECISIONS.md#adr-c6--posting-verbosity-is-configurable-per-channel-default-quiet--supersedes-autonomous-by-default)).
+- **Security / trust boundary.** The channel is a shared, persisted, append-only log; agents must not post secrets. v1 ships `SECURITY.md` + a documented stance, and the schema binds identity/routing fields so the backbone can't silently re-route ([ADR-C12](DECISIONS.md#adr-c12--secret-leak-hygiene-is-a-first-class-concern-)).
 - **Integration-test harness.** A one-command rig boots the backbone + ≥2 clients for concurrent-claim/cursor/seatbelt tests in CI — the testing gate depends on it (see [GITHUB_PROJECTS.md](GITHUB_PROJECTS.md) → Testing & validation gate).
 
 Because the MCP server and hook only know this interface, the backbone implementation is swappable (see below).

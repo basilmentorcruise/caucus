@@ -4,7 +4,7 @@ Caucus is an **agent war room for investigations and escalations**: several engi
 drive their own Claude Code session, and those sessions share one ephemeral channel through an
 MCP server and a turn-start hook. That shared channel is exactly where sensitive output tends to
 fly around, so secret-leak hygiene is a **first-class concern**, not an afterthought
-([ADR-C12](docs/DECISIONS.md#adr-c12--secret-leak-hygiene-is-a-first-class-concern)).
+([ADR-C12](docs/DECISIONS.md#adr-c12--secret-leak-hygiene-is-a-first-class-concern-)).
 
 This document covers two things:
 
@@ -47,9 +47,9 @@ any public disclosure.
 ### What is and isn't in scope
 
 In scope: vulnerabilities in Caucus's own code and configuration — e.g. **identity-spoofing**
-(forging another agent's `human owner`, contrary to [ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side)),
+(forging another agent's `human owner`, contrary to [ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer)),
 **claim-ledger integrity** breaks (defeating first-write-wins), **seatbelt** bypasses
-([ADR-C8](docs/DECISIONS.md#adr-c8--seatbelts-rate-limit--loopduplicate-detection)), cursor/log
+([ADR-C8](docs/DECISIONS.md#adr-c8--seatbelts-rate-limit--loopduplicate-detection-)), cursor/log
 tampering, or a flaw that lets the server silently re-route a message to an unintended recipient.
 
 Out of scope: the **designed-in** trust properties described in the threat model below (e.g. "a
@@ -63,14 +63,14 @@ discussion — open an issue referencing the relevant ADR.
 
 ### The trust boundary
 
-Caucus's trust boundary is **one team sharing one backbone** ([ADR-C9](docs/DECISIONS.md#adr-c9--intra-team-single-shared-server-no-federation-in-v1)).
+Caucus's trust boundary is **one team sharing one backbone** ([ADR-C9](docs/DECISIONS.md#adr-c9--intra-team-single-shared-server-no-federation-in-v1-)).
 Concretely:
 
 - There is **one shared backbone process per team/org**. No federation, no cross-org channels,
   no multi-server fan-out in v1.
 - Everyone who can **join a channel is inside the trust boundary.** Joining is gated by a
   per-session join token (a shared team secret or a simple issued token,
-  [ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side)).
+  [ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer)).
   Anyone who holds a valid token — and every agent and human they're driving — can read the whole
   channel.
 - The channel is a **shared, persisted, append-only log.** A message posted to a channel is
@@ -117,13 +117,13 @@ defend against any of the following:
 - **A compromised session, token, or machine.** A stolen join token, or a compromised laptop
   running a joined Claude Code session, grants the attacker the same channel-wide read/post access
   as the legitimate owner. Identity is anchored server-side
-  ([ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side)),
+  ([ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer)),
   which stops *forging someone else's* owner — it does **not** stop an attacker who has
   legitimately obtained a token from acting as the real owner.
 - **End-to-end encryption.** There is **no E2E encryption** in v1. Messages are not encrypted such
   that only intended recipients can read them; the server and every joined session see plaintext.
 - **Server-side confidentiality.** There is a **single shared server** per team
-  ([ADR-C9](docs/DECISIONS.md#adr-c9--intra-team-single-shared-server-no-federation-in-v1)). Whoever
+  ([ADR-C9](docs/DECISIONS.md#adr-c9--intra-team-single-shared-server-no-federation-in-v1-)). Whoever
   operates that backbone can read the full log. Caucus does not protect channel contents from the
   server operator or anyone with access to the backbone's storage.
 - **Secrets you post anyway.** Caucus does **not** scan, redact, or block secrets at the server in
@@ -181,7 +181,7 @@ When you genuinely need to share evidence:
 ### 3. Trusted-team scoping
 
 Caucus's confidentiality model **is** its scoping: keep the channel to a **trusted intra-team
-group on a single shared server** ([ADR-C9](docs/DECISIONS.md#adr-c9--intra-team-single-shared-server-no-federation-in-v1)).
+group on a single shared server** ([ADR-C9](docs/DECISIONS.md#adr-c9--intra-team-single-shared-server-no-federation-in-v1-)).
 Treat join tokens as secrets, scope a channel to the people who actually need to coordinate on that
 investigation, and tear ephemeral channels down when the investigation ends. Because everyone on a
 channel can read everything, **who is on the channel is your access-control decision** — make it
@@ -192,7 +192,7 @@ disclosed.
 ### 4. Identity anchoring (shipped design intent)
 
 Every message is stamped with its `agent-id` and `human owner`, **anchored server-side so the
-owner cannot be forged** ([ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side)).
+owner cannot be forged** ([ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer)).
 This doesn't keep secrets out of the log, but it ensures that whatever *is* in the log is reliably
 attributable — you can always tell which teammate stands behind a given post, which matters for
 both coordination and incident review. (As above: anchoring prevents impersonation; it does not
@@ -205,11 +205,11 @@ identity/routing fields — **`{agent_id, owner, to, ts, channel}`** (airc's `fr
 schema's `agent_id` + `owner` pair) — as **AEAD associated data** (a technique
 borrowed from [airc](https://github.com/CambrianTech/airc)), so the backbone **cannot silently
 re-route or re-attribute a message** without the binding failing
-([ADR-C12](docs/DECISIONS.md#adr-c12--secret-leak-hygiene-is-a-first-class-concern)).
+([ADR-C12](docs/DECISIONS.md#adr-c12--secret-leak-hygiene-is-a-first-class-concern-)).
 
 **Status: NOT YET IMPLEMENTED.** This is a forward-looking property of the backbone build, which is
 deliberately **gated on the two demand-validation probes** before any backbone code is written
-([ADR-C11](docs/DECISIONS.md#adr-c11--validate-demand-before-building-the-backbone)). It is recorded
+([ADR-C11](docs/DECISIONS.md#adr-c11--validate-demand-before-building-the-backbone-)). It is recorded
 here so the security review and future implementers carry it forward — **not** as a protection that
 exists today. Note also that associated-data binding protects **routing/attribution integrity**; it
 is **not** message-content confidentiality and is **not** end-to-end encryption.

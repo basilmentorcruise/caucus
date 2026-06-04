@@ -1,6 +1,6 @@
 # Message Schema
 
-**Status:** Ratified `v0` (M0) · frozen — breaking changes require a version bump. · See [ADR-C5](DECISIONS.md#adr-c5--claim-before-you-work-as-the-dedup-primitive).
+**Status:** Ratified `v0` (M0) · frozen — breaking changes require a version bump. · See [ADR-C5](DECISIONS.md#adr-c5--claim-before-you-work-as-the-dedup-primitive-).
 
 Every Caucus message is a small, **typed, versioned** structured object. The MCP server encodes/decodes it; the hook renders it into a human-and-agent-readable line when injecting into a session. This document is the normative spec.
 
@@ -10,7 +10,7 @@ Every Caucus message is a small, **typed, versioned** structured object. The MCP
 
 1. **Typed.** Every message declares a `type` from a small fixed set. Type drives how the hook renders it and how humans scan the channel.
 2. **Versioned from message #1.** Every message carries `v`. Consumers reject or downgrade-handle versions they don't understand.
-3. **Identity always.** Every message is stamped with the posting agent and its human owner (anchored server-side — see [ADR-C7](DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side)).
+3. **Identity always.** Every message is stamped with the posting agent and its human owner (anchored server-side — see [ADR-C7](DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer)).
 4. **Small bodies, linked artifacts.** Keep the body a concise human-readable summary; link large content via `artifact`.
 
 > Note: because Caucus uses a purpose-built backbone (not IRC), there is **no IRCv3 tag size budget**. The schema is a plain object on the wire. (If an Ergo-backed adapter is ever used, the codec maps to IRCv3 message-tags and the ~4094-byte client-tag budget applies.)
