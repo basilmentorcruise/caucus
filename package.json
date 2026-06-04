@@ -11,7 +11,7 @@
   },
   "scripts": {
     "lint": "eslint .",
-    "typecheck": "tsc --build --force",
+    "typecheck": "tsc --build --force && pnpm -r exec tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run --coverage",
     "build": "tsc --build",
     "clean": "tsc --build --clean",
