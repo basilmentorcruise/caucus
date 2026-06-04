@@ -17,7 +17,7 @@
  *   paging from cursor 0 with `limit=2` until empty concatenates to the full
  *   ordered list with no msg_id twice, and re-reading one page is identical.
  *
- * Claim is intentionally NOT exercised here — its server route is CAU-7 (501).
+ * Claim is intentionally NOT exercised here — this scenario covers the CAU-6 log/cursor ACs only (claim coverage lives in concurrent-claim.itest.ts).
  * These ACs need only create / subscribe / append / read, all of which the
  * CAU-5 service serves. `ts` is treated as opaque (never `Date.parse`); the only
  * cursor arithmetic used is the contract's `cursor + messages.length`.
