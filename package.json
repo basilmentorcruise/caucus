@@ -11,7 +11,7 @@
   },
   "scripts": {
     "lint": "eslint .",
-    "typecheck": "tsc --build --force",
+    "typecheck": "tsc --build --force && pnpm -r exec tsc -p tsconfig.test.json --noEmit",
     "check:anchors": "node scripts/check-md-anchors.mjs",
     "test": "node scripts/check-md-anchors.mjs && vitest run --coverage",
     "build": "tsc --build",
