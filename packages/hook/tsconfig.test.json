@@ -1,0 +1,17 @@
+{
+  // Typecheck-only config for *.test.ts / *.spec.ts (CAU-37).
+  //
+  // The package's build tsconfig.json deliberately EXCLUDES test files so they
+  // never leak into `dist` (the `tsc --build` emit). This config re-includes
+  // the test files and type-checks them with `noEmit`, so CI's typecheck step
+  // catches type errors in tests too. It is invoked per-package by the root
+  // `typecheck` script and is never part of the `tsc --build` graph.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "incremental": false
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["dist"]
+}
