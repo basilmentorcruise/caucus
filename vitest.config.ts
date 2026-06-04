@@ -20,7 +20,18 @@ export default defineConfig({
       // packages/integration is the integration-test harness (CAU-25) — test
       // scaffolding, not gated product code, so it is excluded from the unit
       // coverage gate (it runs via vitest.integration.config.ts instead).
-      exclude: ["**/*.{test,spec}.ts", "**/dist/**", "packages/integration/**"],
+      //
+      // `**/bin.ts` is a process entrypoint shim (a shebang + a few lines that
+      // boot a real listening server). Its logic lives in covered helpers
+      // (`parseEnvConfig`, `startServer`); the shim itself can only be exercised
+      // by spawning a subprocess, which contributes no in-process coverage, so it
+      // is excluded by convention (CAU-5).
+      exclude: [
+        "**/*.{test,spec}.ts",
+        "**/dist/**",
+        "**/bin.ts",
+        "packages/integration/**",
+      ],
       // Enforced bar — the run FAILS if any metric is below these values.
       thresholds: {
         lines: COVERAGE_THRESHOLD,

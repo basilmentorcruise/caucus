@@ -5,7 +5,8 @@
  * scaffolding the scenarios run on. The pieces:
  *
  * - the {@link Connector} seam (`connector.ts`) + the {@link inProcessConnector}
- *   (`connectors/in-process.ts`) — one shared backbone, ≥2 client handles;
+ *   (`connectors/in-process.ts`) and {@link httpConnector}
+ *   (`connectors/http.ts`, CAU-5) — one shared backbone, ≥2 client handles;
  * - the {@link Scenario} type + {@link runScenarios} runner (`scenario.ts`,
  *   `harness.ts`), which always tears down in a `finally`;
  * - message {@link finding}/{@link claimMsg} builders (`fixtures.ts`).
@@ -15,6 +16,7 @@
  */
 export type { ClientHandle, Connector } from "./connector.js";
 export { inProcessConnector } from "./connectors/in-process.js";
+export { httpConnector } from "./connectors/http.js";
 export { runScenarios } from "./harness.js";
 export type { Scenario } from "./scenario.js";
 export { claimMsg, finding, type MessageOpts } from "./fixtures.js";

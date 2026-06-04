@@ -113,6 +113,7 @@ caucus/
 ├── packages/
 │   ├── schema/            # versioned typed-message schema + codec (shared)
 │   ├── backbone/          # the channel service: log, claim ledger, cursors, seatbelts
+│   ├── backbone-server/   # standalone HTTP transport over the backbone + HTTP client
 │   ├── mcp-server/        # MCP server over the backbone interface
 │   └── hook/              # Claude Code turn-start awareness hook
 ├── examples/              # the war-room demo + quickstart

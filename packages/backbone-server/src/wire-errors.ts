@@ -1,0 +1,154 @@
+/**
+ * The HTTP error wire contract (CAU-5) — shared by the server (which emits it)
+ * and the {@link import("./http-client.js").HttpBackbone} client (which
+ * reconstructs real {@link BackboneError} subclasses from it).
+ *
+ * Every error response — whether it originates from a thrown
+ * {@link BackboneError}, a transport-level fault (404/405/413/…), or an
+ * unexpected internal failure — has exactly this shape:
+ *
+ * ```json
+ * { "error": { "code": "unknown_channel", "message": "…", "issues": ["…"] } }
+ * ```
+ *
+ * `issues` is present only for `invalid_message` (it carries the schema
+ * validation problems). The server NEVER leaks an internal message or stack: an
+ * unmapped throw is reported as a generic `internal_error` with a fixed message.
+ */
+import {
+  BackboneError,
+  ChannelExistsError,
+  InvalidChannelNameError,
+  InvalidCursorError,
+  InvalidMessageError,
+  UnknownChannelError,
+} from "@caucus/backbone";
+
+/** The body of every error response. */
+export interface WireErrorBody {
+  readonly error: {
+    /** Stable, machine-readable code (e.g. `unknown_channel`). */
+    readonly code: string;
+    /** Human-readable message. Never an internal/stack string. */
+    readonly message: string;
+    /** Present only for `invalid_message`: the schema validation problems. */
+    readonly issues?: readonly string[];
+  };
+}
+
+/** A status code paired with the body to send. */
+export interface MappedError {
+  readonly status: number;
+  readonly body: WireErrorBody;
+}
+
+/**
+ * The generic message used whenever the server must not reveal what actually
+ * went wrong (a non-`BackboneError` throw, or a `BackboneError` with an
+ * unrecognized code). Fixed string — never the thrown error's `.message`.
+ */
+const INTERNAL_MESSAGE = "internal server error";
+
+/**
+ * Map a thrown {@link BackboneError} `code` to an HTTP status. Unrecognized
+ * codes (and non-`BackboneError` throws) map to 500.
+ */
+function statusForCode(code: string): number {
+  switch (code) {
+    case "invalid_channel_name":
+    case "invalid_message":
+    case "invalid_cursor":
+      return 400;
+    case "unknown_channel":
+      return 404;
+    case "channel_exists":
+      return 409;
+    default:
+      return 500;
+  }
+}
+
+/**
+ * Centralized error mapping: turn any thrown value into an HTTP status + wire
+ * body. The router does NOT re-validate inputs — the backbone is the single
+ * validation authority — so every input-shape failure arrives here as a
+ * {@link BackboneError} and is mapped by its `.code`.
+ *
+ * - A {@link BackboneError} with a known code → its mapped status + its own
+ *   `.message`. `issues` is attached only for `invalid_message`.
+ * - A {@link BackboneError} with an unknown code → 500 generic (no leak).
+ * - Any other throw → 500 generic (no leak): never the real message/stack.
+ */
+export function mapError(err: unknown): MappedError {
+  if (err instanceof BackboneError) {
+    const status = statusForCode(err.code);
+    // An unknown backbone code is still a server bug from the client's view —
+    // do not echo its (possibly internal) message.
+    if (status === 500) {
+      return {
+        status,
+        body: { error: { code: "internal_error", message: INTERNAL_MESSAGE } },
+      };
+    }
+    if (err instanceof InvalidMessageError) {
+      return {
+        status,
+        body: {
+          error: { code: err.code, message: err.message, issues: err.issues },
+        },
+      };
+    }
+    return { status, body: { error: { code: err.code, message: err.message } } };
+  }
+  return {
+    status: 500,
+    body: { error: { code: "internal_error", message: INTERNAL_MESSAGE } },
+  };
+}
+
+/**
+ * A code→factory registry for reconstructing the REAL {@link BackboneError}
+ * subclass on the client side from a {@link WireErrorBody}. An unrecognized code
+ * yields a generic {@link BackboneError} carrying that code, so `.code` is always
+ * faithful even for errors this client doesn't model.
+ */
+export function backboneErrorFromWire(body: WireErrorBody): BackboneError {
+  const { code, message, issues } = body.error;
+  switch (code) {
+    case "invalid_channel_name":
+      return new InvalidChannelNameError(extractChannel(message));
+    case "unknown_channel":
+      return new UnknownChannelError(extractChannel(message));
+    case "channel_exists":
+      return new ChannelExistsError(extractChannel(message));
+    case "invalid_cursor":
+      return new InvalidCursorError(message, undefined);
+    case "invalid_message":
+      return new InvalidMessageError(issues ?? [message]);
+    default: {
+      // Unrecognized code: preserve the code faithfully on a generic error.
+      const generic = new BackboneError(message, code);
+      return generic;
+    }
+  }
+}
+
+/**
+ * The channel-name-bearing errors store the original name, but the wire only
+ * carries the message. These errors are reconstructed for their `instanceof` /
+ * `.code` identity (what callers branch on); the embedded `channel` is a
+ * best-effort recovery from the message and is not load-bearing.
+ */
+function extractChannel(message: string): string {
+  // Messages are of the form `... : "<name>" ( ... )`. Recover the first quoted
+  // token if present; otherwise fall back to the whole message.
+  const match = /"((?:[^"\\]|\\.)*)"/.exec(message);
+  if (match?.[1] === undefined) {
+    return message;
+  }
+  try {
+    return JSON.parse(`"${match[1]}"`) as string;
+  } catch {
+    return match[1];
+  }
+}

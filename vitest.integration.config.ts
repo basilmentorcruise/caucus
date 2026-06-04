@@ -13,6 +13,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@caucus/backbone": resolve(import.meta.dirname, "packages/backbone/src/index.ts"),
+      "@caucus/backbone-server": resolve(import.meta.dirname, "packages/backbone-server/src/index.ts"),
       "@caucus/schema": resolve(import.meta.dirname, "packages/schema/src/index.ts"),
     },
   },

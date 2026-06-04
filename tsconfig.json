@@ -3,6 +3,7 @@
   "references": [
     { "path": "./packages/schema" },
     { "path": "./packages/backbone" },
+    { "path": "./packages/backbone-server" },
     { "path": "./packages/mcp-server" },
     { "path": "./packages/hook" },
     { "path": "./packages/integration" }
