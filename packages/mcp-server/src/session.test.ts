@@ -75,15 +75,18 @@ describe("createSession", () => {
       const backbone = await freshBackbone();
       const session = createSession(config, backbone);
 
-      // The reader's *type* is the read-only BackboneReader; the read methods
-      // are reachable. (The narrowing is enforced at compile time — see the
-      // `@ts-expect-error` probe below — because `reader` is the same object as
-      // the backbone at runtime and so still carries `append`/`claim` as
-      // properties; a tool simply cannot name them without a type error.)
+      // The reader is a delegating wrapper, not the backbone reference: the
+      // four read methods are reachable, and the write paths are absent at
+      // RUNTIME too — even a tool that casts the reader finds no
+      // append/claim/createChannel on it.
       expect(typeof session.reader.describeChannel).toBe("function");
       expect(typeof session.reader.readSince).toBe("function");
       expect(typeof session.reader.listChannels).toBe("function");
       expect(typeof session.reader.subscribe).toBe("function");
+      const cast = session.reader as Record<string, unknown>;
+      expect(cast["append"]).toBeUndefined();
+      expect(cast["claim"]).toBeUndefined();
+      expect(cast["createChannel"]).toBeUndefined();
     });
 
     it("type-rejects reaching append/claim/createChannel off the session surface", async () => {

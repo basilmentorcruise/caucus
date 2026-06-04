@@ -85,10 +85,19 @@ export function createSession(
   backbone: Backbone,
 ): CaucusSession {
   const { identity, channel } = config;
+  // Delegating wrapper, not the backbone reference itself: the narrowing must
+  // hold at RUNTIME too — a tool that casts the reader still finds no
+  // append/claim/createChannel on it.
+  const reader: BackboneReader = {
+    readSince: (ch, cursor, limit) => backbone.readSince(ch, cursor, limit),
+    subscribe: (ch) => backbone.subscribe(ch),
+    describeChannel: (ch) => backbone.describeChannel(ch),
+    listChannels: () => backbone.listChannels(),
+  };
   return {
     identity,
     channel,
-    reader: backbone,
+    reader,
     post(draft) {
       return backbone.append(channel, stampIdentity(identity, draft));
     },
