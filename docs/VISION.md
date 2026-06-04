@@ -45,7 +45,7 @@ We do *not* build a real-time autonomous agent bus. It's turn-based; the humans,
 1. **Agents-first; humans steer their own delegate.** Findings are context, not commands.
 2. **Multi-principal by definition.** If it collapses to one human, we've accidentally become a single-operator tool. Every message carries agent → human.
 3. **Passive over diligent.** Awareness shouldn't depend on anyone remembering to read — the hook does it.
-4. **Quiet by default.** Channel noise is the trust-killer. Agents post only consequential findings/claims/blockers; verbosity is configurable per channel (`quiet`/`normal`/`chatty`, default `quiet`). See [ADR-C6](DECISIONS.md#adr-c6).
+4. **Quiet by default.** Channel noise is the trust-killer. Agents post only consequential findings/claims/blockers; verbosity is configurable per channel (`quiet`/`normal`/`chatty`, default `quiet`). See [ADR-C6](DECISIONS.md#adr-c6--posting-verbosity-is-configurable-per-channel-default-quiet--supersedes-autonomous-by-default).
 5. **Turn-based, humans are the real-time layer.** No sub-second autonomous bus.
 6. **Ship the smallest thing that shows the point.** The two-terminal claim handoff is the whole MVP.
 7. **Build on MCP, don't reinvent it.** Complement the protocol stack; don't compete with it.
@@ -58,7 +58,7 @@ We do *not* build a real-time autonomous agent bus. It's turn-based; the humans,
 - **Not a single-operator fleet tool.** That's scuttlebot's space, deliberately ceded.
 - **Not real-time autonomous swarming.** Turn-based + checkpoint reads; no agent auto-executing another's conclusion.
 - **Not a protocol.** We build on MCP; we're not proposing a new agent-to-agent standard.
-- **Not a safe place for secrets.** The channel is a shared, persisted, append-only log; agents must not post secrets/customer data, and we ship a trust boundary + guidance to make that explicit (see [ADR-C12](DECISIONS.md#adr-c12--secret-leak-hygiene-is-a-first-class-concern) and SECURITY.md). Secret-leak hygiene is a first-class concern, not an afterthought.
+- **Not a safe place for secrets.** The channel is a shared, persisted, append-only log; agents must not post secrets/customer data, and we ship a trust boundary + guidance to make that explicit (see [ADR-C12](DECISIONS.md#adr-c12--secret-leak-hygiene-is-a-first-class-concern-) and SECURITY.md). Secret-leak hygiene is a first-class concern, not an afterthought.
 
 ## Differentiation (and the honest threat)
 
@@ -70,4 +70,4 @@ Caucus gets pulled into a *real* investigation by a team that wasn't told to use
 
 ## The load-bearing assumption (being validated before we build)
 
-That multi-engineer, each-with-their-own-Claude-Code investigations are common *today*. Our read: emerging, not yet common in mid-2026. So the backbone build is **gated on two cheap probes** before we commit (interviews + a no-backbone Wizard-of-Oz of the claim/finding discipline) — see [ADR-C11](DECISIONS.md#adr-c11--validate-demand-before-building-the-backbone). And the **launch beachhead** is lower-tempo investigations (hard debugging, security, migration) where adoption friction is lowest; production-incident response stays the headline vision and demo.
+That multi-engineer, each-with-their-own-Claude-Code investigations are common *today*. Our read: emerging, not yet common in mid-2026. So the backbone build is **gated on two cheap probes** before we commit (interviews + a no-backbone Wizard-of-Oz of the claim/finding discipline) — see [ADR-C11](DECISIONS.md#adr-c11--validate-demand-before-building-the-backbone-). And the **launch beachhead** is lower-tempo investigations (hard debugging, security, migration) where adoption friction is lowest; production-incident response stays the headline vision and demo.

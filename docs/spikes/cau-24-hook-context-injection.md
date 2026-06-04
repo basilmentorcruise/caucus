@@ -1,6 +1,6 @@
 # CAU-24 SPIKE — Claude Code hook context-injection capability
 
-**Ticket:** [CAU-24 / #24](https://github.com/basilmentorcruise/caucus/issues/24) · **Epic G — Pre-build validation** · Gates [CAU-14], pillar of [ADR-C3](../DECISIONS.md#adr-c3--integration-mcp-server--claude-code-hook).
+**Ticket:** [CAU-24 / #24](https://github.com/basilmentorcruise/caucus/issues/24) · **Epic G — Pre-build validation** · Gates [CAU-14], pillar of [ADR-C3](../DECISIONS.md#adr-c3--integration-mcp-server--claude-code-hook-).
 **Status:** Complete · **Date:** 2026-06-03 · Claude Code `2.1.161`.
 
 ## Verdict
