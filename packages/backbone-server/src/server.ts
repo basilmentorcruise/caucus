@@ -70,14 +70,32 @@ interface Route {
   readonly segments: readonly string[];
 }
 
-/** Split a URL path into non-empty, percent-decoded segments. */
+/**
+ * Sentinel thrown by {@link parseSegments} when a path segment carries malformed
+ * percent-encoding (e.g. `/channels/%ZZ`). Caught in {@link dispatch} and turned
+ * into a clean 400 `invalid_request`, so a `URIError` can never escape as an
+ * unhandled rejection that drops the response.
+ */
+class MalformedPathError extends Error {}
+
+/**
+ * Split a URL path into non-empty, percent-decoded segments. Throws
+ * {@link MalformedPathError} if any segment is not valid percent-encoding —
+ * `decodeURIComponent` would otherwise raise a bare `URIError`.
+ */
 function parseSegments(path: string): string[] {
   const query = path.indexOf("?");
   const clean = query === -1 ? path : path.slice(0, query);
   return clean
     .split("/")
     .filter((s) => s.length > 0)
-    .map((s) => decodeURIComponent(s));
+    .map((s) => {
+      try {
+        return decodeURIComponent(s);
+      } catch {
+        throw new MalformedPathError(`malformed percent-encoding in path: ${s}`);
+      }
+    });
 }
 
 function notFound(): DispatchResult {
@@ -101,6 +119,13 @@ function notImplemented(what: string): DispatchResult {
   return { status: 501, json: body };
 }
 
+function invalidRequest(message: string): DispatchResult {
+  const body: WireErrorBody = {
+    error: { code: "invalid_request", message },
+  };
+  return { status: 400, json: body };
+}
+
 /**
  * Pure request dispatch — NO sockets. Given a method, path, and already-parsed
  * JSON body (or `undefined` when there was no body), call the backbone and
@@ -117,10 +142,13 @@ export async function dispatch(
   path: string,
   body: unknown,
 ): Promise<DispatchResult> {
-  const route: Route = { method, segments: parseSegments(path) };
-  const { segments } = route;
-
   try {
+    // Path parsing can throw on malformed percent-encoding (`/channels/%ZZ`);
+    // keep it inside the try so it surfaces as a clean 400, never a `URIError`
+    // escaping the dispatch.
+    const route: Route = { method, segments: parseSegments(path) };
+    const { segments } = route;
+
     // GET /healthz
     if (segments.length === 1 && segments[0] === "healthz") {
       if (method !== "GET") return methodNotAllowed();
@@ -190,6 +218,9 @@ export async function dispatch(
 
     return notFound();
   } catch (err) {
+    if (err instanceof MalformedPathError) {
+      return invalidRequest(err.message);
+    }
     const mapped = mapError(err);
     return { status: mapped.status, json: mapped.body };
   }
@@ -255,7 +286,15 @@ export function createServer(opts: ServerOptions = {}): Server {
           parsed,
         );
         send(result.status, result.json);
-      })();
+      })().catch((err: unknown) => {
+        // Defense-in-depth: `dispatch` maps its own errors, so reaching here
+        // means an unexpected throw in the handler itself. Never let it become
+        // an unhandled rejection that drops the response — map it to a clean
+        // envelope (500) via the same path the router uses.
+        if (aborted || res.writableEnded) return;
+        const mapped = mapError(err);
+        send(mapped.status, mapped.body);
+      });
     });
   });
 }

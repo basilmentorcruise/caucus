@@ -211,6 +211,32 @@ describe("HttpBackbone — stubbed fetch for not-yet-served cases", () => {
     await expect(c.listChannels()).rejects.toMatchObject({ code: "http_error" });
   });
 
+  it("sets redirect:\"error\" and surfaces a redirect as a clean throw (no cross-origin re-POST)", async () => {
+    let seenRedirect: RequestInit["redirect"];
+    // Mirror real fetch: with redirect:"error", a 3xx response rejects rather
+    // than following the Location header (which would re-POST a sensitive body).
+    const stub: typeof fetch = (_input, init) => {
+      seenRedirect = init?.redirect;
+      if (init?.redirect === "error") {
+        return Promise.reject(new TypeError("redirect mode is 'error'"));
+      }
+      return Promise.resolve(
+        new Response(null, { status: 302, headers: { location: "http://evil.invalid/" } }),
+      );
+    };
+    const c = new HttpBackbone("http://stub.invalid", { fetch: stub });
+    await expect(
+      c.append("c1", {
+        type: "finding",
+        agent_id: "a",
+        owner: "alice",
+        msg_id: MSG_ID,
+        body: "x",
+      }),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(seenRedirect).toBe("error");
+  });
+
   it("an empty-body 2xx response yields undefined json (subscribe shape guarded)", async () => {
     // listChannels expects { channels }; an empty 200 would blow up on access —
     // assert the client reads the body and parses it, not that it tolerates a

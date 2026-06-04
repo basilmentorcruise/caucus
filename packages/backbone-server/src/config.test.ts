@@ -47,4 +47,27 @@ describe("parseEnvConfig", () => {
   it("throws on a negative PORT", () => {
     expect(() => parseEnvConfig({ PORT: "-1" })).toThrow(/invalid PORT/);
   });
+
+  it("warns when HOST is a non-loopback address", () => {
+    const warnings: string[] = [];
+    const cfg = parseEnvConfig({ HOST: "0.0.0.0" }, (m) => warnings.push(m));
+    expect(cfg.host).toBe("0.0.0.0");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/non-loopback host 0\.0\.0\.0/);
+    expect(warnings[0]).toMatch(/unauthenticated/);
+  });
+
+  it("does NOT warn for loopback hosts (127.0.0.1 / localhost / ::1, any case)", () => {
+    for (const host of ["127.0.0.1", "localhost", "::1", "LOCALHOST"]) {
+      const warnings: string[] = [];
+      parseEnvConfig({ HOST: host }, (m) => warnings.push(m));
+      expect(warnings, `host ${host} should not warn`).toHaveLength(0);
+    }
+  });
+
+  it("does NOT warn when HOST is unset", () => {
+    const warnings: string[] = [];
+    parseEnvConfig({}, (m) => warnings.push(m));
+    expect(warnings).toHaveLength(0);
+  });
 });

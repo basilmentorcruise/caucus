@@ -7,6 +7,8 @@
  * binding, healthz, body parsing (invalid_json / payload_too_large), and that
  * `close()` frees the port.
  */
+import { request as httpRequest } from "node:http";
+
 import { InMemoryBackbone } from "@caucus/backbone";
 import { newMsgId } from "@caucus/schema";
 import { afterEach, describe, expect, it } from "vitest";
@@ -22,6 +24,27 @@ import {
 /** Read a JSON response body as an arbitrary record (test-only convenience). */
 async function jsonBody(res: Response): Promise<Record<string, unknown>> {
   return (await res.json()) as Record<string, unknown>;
+}
+
+/**
+ * Issue a raw HTTP GET against `url` + `rawPath` using `node:http` (the `fetch`
+ * URL parser rejects some malformed paths client-side; this sends the raw path
+ * line to the server). Resolves with the status, or rejects on socket error —
+ * a hang fails the test via the surrounding timeout.
+ */
+function rawGet(url: string, rawPath: string): Promise<number> {
+  const { hostname, port } = new URL(url);
+  return new Promise<number>((resolve, reject) => {
+    const req = httpRequest(
+      { hostname, port, method: "GET", path: rawPath },
+      (res) => {
+        res.resume(); // drain so the socket can close
+        res.on("end", () => resolve(res.statusCode ?? 0));
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
 }
 
 /** A backbone seeded with one channel `c1` for the routing tests. */
@@ -138,6 +161,15 @@ describe("dispatch — routing", () => {
     const bb = await seeded();
     const res = await dispatch(bb, "GET", "/healthz?ping=1", undefined);
     expect(res.status).toBe(200);
+  });
+
+  it("malformed percent-encoding in the path → 400 invalid_request (resolves, never throws)", async () => {
+    const bb = await seeded();
+    // `%ZZ` is not valid percent-encoding; decodeURIComponent throws URIError.
+    // dispatch must RESOLVE to a clean 4xx, not reject.
+    const res = await dispatch(bb, "GET", "/channels/%ZZ", undefined);
+    expect(res.status).toBe(400);
+    expect(res.json).toMatchObject({ error: { code: "invalid_request" } });
   });
 });
 
@@ -308,6 +340,14 @@ describe("server lifecycle (sockets)", () => {
     expect(second.port).toBe(port);
     await second.close();
   });
+
+  it("malformed percent-encoding path → real HTTP response, never hangs", async () => {
+    running = await startServer({ port: 0 });
+    // Before the fix this dropped the response (unhandled URIError) and the
+    // socket hung; now it must return a 4xx. The 2s timeout catches a regression.
+    const status = await rawGet(running.url, "/channels/%ZZ");
+    expect(status).toBe(400);
+  }, 2000);
 
   it("createServer returns an http.Server that is not yet listening", () => {
     const server = createServer();

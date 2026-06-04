@@ -59,7 +59,11 @@ export class HttpBackbone implements Backbone {
     this.#fetch = (input, init) => f(input, init);
   }
 
-  /** Build a full URL for a path, percent-encoding each dynamic segment. */
+  /**
+   * Join the base URL and an already-built path. Callers are responsible for
+   * percent-encoding any dynamic segments (see `encodeURIComponent` at the call
+   * sites); this only concatenates.
+   */
   #url(path: string): string {
     return `${this.#baseUrl}${path}`;
   }
@@ -74,7 +78,10 @@ export class HttpBackbone implements Backbone {
     path: string,
     body?: unknown,
   ): Promise<unknown> {
-    const init: RequestInit = { method };
+    // A single-host localhost backbone never legitimately redirects. Default
+    // follow-redirect would silently re-POST an ADR-C12-sensitive body to
+    // wherever a `Location` header points (possibly cross-origin); refuse it.
+    const init: RequestInit = { method, redirect: "error" };
     if (body !== undefined) {
       init.body = JSON.stringify(body);
       init.headers = { "content-type": "application/json" };

@@ -10,14 +10,28 @@ import { DEFAULT_PORT } from "./server.js";
 /** The subset of `ServerOptions` derivable from the environment. */
 export type EnvConfig = Pick<ServerOptions, "port" | "host">;
 
+/** Hosts that keep the (unauthenticated) backbone reachable only on-host. */
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+
+/** Whether `host` binds the server to loopback only (on-host reachable). */
+function isLoopbackHost(host: string): boolean {
+  return LOOPBACK_HOSTS.has(host.toLowerCase());
+}
+
 /**
  * Read `PORT` (default {@link DEFAULT_PORT}) and `HOST` (default unset → the
  * server's `127.0.0.1`) from an environment-like map. A `PORT` that is not a
  * non-negative integer throws, so a typo fails fast rather than silently
  * binding the default.
+ *
+ * If `HOST` resolves to a non-loopback address, emit a one-line warning: the
+ * backbone is unauthenticated (identity anchoring is CAU-9/CAU-13), so binding
+ * off-loopback exposes it to anyone who can reach the interface. `warn` is
+ * injectable for tests; it defaults to `console.error` (stderr).
  */
 export function parseEnvConfig(
   env: Record<string, string | undefined> = process.env,
+  warn: (message: string) => void = (m) => console.error(m),
 ): EnvConfig {
   const config: { port: number; host?: string } = { port: DEFAULT_PORT };
 
@@ -35,6 +49,11 @@ export function parseEnvConfig(
   const rawHost = env.HOST;
   if (rawHost !== undefined && rawHost !== "") {
     config.host = rawHost;
+    if (!isLoopbackHost(rawHost)) {
+      warn(
+        `binding non-loopback host ${rawHost} — the backbone is unauthenticated; do not expose off-host`,
+      );
+    }
   }
 
   return config;
