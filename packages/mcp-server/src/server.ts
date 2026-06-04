@@ -14,6 +14,8 @@ import type { ServerConfig } from "./config.js";
 import { createSession } from "./session.js";
 import { registerTools, type CaucusTool } from "./tools/registry.js";
 import { statusTool } from "./tools/status.js";
+import { postTool, postFindingTool } from "./tools/post.js";
+import { readChannelTool } from "./tools/read-channel.js";
 
 /** Inputs to {@link createCaucusServer}. */
 export interface CreateCaucusServerOptions {
@@ -22,8 +24,8 @@ export interface CreateCaucusServerOptions {
   /** The backbone the session writes to / reads from. */
   readonly backbone: Backbone;
   /**
-   * The tools to register. Defaults to the built-in diagnostic set
-   * (`[statusTool]`); real tools (CAU-10/11/12) are injected here.
+   * The tools to register. Defaults to the built-in set (`caucus_status` plus
+   * the CAU-10 write/read tools); CAU-11/12 tools are injected here.
    */
   readonly tools?: readonly CaucusTool[];
 }
@@ -36,7 +38,7 @@ export interface CreateCaucusServerOptions {
 export function createCaucusServer({
   config,
   backbone,
-  tools = [statusTool],
+  tools = [statusTool, postTool, postFindingTool, readChannelTool],
 }: CreateCaucusServerOptions): McpServer {
   const session = createSession(config, backbone);
   const server = new McpServer({
