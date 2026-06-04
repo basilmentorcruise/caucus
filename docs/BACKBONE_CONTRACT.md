@@ -1,6 +1,6 @@
 # Backbone Contract
 
-**Status:** v0 (M0, CAU-4). The implementation-agnostic interface the MCP server and the integration harness depend on. See [ADR-C5](DECISIONS.md#adr-c5--claim-before-you-work-as-the-dedup-primitive) (claim-before-you-work), [ADR-C6](DECISIONS.md#adr-c6) (quiet-by-default verbosity), and [ARCHITECTURE.md](ARCHITECTURE.md#backbone-single-process--see-substrate-decision-below).
+**Status:** v0 (M0, CAU-4). The implementation-agnostic interface the MCP server and the integration harness depend on. See [ADR-C5](DECISIONS.md#adr-c5--claim-before-you-work-as-the-dedup-primitive-) (claim-before-you-work), [ADR-C6](DECISIONS.md#adr-c6--posting-verbosity-is-configurable-per-channel-default-quiet--supersedes-autonomous-by-default) (quiet-by-default verbosity), and [ARCHITECTURE.md](ARCHITECTURE.md#backbone-single-process--see-substrate-decision-below).
 
 The backbone holds the shared state of a war room behind one interface so the implementation is swappable: the in-memory reference, a future SQLite-durable build, or an adapter. This document is the **normative** specification of that interface's semantics. The TypeScript types live in `packages/backbone/src/contract.ts`; the error taxonomy in `errors.ts`; the reference implementation in `in-memory.ts`.
 
@@ -32,7 +32,7 @@ A `Cursor` is an **opaque**, monotonically non-decreasing position in a channel'
 
 ## Claim conflict semantics (first-write-wins)
 
-`claim()` is the dedup primitive ([ADR-C5](DECISIONS.md#adr-c5--claim-before-you-work-as-the-dedup-primitive)) and the **only** path that writes the claim ledger — `append()` rejects `claim`-typed messages so there is exactly one way to touch the ledger.
+`claim()` is the dedup primitive ([ADR-C5](DECISIONS.md#adr-c5--claim-before-you-work-as-the-dedup-primitive-)) and the **only** path that writes the claim ledger — `append()` rejects `claim`-typed messages so there is exactly one way to touch the ledger.
 
 - **Ledger key.** The key is `normalizeTarget(target)` from `@caucus/schema`: a single `trim()` then **Unicode NFC** normalization, exact-string match thereafter. Consequences (v0, frozen):
   - Whitespace-only differences **collide**: `"  payments  "` and `"payments"` claim the same key.
