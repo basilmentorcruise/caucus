@@ -7,14 +7,24 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "caucus-mcp": "./dist/index.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc --build"
+  },
+  "dependencies": {
+    "@caucus/backbone": "workspace:*",
+    "@caucus/schema": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0"
   }
 }
