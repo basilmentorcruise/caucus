@@ -12,9 +12,8 @@
  *   already-resolved identity.
  */
 import { UnknownChannelError } from "@caucus/backbone";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { CaucusSession } from "../session.js";
-import type { CaucusTool } from "./registry.js";
+import type { CaucusTool, ToolResult } from "./registry.js";
 
 /** The shape of the JSON `caucus_status` reports. */
 interface StatusReport {
@@ -35,10 +34,10 @@ export const statusTool: CaucusTool = {
     "Report this Caucus session's identity (agent_id, owner) and channel. " +
     "Read-only: posts nothing and reveals no secrets.",
   inputSchema: {},
-  async handle(session: CaucusSession): Promise<CallToolResult> {
+  async handle(session: CaucusSession): Promise<ToolResult> {
     let head: number | null = null;
     try {
-      const descriptor = await session.backbone.describeChannel(
+      const descriptor = await session.reader.describeChannel(
         session.channel,
       );
       head = descriptor.head;

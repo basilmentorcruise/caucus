@@ -23,6 +23,9 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
+  // This prints `String(err)` to stderr, so the CAU-13 credential loader must
+  // never embed the raw token in a thrown error message (ADR-C12) — or it would
+  // leak into the process's stderr on a startup failure.
   process.stderr.write(`caucus-mcp failed to start: ${String(err)}\n`);
   process.exitCode = 1;
 });

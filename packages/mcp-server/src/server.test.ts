@@ -60,6 +60,36 @@ describe("createCaucusServer (AC1 — list + call tools over MCP)", () => {
   });
 });
 
+describe("createCaucusServer (a throwing tool is surfaced, not fatal)", () => {
+  it("returns isError with the message and the server still serves listTools", async () => {
+    const throwingTool: CaucusTool = {
+      name: "test_throws",
+      description: "test-only: always throws",
+      inputSchema: {},
+      handle(): Promise<CallToolResult> {
+        return Promise.reject(new Error("boom from a tool"));
+      },
+    };
+
+    const client = await connectClient(new InMemoryBackbone(), [throwingTool]);
+
+    const result = (await client.callTool({
+      name: "test_throws",
+      arguments: {},
+    })) as CallToolResult;
+    expect(result.isError).toBe(true);
+    const first = result.content[0];
+    expect(first?.type).toBe("text");
+    expect((first as { type: "text"; text: string }).text).toContain(
+      "boom from a tool",
+    );
+
+    // The server did not crash: a subsequent request is still answered.
+    const { tools } = await client.listTools();
+    expect(tools.find((t) => t.name === "test_throws")).toBeDefined();
+  });
+});
+
 describe("createCaucusServer (AC2 — posts carry identity end-to-end)", () => {
   it("a tool's post lands in the backbone stamped with the session identity", async () => {
     const backbone = new InMemoryBackbone();

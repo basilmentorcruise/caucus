@@ -69,4 +69,47 @@ describe("createSession", () => {
       } as Parameters<typeof session.post>[0]),
     ).rejects.toThrow();
   });
+
+  describe("AC2 — identity cannot be bypassed (type-enforced write narrowing)", () => {
+    it("exposes only read methods on the reader's declared surface", async () => {
+      const backbone = await freshBackbone();
+      const session = createSession(config, backbone);
+
+      // The reader's *type* is the read-only BackboneReader; the read methods
+      // are reachable. (The narrowing is enforced at compile time — see the
+      // `@ts-expect-error` probe below — because `reader` is the same object as
+      // the backbone at runtime and so still carries `append`/`claim` as
+      // properties; a tool simply cannot name them without a type error.)
+      expect(typeof session.reader.describeChannel).toBe("function");
+      expect(typeof session.reader.readSince).toBe("function");
+      expect(typeof session.reader.listChannels).toBe("function");
+      expect(typeof session.reader.subscribe).toBe("function");
+    });
+
+    it("type-rejects reaching append/claim/createChannel off the session surface", async () => {
+      const backbone = await freshBackbone();
+      const session = createSession(config, backbone);
+
+      // Compile-time probe: a tool holding a CaucusSession cannot reach the
+      // write paths. Each `@ts-expect-error` REQUIRES the line below it to be a
+      // type error; if the narrowing regresses (reader widened back to the full
+      // Backbone, or the raw backbone re-exposed) these stop erroring and the
+      // suite fails to typecheck. This — not a runtime check — is what makes
+      // AC2 a type-enforced invariant rather than a convention.
+
+      // @ts-expect-error append is not on the session
+      void session.append;
+      // @ts-expect-error append (forge an identity) is not on the reader
+      void session.reader.append;
+      // @ts-expect-error the claim-ledger write is not on the reader
+      void session.reader.claim;
+      // @ts-expect-error createChannel is not on the reader
+      void session.reader.createChannel;
+      // @ts-expect-error the raw backbone is no longer exposed under this name
+      void session.backbone;
+
+      // Touch the session so the test has a runtime assertion too.
+      expect(session.channel).toBe("incident-1");
+    });
+  });
 });
