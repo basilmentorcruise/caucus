@@ -12,6 +12,9 @@ export default tseslint.config(
       "**/node_modules/**",
       "**/*.tsbuildinfo",
       "docs/spikes/**",
+      // Agent/tooling worktrees checked out under .claude/ are full repo
+      // copies — never lint into them from the primary checkout.
+      ".claude/**",
     ],
   },
   js.configs.recommended,

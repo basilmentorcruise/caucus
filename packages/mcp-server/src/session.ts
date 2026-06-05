@@ -8,13 +8,16 @@
  * CaucusSession.post} / {@link CaucusSession.claim} with an identity-free draft,
  * and the session stamps identity (see `identity.ts`) before delegating.
  *
- * {@link CaucusSession.post} and {@link CaucusSession.claim} are the ONLY write
- * paths, and this is now enforced by the type system, not by convention: the
- * full {@link Backbone} (with `append`/`claim`/`createChannel`) is captured in a
- * closure inside {@link createSession} and is NOT reachable from anything a tool
- * holds. The only backbone surface a tool can touch is {@link
- * CaucusSession.reader}, a read-only {@link BackboneReader} — so a tool cannot
- * append a message with a forged identity by going around `stampIdentity`.
+ * {@link CaucusSession.post}, {@link CaucusSession.claim}, and {@link
+ * CaucusSession.createChannel} are the ONLY write paths, and this is enforced by
+ * the type system, not by convention: the full {@link Backbone} (with
+ * `append`/`claim`/`createChannel`) is captured in a closure inside {@link
+ * createSession} and is NOT reachable from anything a tool holds. The only
+ * backbone surface a tool can touch is {@link CaucusSession.reader}, a read-only
+ * {@link BackboneReader} — so a tool cannot append a message with a forged
+ * identity by going around `stampIdentity`, nor create a channel with a forged
+ * `created_by` by going around the session (the session anchors it to
+ * `identity.owner`).
  *
  * Routing is deliberate: `post` goes to `append` (which rejects claim-typed
  * messages) and `claim` goes to `claim` (the only path that writes the claim
@@ -23,6 +26,7 @@
 import type {
   AppendResult,
   Backbone,
+  ChannelDescriptor,
   ClaimResult,
 } from "@caucus/backbone";
 import type { SessionIdentity, ServerConfig } from "./config.js";
@@ -41,6 +45,22 @@ export type BackboneReader = Pick<
   Backbone,
   "readSince" | "subscribe" | "describeChannel" | "listChannels"
 >;
+
+/**
+ * What a tool may supply when creating a channel through the session.
+ *
+ * Deliberately the {@link import("@caucus/backbone").CreateChannelOptions}
+ * MINUS `created_by`: the owner is server-anchored from the session identity,
+ * so a tool (and the model behind it) cannot forge attribution by passing a
+ * `created_by` of its choosing — the same write-path firewall that protects
+ * {@link CaucusSession.post}/{@link CaucusSession.claim} (ADR-C7).
+ */
+export interface SessionCreateChannelOptions {
+  /** Desired channel name; the backbone validates it against the slug rule. */
+  readonly channel: string;
+  /** What this channel is for. Stored verbatim on the descriptor. No secrets. */
+  readonly purpose: string;
+}
 
 /** The tool-facing session surface. */
 export interface CaucusSession {
@@ -70,6 +90,21 @@ export interface CaucusSession {
    * ledger (first-write-wins). Returns the granted/already-claimed outcome.
    */
   claim(draft: ToolMessageDraft): Promise<ClaimResult>;
+
+  /**
+   * Create a new ephemeral channel, attributed to this session's owner.
+   *
+   * This is a SANCTIONED write — like {@link post}/{@link claim} — and lives on
+   * the session, NOT on {@link reader}: `createChannel` is deliberately absent
+   * from {@link BackboneReader} so a tool cannot reach the raw backbone's create
+   * path and supply a forged `created_by`. The session anchors `created_by` to
+   * {@link identity}.owner server-side; the caller supplies only `channel` and
+   * `purpose` (see {@link SessionCreateChannelOptions}).
+   *
+   * @throws InvalidChannelNameError if `channel` is not a valid slug.
+   * @throws ChannelExistsError if a channel with that name already exists.
+   */
+  createChannel(opts: SessionCreateChannelOptions): Promise<ChannelDescriptor>;
 }
 
 /**
@@ -103,6 +138,17 @@ export function createSession(
     },
     claim(draft) {
       return backbone.claim(channel, stampIdentity(identity, draft));
+    },
+    createChannel({ channel: name, purpose }) {
+      // `created_by` is server-anchored from the session identity — the caller
+      // never supplies it, so attribution can't be forged (ADR-C7). This goes
+      // through the closed-over backbone, the only `createChannel` a session can
+      // reach; it is intentionally NOT on `reader`.
+      return backbone.createChannel({
+        channel: name,
+        purpose,
+        created_by: identity.owner,
+      });
     },
   };
 }

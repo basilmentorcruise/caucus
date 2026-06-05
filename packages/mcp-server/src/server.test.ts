@@ -386,3 +386,170 @@ describe("CAU-11 AC3 — claim/subscribe descriptions carry the conventions", ()
     expect(subscribe?.description).toMatch(/since/i);
   });
 });
+
+describe("CAU-12 AC1 — create a channel via tool over MCP", () => {
+  it("caucus_create_channel mints a room attributed to the session owner", async () => {
+    const client = await connectClient(await createdBackbone());
+
+    const created = jsonOf<{
+      channel: string;
+      purpose: string;
+      kind: string;
+      created_by: string;
+    }>(
+      (await client.callTool({
+        name: "caucus_create_channel",
+        arguments: { channel: "war-room", purpose: "checkout 500s" },
+      })) as CallToolResult,
+    );
+    expect(created.channel).toBe("war-room");
+    expect(created.purpose).toBe("checkout 500s");
+    expect(created.kind).toBe("ephemeral");
+    // created_by is server-anchored (no arg for it) — it is the session owner.
+    expect(created.created_by).toBe("alice");
+  });
+});
+
+describe("CAU-12 AC2 — list/describe reflect reality over MCP", () => {
+  it("a tool-created channel shows up in list and describe", async () => {
+    const client = await connectClient(await createdBackbone());
+
+    await client.callTool({
+      name: "caucus_create_channel",
+      arguments: { channel: "war-room", purpose: "checkout 500s" },
+    });
+
+    const list = jsonOf<{
+      count: number;
+      channels: { channel: string }[];
+    }>(
+      (await client.callTool({
+        name: "caucus_list_channels",
+        arguments: {},
+      })) as CallToolResult,
+    );
+    expect(list.channels.map((c) => c.channel).sort()).toEqual([
+      "incident-1",
+      "war-room",
+    ]);
+
+    const described = jsonOf<{ channel: string; purpose: string }>(
+      (await client.callTool({
+        name: "caucus_describe_channel",
+        arguments: { channel: "war-room" },
+      })) as CallToolResult,
+    );
+    expect(described.channel).toBe("war-room");
+    expect(described.purpose).toBe("checkout 500s");
+
+    // describe with no arg defaults to the session channel.
+    const self = jsonOf<{ channel: string }>(
+      (await client.callTool({
+        name: "caucus_describe_channel",
+        arguments: {},
+      })) as CallToolResult,
+    );
+    expect(self.channel).toBe("incident-1");
+  });
+
+  it("describing an unknown room is surfaced as an error over MCP", async () => {
+    const client = await connectClient(await createdBackbone());
+    const result = (await client.callTool({
+      name: "caucus_describe_channel",
+      arguments: { channel: "ghost" },
+    })) as CallToolResult;
+    expect(result.isError).toBe(true);
+  });
+});
+
+describe("CAU-12 — join yields a working read cursor over MCP", () => {
+  it("create -> join another room -> post there (via a 2nd session) -> read the delta", async () => {
+    const backbone = await createdBackbone();
+    const alice = await connectClient(backbone); // posts to incident-1
+
+    // Create a second room and join it for reading.
+    await alice.callTool({
+      name: "caucus_create_channel",
+      arguments: { channel: "incident-2", purpose: "other room" },
+    });
+    const joined = jsonOf<{ channel: string; cursor: number; head: number }>(
+      (await alice.callTool({
+        name: "caucus_join_channel",
+        arguments: { channel: "incident-2" },
+      })) as CallToolResult,
+    );
+    expect(joined.channel).toBe("incident-2");
+    expect(joined.cursor).toBe(joined.head);
+
+    // A session bound to incident-2 posts there; the joined cursor sees it.
+    const bobServer = createCaucusServer({
+      config: {
+        identity: { agent_id: "agent-2", owner: "bob" },
+        channel: "incident-2",
+      },
+      backbone,
+    });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await bobServer.connect(st);
+    const bob = new Client({ name: "bob", version: "0.0.0" });
+    await bob.connect(ct);
+    await bob.callTool({
+      name: "caucus_post",
+      arguments: { type: "note", body: "in the other room" },
+    });
+
+    // THE AC FLOW: alice — whose session channel is incident-1 — consumes her
+    // joined cursor through the tool surface by passing `channel`. Without the
+    // override this would silently re-read incident-1 (the CAU-12 gate FAIL).
+    const delta = jsonOf<{
+      count: number;
+      messages: { body: string; owner: string }[];
+    }>(
+      (await alice.callTool({
+        name: "caucus_read_channel",
+        arguments: { channel: "incident-2", since: joined.cursor },
+      })) as CallToolResult,
+    );
+    expect(delta.count).toBe(1);
+    expect(delta.messages[0]?.body).toBe("in the other room");
+    expect(delta.messages[0]?.owner).toBe("bob");
+
+    // And without `channel`, the same call reads alice's own (empty) room —
+    // the default is unchanged for every pre-CAU-12 caller.
+    const own = jsonOf<{ count: number }>(
+      (await alice.callTool({
+        name: "caucus_read_channel",
+        arguments: { since: 0 },
+      })) as CallToolResult,
+    );
+    expect(own.count).toBe(0);
+  });
+});
+
+describe("CAU-12 — channel tools are listed with convention-bearing descriptions", () => {
+  it("all four tools are present with non-empty descriptions and the right norms", async () => {
+    const client = await connectClient(await createdBackbone());
+    const { tools } = await client.listTools();
+
+    const list = tools.find((t) => t.name === "caucus_list_channels");
+    const describe_ = tools.find((t) => t.name === "caucus_describe_channel");
+    const create = tools.find((t) => t.name === "caucus_create_channel");
+    const join = tools.find((t) => t.name === "caucus_join_channel");
+
+    for (const t of [list, describe_, create, join]) {
+      expect(t).toBeDefined();
+      expect(t?.description).toBeTruthy();
+    }
+
+    // list/describe teach discovery-before-create.
+    expect(list?.description).toMatch(/discover|existing/i);
+    expect(describe_?.description).toMatch(/before you create|existing/i);
+    // create teaches ephemeral war-room semantics, the slug rule, and no secrets.
+    expect(create?.description).toMatch(/ephemeral/i);
+    expect(create?.description).toMatch(/\[a-z0-9\]/);
+    expect(create?.description).toMatch(/secret/i);
+    // join explains the read-cursor-only semantics honestly.
+    expect(join?.description).toMatch(/CAUCUS_CHANNEL/);
+    expect(join?.description).toMatch(/read cursor/i);
+  });
+});

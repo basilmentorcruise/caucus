@@ -11,6 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { InMemoryBackbone } from "@caucus/backbone";
 import { loadConfig } from "./config.js";
 import { createCaucusServer } from "./server.js";
+import { ensureChannel } from "./bootstrap.js";
 
 async function main(): Promise<void> {
   const config = loadConfig(process.env);
@@ -18,6 +19,10 @@ async function main(): Promise<void> {
   // merged. No HTTP backbone client exists yet, so the server runs against a
   // process-local InMemoryBackbone placeholder.
   const backbone = new InMemoryBackbone();
+  // Ensure the session's channel exists before serving: a spawned server
+  // otherwise has no `CAUCUS_CHANNEL` created, so every write would fail with
+  // `unknown_channel` (CAU-10 validation gap). Idempotent — see ensureChannel.
+  await ensureChannel(backbone, config);
   const server = createCaucusServer({ config, backbone });
   await server.connect(new StdioServerTransport());
 }
