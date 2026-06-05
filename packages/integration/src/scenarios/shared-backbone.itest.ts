@@ -190,10 +190,18 @@ describe("shared HTTP backbone — two MCP processes + the hook (CAU-50)", () =>
     // describe→create→(409 ⇒ ChannelExistsError ⇒ describe) reconstruction must
     // survive the wire so BOTH come up. If either loses the race uncleanly,
     // connect() rejects and this beforeAll fails.
-    [clientA, clientB] = await Promise.all([
+    // allSettled, not all: if one connect rejects after the other's child has
+    // spawned, the survivor must still be bound so afterAll can terminate it
+    // (Promise.all would drop the reference and leak the process).
+    const settled = await Promise.allSettled([
       connectMcp(url, TOK_A),
       connectMcp(url, TOK_B),
     ]);
+    const [a, b] = settled;
+    if (a.status === "fulfilled") clientA = a.value;
+    if (b.status === "fulfilled") clientB = b.value;
+    const failed = settled.find((s) => s.status === "rejected");
+    if (failed) throw failed.reason;
   });
 
   afterAll(async () => {

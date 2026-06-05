@@ -98,7 +98,7 @@ describe("loadConfig", () => {
         CAUCUS_URL: "http://127.0.0.1:4317",
       }),
     ).toEqual({
-      identity: { agent_id: "session", owner: "session" },
+      identity: { agent_id: "session", owner: "(anchored server-side)" },
       channel: "room",
     });
   });

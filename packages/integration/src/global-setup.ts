@@ -25,10 +25,18 @@
  * deliberately excluded.
  */
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+
+/** Bins the spawned-subprocess scenarios need; asserted to exist post-build. */
+const REQUIRED_BINS = [
+  "packages/mcp-server/dist/index.js",
+  "packages/hook/dist/bin.js",
+  "packages/backbone-server/dist/bin.js",
+];
 
 export default function setup(): void {
   execFileSync(
@@ -36,4 +44,16 @@ export default function setup(): void {
     ["--filter", "@caucus/mcp-server...", "--filter", "@caucus/hook...", "build"],
     { cwd: REPO_ROOT, stdio: "inherit" },
   );
+  // `tsc --build` trusts .tsbuildinfo: if dist/ was deleted but the buildinfo
+  // survived (a partial clean), the build silently emits NOTHING and every
+  // spawned-bin scenario dies with an opaque startup timeout. Fail loudly here
+  // instead, with the actionable fix.
+  const missing = REQUIRED_BINS.filter((p) => !existsSync(resolve(REPO_ROOT, p)));
+  if (missing.length > 0) {
+    throw new Error(
+      `integration globalSetup: built bins missing after pnpm build: ` +
+        `${missing.join(", ")} — stale *.tsbuildinfo with deleted dist? ` +
+        `Run \`pnpm clean && pnpm build\` (or delete packages/*/tsconfig.tsbuildinfo).`,
+    );
+  }
 }

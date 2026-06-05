@@ -90,7 +90,7 @@ export function parseToken(token: string): SessionIdentity {
  */
 const OPAQUE_TOKEN_IDENTITY: SessionIdentity = {
   agent_id: "session",
-  owner: "session",
+  owner: "(anchored server-side)",
 };
 
 /**
