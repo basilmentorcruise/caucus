@@ -16,6 +16,8 @@ import { registerTools, type CaucusTool } from "./tools/registry.js";
 import { statusTool } from "./tools/status.js";
 import { postTool, postFindingTool } from "./tools/post.js";
 import { readChannelTool } from "./tools/read-channel.js";
+import { claimTool } from "./tools/claim.js";
+import { subscribeTool } from "./tools/subscribe.js";
 
 /** Inputs to {@link createCaucusServer}. */
 export interface CreateCaucusServerOptions {
@@ -38,7 +40,14 @@ export interface CreateCaucusServerOptions {
 export function createCaucusServer({
   config,
   backbone,
-  tools = [statusTool, postTool, postFindingTool, readChannelTool],
+  tools = [
+    statusTool,
+    postTool,
+    postFindingTool,
+    readChannelTool,
+    claimTool,
+    subscribeTool,
+  ],
 }: CreateCaucusServerOptions): McpServer {
   const session = createSession(config, backbone);
   const server = new McpServer({
