@@ -16,7 +16,7 @@
  */
 export type { ClientHandle, Connector } from "./connector.js";
 export { inProcessConnector } from "./connectors/in-process.js";
-export { httpConnector } from "./connectors/http.js";
+export { httpConnector, identityForId, tokenFor } from "./connectors/http.js";
 export { runScenarios } from "./harness.js";
 export type { Scenario } from "./scenario.js";
 export { claimMsg, finding, type MessageOpts } from "./fixtures.js";

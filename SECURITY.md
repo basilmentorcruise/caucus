@@ -87,13 +87,19 @@ confidentiality boundary between the people on it.
 ### Network exposure
 
 The backbone is an **HTTP listener**. By default it binds **`127.0.0.1`** (loopback only), so
-nothing off-host can reach it. It is **unauthenticated** in v1 — identity anchoring
-([ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer))
-verifies who a message is *from*, but nothing gates who may *connect* (that lands with CAU-9 / CAU-13).
-The **`HOST` env var is the single knob that widens this**: setting it to a non-loopback address
-makes the unauthenticated backbone reachable by anyone on that interface. **Do not bind a
-non-loopback host off-host** — keep it on `127.0.0.1` and reach remote sessions through a tunnel you
-control, not by exposing the port.
+nothing off-host can reach it. **Writes are token-gated (CAU-13)**: `append`, `claim`, and
+`createChannel` require a bearer token from the server's `CAUCUS_TOKENS` map, and the server
+**resolves the token and overwrites the message's `agent_id`/`owner` server-side** — a client's
+claimed identity never reaches the log, which is how
+[ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer)'s
+anti-forgery is enforced (a stolen token still impersonates its owner — guard tokens like any
+credential). With `CAUCUS_TOKENS` unset the server is **fail-closed**: every write is rejected 401.
+**Reads remain open within the trust boundary** (everyone who can reach the port can read
+everything — designed-in for the intra-team model, and what keeps the read-only hook tokenless).
+The **`HOST` env var is the single knob that widens exposure**: setting it to a non-loopback
+address makes the backbone (incl. open reads) reachable by anyone on that interface. **Do not bind
+a non-loopback host off-host** — keep it on `127.0.0.1` and reach remote sessions through a tunnel
+you control, not by exposing the port.
 
 ### The secret-leak vector (why this document exists)
 
@@ -200,10 +206,14 @@ deliberately. If you suspect a join token has been compromised: revoke/rotate th
 shared team secret), tear down the affected channel, and treat that channel's entire log as
 disclosed.
 
-### 4. Identity anchoring (shipped design intent)
+### 4. Identity anchoring (SHIPPED — CAU-13)
 
 Every message is stamped with its `agent-id` and `human owner`, **anchored server-side so the
 owner cannot be forged** ([ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer)).
+Mechanism: writes present a bearer token; the backbone server resolves it against its
+`CAUCUS_TOKENS` map and **overwrites** the message's identity fields with the token's
+`{agent_id, owner}` before the message is stored — there is no code path where a client-asserted
+owner reaches the log.
 This doesn't keep secrets out of the log, but it ensures that whatever *is* in the log is reliably
 attributable — you can always tell which teammate stands behind a given post, which matters for
 both coordination and incident review. (As above: anchoring prevents impersonation; it does not
@@ -237,7 +247,7 @@ is **not** message-content confidentiality and is **not** end-to-end encryption.
 | End-to-end encryption | **Not provided** in v1 |
 | Server operator can read the log | **Yes** — single shared server, plaintext (ADR-C9) |
 | Server-side secret scanning / redaction | **Not provided** — keeping secrets out is the operator's job |
-| Owner identity anchoring (no forged owner) | **Shipped design** (ADR-C7) — does not defend a stolen token |
+| Owner identity anchoring (no forged owner) | **SHIPPED** (CAU-13: bearer-token resolve-and-overwrite at the HTTP write boundary, ADR-C7) — does not defend a stolen token |
 | AEAD `{agent_id,owner,to,ts,channel}` routing binding | **NOT YET IMPLEMENTED** — backbone design intent (ADR-C11/C12) |
 
 The honest one-liner: **Caucus coordinates a trusted team; it does not keep secrets from that

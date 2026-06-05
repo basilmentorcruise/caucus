@@ -34,6 +34,14 @@ import { backboneErrorFromWire, type WireErrorBody } from "./wire-errors.js";
 export interface HttpBackboneOptions {
   /** Override the global `fetch` (e.g. to inject a stub in unit tests). */
   readonly fetch?: typeof fetch;
+  /**
+   * Bearer token presented as `Authorization: Bearer <token>` on EVERY request
+   * (CAU-13). The server gates only the three write routes on it and ignores it
+   * on reads, so sending it everywhere is correct and keeps `#request` simple.
+   * Omitted ⇒ no header sent (writes will 401 against a token-gated server). The
+   * token is NEVER logged or echoed in a thrown error.
+   */
+  readonly token?: string;
 }
 
 /** Type guard for the error wire body. */
@@ -47,6 +55,8 @@ function isWireErrorBody(value: unknown): value is WireErrorBody {
 export class HttpBackbone implements Backbone {
   readonly #baseUrl: string;
   readonly #fetch: typeof fetch;
+  /** Held privately and only ever sent as a header — never logged or echoed. */
+  readonly #token: string | undefined;
 
   /**
    * @param baseUrl Server base URL, e.g. `http://127.0.0.1:4317`. A trailing
@@ -57,6 +67,7 @@ export class HttpBackbone implements Backbone {
     // Bind so `fetch` keeps its `undefined` `this` (some impls assert on it).
     const f = opts.fetch ?? fetch;
     this.#fetch = (input, init) => f(input, init);
+    this.#token = opts.token;
   }
 
   /**
@@ -82,9 +93,19 @@ export class HttpBackbone implements Backbone {
     // follow-redirect would silently re-POST an ADR-C12-sensitive body to
     // wherever a `Location` header points (possibly cross-origin); refuse it.
     const init: RequestInit = { method, redirect: "error" };
+    // Build headers up front so the bearer (CAU-13) is attached to every request
+    // — reads ignore it server-side; writes require it. The token is only ever
+    // placed in this header, never logged or surfaced in an error.
+    const headers: Record<string, string> = {};
     if (body !== undefined) {
       init.body = JSON.stringify(body);
-      init.headers = { "content-type": "application/json" };
+      headers["content-type"] = "application/json";
+    }
+    if (this.#token !== undefined && this.#token !== "") {
+      headers.authorization = `Bearer ${this.#token}`;
+    }
+    if (Object.keys(headers).length > 0) {
+      init.headers = headers;
     }
     const res = await this.#fetch(this.#url(path), init);
     const text = await res.text();
