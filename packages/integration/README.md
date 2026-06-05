@@ -62,9 +62,11 @@ Conventions that keep scenarios correct:
 
 The `channels-join.itest.ts` scenario (CAU-5) runs over the `httpConnector` and
 covers the CAU-5 acceptance criteria end-to-end (create + 3-client join,
-descriptor/list correctness, mid-session join). The claim/cursor scenarios run
-in-process because they exercise `claim()`, whose server-side route is CAU-7;
-they will be parameterized over HTTP once that route lands.
+descriptor/list correctness, mid-session join). The claim/cursor scenarios
+(`concurrent-claim`, `cursor-isolation`, `cursor-catchup`) are parameterized via
+`describe.each` over BOTH connectors — in-process AND HTTP — so first-write-wins
+and cursor isolation are proven over the real wire now that the claim route
+landed (CAU-7).
 
 ## Adding a connector
 
