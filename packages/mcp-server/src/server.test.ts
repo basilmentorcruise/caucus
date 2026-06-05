@@ -316,11 +316,14 @@ describe("CAU-11 AC1 — claim surfaces granted vs already_claimed over MCP", ()
     expect(takenResult.isError).toBeFalsy();
     const taken = jsonOf<{
       outcome: string;
-      by: { agent_id: string; owner: string };
+      by: { agent_id: string; owner: string; ts: string; msg_id: string };
     }>(takenResult);
     expect(taken.outcome).toBe("already_claimed");
     expect(taken.by.agent_id).toBe("agent-1");
     expect(taken.by.owner).toBe("alice");
+    // Wire contract: the full holder identity survives the transport.
+    expect(taken.by.ts).toBeTruthy();
+    expect(taken.by.msg_id).toBeTruthy();
   });
 });
 

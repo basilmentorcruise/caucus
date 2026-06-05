@@ -77,8 +77,14 @@ interface ClaimArgs {
 /**
  * Build a claim {@link ToolMessageDraft} from parsed args.
  *
- * The `target` is normalized here (trim + NFC) so the stored claim and the
- * ledger key agree on the first-write-wins identity. `body` is derived: the
+ * The `target` is normalized here (trim + NFC) because this is load-bearing
+ * for STORAGE: the schema codec stores `target` verbatim (it does not
+ * normalize — see schema/src/target.ts), while the backbone derives its
+ * ledger key separately. Normalizing here keeps the stored target and the
+ * ledger key in agreement. Side effect: a whitespace-only target throws the
+ * schema's MalformedMessageError at this layer, BEFORE the backbone would
+ * have re-wrapped it as InvalidMessageError (see in-memory.ts) — the unit
+ * test pins that error type deliberately. `body` is derived: the
  * schema requires a non-empty body on a claim, so we use a trimmed non-empty
  * `note` when present, else a generated `claiming ${target}`. Optional keys are
  * copied only when present, so we never spread `undefined` into the draft
