@@ -8,6 +8,7 @@
  *
  * `teardown()` closes the server and frees the port.
  */
+import { InMemoryBackbone, type SeatbeltOptions } from "@caucus/backbone";
 import { HttpBackbone, startServer, type RunningServer } from "@caucus/backbone-server";
 
 import type { ClientHandle, Connector } from "../connector.js";
@@ -16,8 +17,13 @@ import type { ClientHandle, Connector } from "../connector.js";
  * A {@link Connector} backed by a real HTTP backbone server on `127.0.0.1` with
  * an OS-assigned ephemeral port. Each client connects via its own
  * {@link HttpBackbone}; all share the one server's state.
+ *
+ * @param opts optional seatbelt tunables (ADR-C8). The server runs over an
+ * {@link InMemoryBackbone} built from them, so a low `maxPostsPerMinute` trips
+ * the cap over the wire too. Omitted ⇒ production defaults (existing scenarios
+ * unchanged).
  */
-export function httpConnector(): Connector {
+export function httpConnector(opts: SeatbeltOptions = {}): Connector {
   let server: RunningServer | undefined;
 
   return {
@@ -25,7 +31,8 @@ export function httpConnector(): Connector {
 
     async boot(): Promise<void> {
       // Port 0 → OS-assigned ephemeral port, so concurrent suites never collide.
-      server = await startServer({ port: 0 });
+      // The server serves an in-memory backbone carrying the seatbelt options.
+      server = await startServer({ port: 0, backbone: new InMemoryBackbone(opts) });
     },
 
     connectClient(id: string): Promise<ClientHandle> {

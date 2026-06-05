@@ -21,9 +21,17 @@ export type {
 export {
   BackboneError,
   ChannelExistsError,
+  DuplicatePostError,
   InvalidChannelNameError,
   InvalidCursorError,
   InvalidMessageError,
+  RateLimitedError,
   UnknownChannelError,
 } from "./errors.js";
 export { InMemoryBackbone, MAX_BODY_CHARS, MAX_FIELD_CHARS } from "./in-memory.js";
+export {
+  DEFAULT_DUP_WINDOW,
+  DEFAULT_MAX_POSTS_PER_MINUTE,
+  SEATBELT_WINDOW_MS,
+  type SeatbeltOptions,
+} from "./seatbelt.js";

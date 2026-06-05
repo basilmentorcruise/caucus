@@ -4,8 +4,10 @@
  * Pure in-process state: an event log plus two projections (a mutable channel
  * descriptor and a claim ledger) per channel. It is the substrate the unit and
  * integration tests run against, and the executable specification of the
- * contract's semantics. NO HTTP, NO durability, NO seatbelts, NO identity
- * anchoring, NO lease enforcement — those are CAU-5/6/7/18.
+ * contract's semantics. Seatbelts (ADR-C8 — per-agent rate limit + loop/dup
+ * detection) are enforced here via a pure synchronous {@link Seatbelt}. NO HTTP,
+ * NO durability, NO identity anchoring, NO lease enforcement — those are
+ * CAU-5/18.
  *
  * The whole-ballgame property is claim atomicity: `claim()` performs all
  * validation and all `await`s BEFORE entering a critical section, then reads and
@@ -41,6 +43,7 @@ import {
   InvalidMessageError,
   UnknownChannelError,
 } from "./errors.js";
+import { dupKeyFor, Seatbelt, type SeatbeltOptions } from "./seatbelt.js";
 
 /** Maximum number of characters allowed in a message `body` at the boundary. */
 export const MAX_BODY_CHARS = 16_000;
@@ -101,6 +104,23 @@ interface ChannelState {
 export class InMemoryBackbone implements Backbone {
   /** All channels, keyed by name. */
   readonly #channels = new Map<string, ChannelState>();
+
+  /**
+   * The seatbelt (ADR-C8): per-agent rate limit + loop/dup detection. Pure and
+   * synchronous, so it can run inside the claim critical section without any
+   * `await`. Built from the constructor options; defaults never throttle normal
+   * demo traffic.
+   */
+  readonly #seatbelt: Seatbelt;
+
+  /**
+   * @param opts seatbelt tunables (cap / window / clock). Defaults are
+   * production-safe: a generous per-agent posts/min cap and `Date.now` as the
+   * clock. Tests inject a low cap and/or a deterministic clock.
+   */
+  constructor(opts: SeatbeltOptions = {}) {
+    this.#seatbelt = new Seatbelt(opts);
+  }
 
   /**
    * Monotonic counter backing the `ts` stamp. Bare `Date.toISOString()` ties
@@ -263,6 +283,15 @@ export class InMemoryBackbone implements Backbone {
       ]);
     }
     const validated = this.#validateMessage(msg);
+    // Seatbelt (ADR-C8): rate + loop/dup gate. `admit` throws (rate_limited /
+    // duplicate_post) BEFORE recording anything, so a rejected post is never
+    // appended and consumes no budget. Synchronous — no `await` is introduced.
+    this.#seatbelt.admit(
+      channel,
+      msg.agent_id,
+      dupKeyFor(msg.type, msg.body),
+      this.#seatbelt.now(),
+    );
     const message = this.#appendSync(state, validated);
     return { message, cursor: state.descriptor.head };
   }
@@ -309,12 +338,26 @@ export class InMemoryBackbone implements Backbone {
       throw err;
     }
 
+    // Seatbelt (ADR-C8) — the rate-limit split for claims. CHECK here, BEFORE
+    // the critical section, but DO NOT record yet: a claim that loses the
+    // first-write-wins race (`already_claimed`) is a no-op write and must NOT be
+    // charged budget — otherwise a swarm of agents racing the same hot target
+    // would all be rate-limited for losing a race they can't avoid. We capture
+    // `now` once so the check and the in-branch record use the same instant.
+    // Claims are NOT dup-checked: the ledger's `already_claimed` IS the dedup
+    // answer for a repeated claim, so a duplicate_post throw would be redundant
+    // and would mask the real (claim) outcome. Synchronous — no `await`, so the
+    // critical section below stays a true compare-and-set.
+    const now = this.#seatbelt.now();
+    this.#seatbelt.checkRate(channel, msg.agent_id, now);
+
     // ---- BEGIN critical section: NO `await` between the ledger read and the
     // ---- ledger write. This is the first-write-wins compare-and-set. When
     // ---- durability lands this MUST become a single transaction / unique
     // ---- constraint, never a read-then-write across an `await`.
     const existing = state.claimLedger.get(key);
     if (existing !== undefined) {
+      // Loser: consumes NO rate budget (we never called recordRate).
       return {
         outcome: "already_claimed",
         by: {
@@ -332,6 +375,8 @@ export class InMemoryBackbone implements Backbone {
       ts: message.ts,
       msg_id: message.msg_id,
     });
+    // Winner: record the post against the rate window now that it's committed.
+    this.#seatbelt.recordRate(channel, msg.agent_id, now);
     // ---- END critical section ----
 
     return { outcome: "granted", message, cursor: state.descriptor.head };

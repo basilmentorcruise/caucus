@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { InMemoryBackbone, MAX_BODY_CHARS } from "@caucus/backbone";
+import {
+  DuplicatePostError,
+  InMemoryBackbone,
+  MAX_BODY_CHARS,
+  RateLimitedError,
+} from "@caucus/backbone";
 import type { AppendedMessage } from "@caucus/backbone";
 import { MESSAGE_TYPES } from "@caucus/schema";
 import { isUlid } from "@caucus/schema";
 import type { ServerConfig } from "../config.js";
+import type { CaucusSession } from "../session.js";
 import { createSession } from "../session.js";
 import { postTool, postFindingTool } from "./post.js";
 
@@ -119,6 +125,52 @@ describe("caucus_post", () => {
     // The error states the limit, never the offending content.
     expect(message).not.toContain(huge);
     expect(message).not.toContain("xxxxxxxxxx");
+  });
+
+  // AC1/AC2 — the agent-visible proof. The SDK turns a `handle` rejection into
+  // `isError` text carrying the thrown message (see registry.ts WARNING), so what
+  // we must prove here is that the message the agent sees is the actionable
+  // seatbelt instruction and that it never echoes the post body (ADR-C12). We
+  // drive it with a session stub whose `post` throws the seatbelt error.
+  function stubSession(err: Error): CaucusSession {
+    return {
+      identity: { agent_id: "agent-1", owner: "alice" },
+      channel: "incident-1",
+      reader: {} as CaucusSession["reader"],
+      post: () => Promise.reject(err),
+      claim: () => Promise.reject(err),
+      createChannel: () => Promise.reject(err),
+    } as CaucusSession;
+  }
+
+  it("surfaces RateLimitedError's actionable message to the agent, no body (AC1)", async () => {
+    const session = stubSession(new RateLimitedError(30, 12_000));
+    let thrown: unknown;
+    await postTool
+      .handle(session, { type: "note", body: "spammy-loop-body" })
+      .catch((e) => {
+        thrown = e;
+      });
+    expect(thrown).toBeInstanceOf(RateLimitedError);
+    const message = (thrown as Error).message;
+    expect(message).toContain("at most 30 posts/min");
+    expect(message).toContain("batch your updates");
+    expect(message).not.toContain("spammy-loop-body");
+  });
+
+  it("surfaces DuplicatePostError's actionable message to the agent, no body (AC2)", async () => {
+    const session = stubSession(new DuplicatePostError());
+    let thrown: unknown;
+    await postTool
+      .handle(session, { type: "note", body: "identical-loop-body" })
+      .catch((e) => {
+        thrown = e;
+      });
+    expect(thrown).toBeInstanceOf(DuplicatePostError);
+    const message = (thrown as Error).message;
+    expect(message).toContain("Duplicate of your previous post");
+    expect(message).toContain("Vary the content or stop repeating");
+    expect(message).not.toContain("identical-loop-body");
   });
 });
 

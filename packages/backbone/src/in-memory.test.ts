@@ -9,12 +9,14 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   ChannelExistsError,
+  DuplicatePostError,
   InMemoryBackbone,
   InvalidChannelNameError,
   InvalidCursorError,
   InvalidMessageError,
   MAX_BODY_CHARS,
   MAX_FIELD_CHARS,
+  RateLimitedError,
   UnknownChannelError,
 } from "./index.js";
 
@@ -251,9 +253,13 @@ describe("channels", () => {
   });
 
   it("stamps ts strictly increasing under a tight append loop", async () => {
+    // 50 posts from one agent would trip the default rate cap (30); this test is
+    // about the monotonic stamp, not seatbelts, so use a backbone with a high cap.
+    const bb = new InMemoryBackbone({ maxPostsPerMinute: 1000 });
+    await bb.createChannel({ channel: CH, purpose: "investigation", created_by: "alice" });
     const stamps: string[] = [];
     for (let i = 0; i < 50; i++) {
-      const r = await b.append(CH, finding("a1", `m${i}`));
+      const r = await bb.append(CH, finding("a1", `m${i}`));
       stamps.push(r.message.ts);
     }
     const sorted = [...stamps].sort();
@@ -454,5 +460,147 @@ describe("validation & errors", () => {
       target: "   ",
     };
     await expect(b.claim(CH, ws)).rejects.toBeInstanceOf(InvalidMessageError);
+  });
+});
+
+describe("seatbelts (ADR-C8) — rate limit + loop/dup at the append path", () => {
+  /** Read the channel head (number of appended messages). */
+  async function head(bb: InMemoryBackbone): Promise<number> {
+    return (await bb.describeChannel(CH)).head;
+  }
+
+  it("rejects an over-cap append with RateLimitedError; log + head unchanged", async () => {
+    const bb = new InMemoryBackbone({ maxPostsPerMinute: 2 });
+    await bb.createChannel({ channel: CH, purpose: "p", created_by: "alice" });
+
+    await bb.append(CH, finding("a1", "m0"));
+    await bb.append(CH, finding("a1", "m1"));
+    const headBefore = await head(bb);
+
+    await expect(bb.append(CH, finding("a1", "m2"))).rejects.toBeInstanceOf(
+      RateLimitedError,
+    );
+    expect(await head(bb)).toBe(headBefore);
+    const { messages } = await bb.readSince(CH, 0);
+    expect(messages.map((m) => m.body)).toEqual(["m0", "m1"]);
+  });
+
+  it("the over-cap error states the cap and a wait, never the body (ADR-C12)", async () => {
+    const bb = new InMemoryBackbone({ maxPostsPerMinute: 1 });
+    await bb.createChannel({ channel: CH, purpose: "p", created_by: "alice" });
+    await bb.append(CH, finding("a1", "first"));
+
+    let thrown: RateLimitedError | undefined;
+    await bb.append(CH, finding("a1", "secret-body-content")).catch((e) => {
+      thrown = e as RateLimitedError;
+    });
+    expect(thrown).toBeInstanceOf(RateLimitedError);
+    expect(thrown!.message).toContain("at most 1 posts/min");
+    expect(thrown!.message).not.toContain("secret-body-content");
+  });
+
+  it("rejects a duplicate consecutive append with DuplicatePostError; log unchanged", async () => {
+    const bb = new InMemoryBackbone();
+    await bb.createChannel({ channel: CH, purpose: "p", created_by: "alice" });
+    await bb.append(CH, finding("a1", "same"));
+    const headBefore = await head(bb);
+
+    await expect(bb.append(CH, finding("a1", "same"))).rejects.toBeInstanceOf(
+      DuplicatePostError,
+    );
+    expect(await head(bb)).toBe(headBefore);
+  });
+
+  it("the duplicate error never echoes the body (ADR-C12)", async () => {
+    const bb = new InMemoryBackbone();
+    await bb.createChannel({ channel: CH, purpose: "p", created_by: "alice" });
+    await bb.append(CH, finding("a1", "secret-loop-text"));
+    let thrown: DuplicatePostError | undefined;
+    await bb.append(CH, finding("a1", "secret-loop-text")).catch((e) => {
+      thrown = e as DuplicatePostError;
+    });
+    expect(thrown).toBeInstanceOf(DuplicatePostError);
+    expect(thrown!.message).not.toContain("secret-loop-text");
+  });
+
+  it("default opts never trip for a handful of varied posts (AC3 engine guard)", async () => {
+    // Default backbone `b` (cap 30); a realistic burst of distinct posts admits.
+    for (let i = 0; i < 8; i++) {
+      await expect(b.append(CH, finding("a1", `update ${i}`))).resolves.toBeDefined();
+    }
+  });
+
+  it("a granted claim consumes rate budget", async () => {
+    const bb = new InMemoryBackbone({ maxPostsPerMinute: 1 });
+    await bb.createChannel({ channel: CH, purpose: "p", created_by: "alice" });
+
+    const granted = await bb.claim(CH, claim("a1", "t1"));
+    expect(granted.outcome).toBe("granted");
+    // The single slot is now spent: the next claim from a1 is rate-limited.
+    await expect(bb.claim(CH, claim("a1", "t2"))).rejects.toBeInstanceOf(
+      RateLimitedError,
+    );
+  });
+
+  it("an already_claimed (losing) claim consumes NO budget — losers don't throw rate_limited", async () => {
+    const bb = new InMemoryBackbone({ maxPostsPerMinute: 1 });
+    await bb.createChannel({ channel: CH, purpose: "p", created_by: "alice" });
+
+    // a2 wins the target first.
+    const won = await bb.claim(CH, claim("a2", "hot"));
+    expect(won.outcome).toBe("granted");
+
+    // a1 loses the SAME target many times: each is already_claimed, none charged,
+    // so a1 is never rate-limited despite a cap of 1.
+    for (let i = 0; i < 5; i++) {
+      const r = await bb.claim(CH, claim("a1", "hot"));
+      expect(r.outcome).toBe("already_claimed");
+    }
+    // And because a1 spent nothing, a1 can still win a fresh target.
+    const fresh = await bb.claim(CH, claim("a1", "cold"));
+    expect(fresh.outcome).toBe("granted");
+  });
+
+  it("an over-cap claim rejection leaves the ledger uncorrupted", async () => {
+    const bb = new InMemoryBackbone({ maxPostsPerMinute: 1 });
+    await bb.createChannel({ channel: CH, purpose: "p", created_by: "alice" });
+
+    await bb.claim(CH, claim("a1", "t1")); // spends a1's only slot
+    const headBefore = (await bb.describeChannel(CH)).head;
+
+    // a1's claim on a NEW target trips the rate cap (checked pre-CAS), so nothing
+    // is appended and the ledger never records t2.
+    await expect(bb.claim(CH, claim("a1", "t2"))).rejects.toBeInstanceOf(
+      RateLimitedError,
+    );
+    expect((await bb.describeChannel(CH)).head).toBe(headBefore);
+
+    // t2 was never claimed: a different agent can still win it cleanly.
+    const r = await bb.claim(CH, claim("a2", "t2"));
+    expect(r.outcome).toBe("granted");
+  });
+
+  it("claims are NOT dup-blocked — a repeated claim is answered by the ledger, not DuplicatePostError", async () => {
+    const bb = new InMemoryBackbone();
+    await bb.createChannel({ channel: CH, purpose: "p", created_by: "alice" });
+
+    // Identical-bodied claims for the SAME target from the same agent: the second
+    // is `already_claimed` (the ledger's dedup answer), NOT a duplicate_post throw.
+    const first = await bb.claim(CH, claim("a1", "svc"));
+    expect(first.outcome).toBe("granted");
+    const second = await bb.claim(CH, claim("a1", "svc"));
+    expect(second.outcome).toBe("already_claimed");
+  });
+
+  it("rate budget is isolated per agent (one agent's flood doesn't block another)", async () => {
+    const bb = new InMemoryBackbone({ maxPostsPerMinute: 1 });
+    await bb.createChannel({ channel: CH, purpose: "p", created_by: "alice" });
+
+    await bb.append(CH, finding("a1", "x"));
+    await expect(bb.append(CH, finding("a1", "y"))).rejects.toBeInstanceOf(
+      RateLimitedError,
+    );
+    // a2 is unaffected.
+    await expect(bb.append(CH, finding("a2", "z"))).resolves.toBeDefined();
   });
 });

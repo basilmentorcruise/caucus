@@ -4,7 +4,7 @@
 
 The backbone holds the shared state of a war room behind one interface so the implementation is swappable: the in-memory reference, a future SQLite-durable build, or an adapter. This document is the **normative** specification of that interface's semantics. The TypeScript types live in `packages/backbone/src/contract.ts`; the error taxonomy in `errors.ts`; the reference implementation in `in-memory.ts`.
 
-The backbone owns only the **log + claim ledger + cursors**. It does NOT define the message shape (that is [`@caucus/schema`](MESSAGE_SCHEMA.md)), and in v0 it does NOT do identity anchoring, seatbelts, or lease enforcement (CAU-8/9/18).
+The backbone owns the **log + claim ledger + cursors + seatbelts** (per-agent rate limit + loop/dup detection, ADR-C8 / CAU-8 — see below). It does NOT define the message shape (that is [`@caucus/schema`](MESSAGE_SCHEMA.md)), and it does NOT do identity anchoring or lease enforcement (CAU-9/18).
 
 ## The interface
 
@@ -87,7 +87,16 @@ A **claim conflict is not in this table** — it is the `already_claimed` result
 
 ## Out of scope for v0 (later tickets)
 
-No HTTP/MCP transport (CAU-5), no SQLite durability, no seatbelts/rate-limit (CAU-8), no identity anchoring (CAU-9), no lease/heartbeat enforcement (CAU-18). The schema ships `lease_ttl`/`heartbeat` fields, but the backbone enforces first-write-wins only.
+No SQLite durability, no identity anchoring (CAU-9), no lease/heartbeat enforcement (CAU-18). The schema ships `lease_ttl`/`heartbeat` fields, but the backbone enforces first-write-wins only.
 
 - **Identity is trusted input.** The backbone does **not** authenticate `agent_id`/`owner`; the caller MUST anchor `agent_id`/`owner` before calling `append`/`claim`, and the backbone treats them as trusted input (CAU-9/CAU-13). It validates shape, never provenance.
-- **Unbounded growth is a seatbelt concern (CAU-8).** `readSince` has no maximum `limit`, the channel count is unbounded, and a channel's log grows without bound (the per-field caps above bound individual messages, not totals). These resource limits — max `limit`, channel/log caps, retention — are **CAU-8 seatbelt** items, not v0 backbone behavior.
+- **Unbounded growth is still out of scope.** `readSince` has no maximum `limit`, the channel count is unbounded, and a channel's log grows without bound (the per-field caps above bound individual messages, not totals). These resource limits — max `limit`, channel/log caps, retention — were originally grouped under CAU-8 but are **deferred** (not in the CAU-8 seatbelt slice below), not v0 backbone behavior.
+
+## Seatbelts (ADR-C8, CAU-8)
+
+The backbone enforces two pure, synchronous per-`(channel, agent_id)` seatbelts on the write paths (configurable via `SeatbeltOptions` on `InMemoryBackbone`; defaults — 30 posts/min, a 60s window, `Date.now` clock — never throttle normal traffic):
+
+- **Rate limit.** A sliding window caps each agent at `maxPostsPerMinute` posts per channel. Over-cap `append` throws `RateLimitedError` (code `rate_limited`, HTTP **429**) carrying `limit` + `retryAfterMs` and an **actionable** message; nothing is appended. `claim()` checks the rate **before** the first-write-wins critical section and charges budget **only on a granted write** — a losing `already_claimed` consumes none — so a swarm racing one hot target is never throttled for losing.
+- **Loop / duplicate.** An `append` whose `type + " " + body.trim()` equals the agent's immediately-previous post throws `DuplicatePostError` (code `duplicate_post`, HTTP **409**); the message **never echoes the body** (ADR-C12). Claims are **not** dup-checked — the ledger's `already_claimed` is the dedup answer for a repeated claim.
+
+Both seatbelts run inside the claim path without any `await`, preserving the compare-and-set property. Transport caps (max `readSince` limit, channel/log caps, retention) remain deferred as above.

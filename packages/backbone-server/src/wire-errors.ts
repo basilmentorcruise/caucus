@@ -18,9 +18,11 @@
 import {
   BackboneError,
   ChannelExistsError,
+  DuplicatePostError,
   InvalidChannelNameError,
   InvalidCursorError,
   InvalidMessageError,
+  RateLimitedError,
   UnknownChannelError,
 } from "@caucus/backbone";
 
@@ -62,7 +64,10 @@ function statusForCode(code: string): number {
     case "unknown_channel":
       return 404;
     case "channel_exists":
+    case "duplicate_post":
       return 409;
+    case "rate_limited":
+      return 429;
     default:
       return 500;
   }
@@ -125,12 +130,33 @@ export function backboneErrorFromWire(body: WireErrorBody): BackboneError {
       return new InvalidCursorError(message, undefined);
     case "invalid_message":
       return new InvalidMessageError(issues ?? [message]);
+    case "rate_limited":
+      return rateLimitedFromMessage(message);
+    case "duplicate_post":
+      return new DuplicatePostError();
     default: {
       // Unrecognized code: preserve the code faithfully on a generic error.
       const generic = new BackboneError(message, code);
       return generic;
     }
   }
+}
+
+/**
+ * Reconstruct a {@link RateLimitedError} from its wire message. The wire carries
+ * only the message, so we recover `limit` and the (seconds-rounded) wait from it
+ * and rebuild the error message-faithfully: because the original message rounds
+ * `retryAfterMs` up to whole seconds, feeding `seconds * 1000` back through the
+ * constructor reproduces the exact same string. `instanceof` + `.code` (what
+ * callers branch on) are exact; the numeric `retryAfterMs` is best-effort to the
+ * second. Falls back to `(limit 0, 0ms)` if the message is unparseable.
+ */
+function rateLimitedFromMessage(message: string): RateLimitedError {
+  const limit = /at most (\d+) posts\/min/.exec(message);
+  const wait = /Wait ~(\d+)s/.exec(message);
+  const limitN = limit?.[1] !== undefined ? Number(limit[1]) : 0;
+  const waitS = wait?.[1] !== undefined ? Number(wait[1]) : 0;
+  return new RateLimitedError(limitN, waitS * 1000);
 }
 
 /**
