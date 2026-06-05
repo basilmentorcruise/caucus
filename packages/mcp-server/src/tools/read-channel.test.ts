@@ -38,6 +38,13 @@ async function createdSession(): Promise<{
 }
 
 describe("caucus_read_channel", () => {
+  it("a cursor past head propagates as an error (not a silent empty page)", async () => {
+    const { session } = await createdSession();
+    await expect(
+      readChannelTool.handle(session, { since: 99 }),
+    ).rejects.toThrow(/cursor/i);
+  });
+
   it("tolerates an as-yet-uncreated channel (empty page at cursor 0)", async () => {
     const backbone = new InMemoryBackbone();
     const session = createSession(config, backbone);

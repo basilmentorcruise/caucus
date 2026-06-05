@@ -16,7 +16,7 @@
  *   argument into an error string.
  */
 import { z } from "zod";
-import { MESSAGE_TYPES, STATUS_VALUES } from "@caucus/schema";
+import { STATUS_VALUES } from "@caucus/schema";
 import type { MessageType } from "@caucus/schema";
 import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import type { CaucusSession } from "../session.js";
@@ -25,29 +25,30 @@ import type { CaucusTool, ToolResult } from "./registry.js";
 
 /**
  * The message types `caucus_post` accepts: every {@link MessageType} except
- * `"claim"` (claims are first-write-wins ledger writes; CAU-11). Derived from
- * the real union so it cannot silently drift.
+ * `"claim"` (claims are first-write-wins ledger writes; CAU-11).
+ *
+ * Spelled as an explicit literal tuple — NOT derived via `.filter()` with a
+ * widening cast (a cast would launder whatever the runtime array contains and
+ * make the guards below vacuous). Drift is caught at compile time in both
+ * directions:
+ * - `satisfies` rejects a `"claim"` member or a typo.
+ * - `_PostTypesComplete` stops compiling when the schema's union gains a
+ *   member this tuple doesn't list.
  */
-const POST_TYPES = MESSAGE_TYPES.filter((t) => t !== "claim") as Exclude<
-  MessageType,
-  "claim"
->[];
+const POST_TYPES = [
+  "finding",
+  "status",
+  "question",
+  "answer",
+  "note",
+] as const satisfies readonly Exclude<MessageType, "claim">[];
 
-/**
- * Compile-time guard: `POST_TYPES[number]` must be *exactly*
- * `Exclude<MessageType, "claim">`. If the schema's union changes, this stops
- * compiling until `POST_TYPES` is reconciled.
- */
-type _PostTypesExhaustive = [
+type _PostTypesComplete =
   Exclude<MessageType, "claim"> extends (typeof POST_TYPES)[number]
     ? true
-    : never,
-  (typeof POST_TYPES)[number] extends Exclude<MessageType, "claim">
-    ? true
-    : never,
-];
-const _postTypesExhaustive: _PostTypesExhaustive = [true, true];
-void _postTypesExhaustive;
+    : never;
+const _postTypesComplete: _PostTypesComplete = true;
+void _postTypesComplete;
 
 /**
  * Shared optional fields used by both `caucus_post` and `caucus_post_finding`.
@@ -90,7 +91,7 @@ const SHARED_FIELDS = {
 /** The input schema for `caucus_post`: `type`, the shared fields, and `status`. */
 const POST_INPUT = {
   type: z
-    .enum(POST_TYPES as [string, ...string[]])
+    .enum(POST_TYPES)
     .describe(
       "finding | status | question | answer | note. The message's intent; " +
         "drives how the hook renders it. For claims use caucus_claim.",

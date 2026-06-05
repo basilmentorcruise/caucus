@@ -43,7 +43,16 @@ async function readAll(
   return messages;
 }
 
-const POST_TYPES = MESSAGE_TYPES.filter((t) => t !== "claim");
+// Independently spelled (NOT derived from the code under test): if the schema
+// union or the tool's accepted set drifts, the lockstep test below fails loudly
+// instead of silently auto-expanding.
+const POST_TYPES = ["finding", "status", "question", "answer", "note"] as const;
+
+describe("POST_TYPES lockstep", () => {
+  it("the schema union is exactly POST_TYPES plus claim", () => {
+    expect([...MESSAGE_TYPES].sort()).toEqual([...POST_TYPES, "claim"].sort());
+  });
+});
 
 describe("caucus_post", () => {
   it.each(POST_TYPES)("posts a %s message, stamped + ULID msg_id", async (type) => {
