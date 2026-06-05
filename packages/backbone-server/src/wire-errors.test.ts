@@ -8,9 +8,11 @@
 import {
   BackboneError,
   ChannelExistsError,
+  DuplicatePostError,
   InvalidChannelNameError,
   InvalidCursorError,
   InvalidMessageError,
+  RateLimitedError,
   UnknownChannelError,
 } from "@caucus/backbone";
 import { describe, expect, it } from "vitest";
@@ -40,6 +42,21 @@ describe("mapError — status mapping", () => {
     const m = mapError(new ChannelExistsError("c1"));
     expect(m.status).toBe(409);
     expect(m.body.error.code).toBe("channel_exists");
+  });
+
+  it("rate_limited → 429 with its actionable message (no body leak)", () => {
+    const m = mapError(new RateLimitedError(30, 12_000));
+    expect(m.status).toBe(429);
+    expect(m.body.error.code).toBe("rate_limited");
+    expect(m.body.error.message).toContain("at most 30 posts/min");
+    expect(m.body.error.message).toContain("Wait ~12s");
+  });
+
+  it("duplicate_post → 409 with its value-free message", () => {
+    const m = mapError(new DuplicatePostError());
+    expect(m.status).toBe(409);
+    expect(m.body.error.code).toBe("duplicate_post");
+    expect(m.body.error.message).toContain("Duplicate of your previous post");
   });
 
   it("invalid_message → 400 and passes issues through", () => {
@@ -120,6 +137,27 @@ describe("backboneErrorFromWire — reconstruction registry", () => {
       error: { code: "invalid_message", message: "single problem" },
     });
     expect((err as InvalidMessageError).issues).toEqual(["single problem"]);
+  });
+
+  it("round-trips RateLimitedError (instanceof + code + message-faithful)", () => {
+    const original = new RateLimitedError(30, 12_000);
+    const wire = mapError(original).body;
+    const err = backboneErrorFromWire(wire);
+    expect(err).toBeInstanceOf(RateLimitedError);
+    expect(err.code).toBe("rate_limited");
+    // The message rounds retryAfterMs to whole seconds, so it round-trips exactly.
+    expect(err.message).toBe(original.message);
+    expect((err as RateLimitedError).limit).toBe(30);
+    expect((err as RateLimitedError).retryAfterMs).toBe(12_000);
+  });
+
+  it("round-trips DuplicatePostError (instanceof + code + exact message)", () => {
+    const original = new DuplicatePostError();
+    const wire = mapError(original).body;
+    const err = backboneErrorFromWire(wire);
+    expect(err).toBeInstanceOf(DuplicatePostError);
+    expect(err.code).toBe("duplicate_post");
+    expect(err.message).toBe(original.message);
   });
 
   it("unrecognized code → generic BackboneError preserving the code", () => {

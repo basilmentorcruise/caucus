@@ -85,9 +85,111 @@ describe.each(CONNECTORS)(
       expect(bobRead.cursor).toBe(bobCursor + 1);
     });
 
-    it.todo(
-      "seatbelt: a rate-cap rejection on one client does not block the other " +
-        "(CAU-6/8 — implement once seatbelts land)",
-    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// CAU-8 seatbelt scenario (ADR-C8), over BOTH connectors with a LOW cap so it
+// trips deterministically — no real-time waits, no clocks. alice loops an
+// identical post (blocked with DuplicatePostError's actionable message) and
+// floods past the cap (blocked with RateLimitedError); bob posts successfully
+// and reads the log meanwhile, proving per-(channel, agent) isolation (AC3).
+// ---------------------------------------------------------------------------
+
+/** Low per-agent cap so a short flood trips it without any time-based waiting. */
+const CAP = 2;
+/** Each connector built with the low cap threaded through (CAU-8). */
+const SEATBELT_CONNECTORS: ReadonlyArray<readonly [string, () => Connector]> = [
+  ["in-process", () => inProcessConnector({ maxPostsPerMinute: CAP })],
+  ["http", () => httpConnector({ maxPostsPerMinute: CAP })],
+];
+
+describe.each(SEATBELT_CONNECTORS)(
+  "seatbelt — rate cap + loop/dup, per-agent isolated — %s connector (ADR-C8)",
+  (_name, makeConnector) => {
+    const connector = makeConnector();
+    let alice: ClientHandle;
+    let bob: ClientHandle;
+
+    beforeAll(async () => {
+      await connector.boot();
+      alice = await connector.connectClient("alice");
+      bob = await connector.connectClient("bob");
+    });
+
+    afterAll(async () => {
+      await connector.teardown();
+    });
+
+    it("blocks alice's looped identical post with an actionable, body-free error (AC2)", async () => {
+      const ch = "incident-loop";
+      await alice.backbone.createChannel({
+        channel: ch,
+        purpose: "loop block",
+        created_by: "alice",
+      });
+
+      // First post admits.
+      await alice.backbone.append(
+        ch,
+        finding("alice-agent", "alice", { body: "looping the same line" }),
+      );
+      // The immediate identical repeat is a loop → DuplicatePostError.
+      let err: unknown;
+      await alice.backbone
+        .append(
+          ch,
+          finding("alice-agent", "alice", { body: "looping the same line" }),
+        )
+        .catch((e) => {
+          err = e;
+        });
+      expect(err).toBeInstanceOf(Error);
+      expect((err as { code?: string }).code).toBe("duplicate_post");
+      const message = (err as Error).message;
+      // Actionable instruction the agent can act on, and NO body echo (ADR-C12).
+      expect(message).toContain("Vary the content or stop repeating");
+      expect(message).not.toContain("looping the same line");
+    });
+
+    it("blocks alice's over-cap flood with RateLimitedError; bob is unaffected (AC1 + AC3)", async () => {
+      const ch = "incident-flood";
+      await alice.backbone.createChannel({
+        channel: ch,
+        purpose: "over-cap flood + per-agent isolation",
+        created_by: "alice",
+      });
+
+      // alice posts up to the cap with DISTINCT bodies (so dup never fires first).
+      for (let i = 0; i < CAP; i++) {
+        await alice.backbone.append(
+          ch,
+          finding("alice-agent", "alice", { body: `alice update ${i}` }),
+        );
+      }
+      // The next distinct post trips the per-agent rate cap.
+      let err: unknown;
+      await alice.backbone
+        .append(ch, finding("alice-agent", "alice", { body: "one too many" }))
+        .catch((e) => {
+          err = e;
+        });
+      expect((err as { code?: string }).code).toBe("rate_limited");
+      const message = (err as Error).message;
+      expect(message).toContain(`at most ${CAP} posts/min`);
+      expect(message).not.toContain("one too many");
+
+      // AC3 — per-agent isolation: bob, on the SAME channel, posts fine and reads
+      // the log while alice is throttled.
+      const bobCursor = await bob.backbone.subscribe(ch);
+      const posted = await bob.backbone.append(
+        ch,
+        finding("bob-agent", "bob", { body: "bob is not throttled" }),
+      );
+      expect(posted.message.agent_id).toBe("bob-agent");
+      const bobRead = await bob.backbone.readSince(ch, bobCursor);
+      expect(bobRead.messages).toHaveLength(1);
+      expect(bobRead.messages[0]!.body).toBe("bob is not throttled");
+    });
   },
 );

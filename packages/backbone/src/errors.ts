@@ -99,3 +99,50 @@ export class InvalidMessageError extends BackboneError {
     this.issues = issues;
   }
 }
+
+/**
+ * Thrown by the seatbelt (ADR-C8) when an agent exceeds the per-agent
+ * posts/minute cap on a channel. The message is **actionable** — it states the
+ * cap and roughly how long to wait — so a model that hits it can self-correct
+ * (batch / back off) rather than retry-spin. It carries no caller content, so it
+ * is safe to surface verbatim (ADR-C12).
+ */
+export class RateLimitedError extends BackboneError {
+  /** The per-agent posts/minute cap that was exceeded. */
+  readonly limit: number;
+
+  /**
+   * Roughly how long (ms) until the oldest in-window post ages out and a slot
+   * frees up — i.e. how long to wait before posting again.
+   */
+  readonly retryAfterMs: number;
+
+  constructor(limit: number, retryAfterMs: number) {
+    super(
+      `Rate limit exceeded: at most ${limit} posts/min per agent. Wait ~${Math.ceil(
+        retryAfterMs / 1000,
+      )}s before posting again, or batch your updates.`,
+      "rate_limited",
+    );
+    this.name = "RateLimitedError";
+    this.limit = limit;
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/**
+ * Thrown by the seatbelt (ADR-C8) when an agent posts content identical to its
+ * own immediately-previous post — a loop. The message NEVER echoes the offending
+ * body (ADR-C12): it names the problem and tells the agent to vary or stop, so
+ * it is safe to surface verbatim and gives the model a recoverable instruction.
+ */
+export class DuplicatePostError extends BackboneError {
+  constructor() {
+    super(
+      "Duplicate of your previous post — identical content was just posted. " +
+        "Vary the content or stop repeating; do not re-post the same message.",
+      "duplicate_post",
+    );
+    this.name = "DuplicatePostError";
+  }
+}
