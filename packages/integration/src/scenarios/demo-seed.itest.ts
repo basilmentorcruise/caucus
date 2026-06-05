@@ -205,4 +205,31 @@ describe("war-room demo seed (over HTTP, real subprocess)", () => {
     expect(probe!.agent_id).toBe("sess-alice");
     expect(afterForge.messages.some((m) => m.owner === "mallory")).toBe(false);
   });
+
+  it("posts the opening scene into a PRE-CREATED empty channel (emptiness-gating)", async () => {
+    // An MCP server's startup bootstrap (ensureChannel) may auto-create the
+    // demo channel EMPTY before the seed ever runs. The seed must still post
+    // the opening scene — it gates on emptiness, not on create-freshness.
+    const started = await startServerProcess();
+    try {
+      const alice = new HttpBackbone(started.url, { token: "tok-alice" });
+      await alice.createChannel({
+        channel,
+        purpose,
+        created_by: "alice",
+      });
+      const pre = new HttpBackbone(started.url);
+      expect((await pre.readSince(channel, 0)).messages.length).toBe(0);
+
+      const out = runSeed(started.url);
+      expect(out).toContain("already exists");
+      expect(out).not.toContain("skipping opening scene");
+
+      const after = await pre.readSince(channel, 0);
+      expect(after.messages.length).toBe(openingScene.length);
+      expect(after.messages.every((m) => m.owner === "alice")).toBe(true);
+    } finally {
+      started.stop();
+    }
+  });
 });
