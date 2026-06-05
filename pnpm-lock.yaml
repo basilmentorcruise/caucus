@@ -74,12 +74,18 @@ importers:
       '@caucus/schema':
         specifier: workspace:*
         version: link:../schema
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.4.3)
 
   packages/mcp-server:
     dependencies:
       '@caucus/backbone':
         specifier: workspace:*
         version: link:../backbone
+      '@caucus/backbone-server':
+        specifier: workspace:*
+        version: link:../backbone-server
       '@caucus/schema':
         specifier: workspace:*
         version: link:../schema

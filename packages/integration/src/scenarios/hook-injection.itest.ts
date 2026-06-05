@@ -17,10 +17,10 @@
  *      `UserPromptSubmit` JSON on stdin — exactly Claude Code's contract.
  *
  * vitest's source aliases do NOT apply to a child process, so both bins must be
- * built first. We build `@caucus/hook` (and its workspace deps, which include
- * `@caucus/backbone-server`) once, lazily, via `pnpm --filter @caucus/hook...
- * build` so the scenario works on a CLEAN checkout with no prior `dist`. The
- * build is cache-checked by `tsc --build`, so a warm tree is a near-no-op.
+ * built first. The build is hoisted into the integration config's `globalSetup`
+ * (it runs ONCE before any scenario, avoiding a `tsc --build` race between
+ * parallel scenario files), so this file does not build — see
+ * `packages/integration/src/global-setup.ts`.
  *
  * Asserted ACs:
  *  - AC1/AC3: a run with a genuine delta injects the rendered lines WITH identity
@@ -46,18 +46,6 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "
 const HOOK_BIN = join(REPO_ROOT, "packages", "hook", "dist", "bin.js");
 const SERVER_BIN = join(REPO_ROOT, "packages", "backbone-server", "dist", "bin.js");
 const CHANNEL = "incident-hook";
-
-/** Build the hook + its workspace deps so the spawned `dist/bin.js` files exist. */
-function buildHook(): void {
-  // `tsc --build` is incremental: a warm tree is a near-no-op; a clean checkout
-  // builds schema → backbone → backbone-server → hook in order. `@caucus/hook...`
-  // (with the trailing `...`) includes the dependency closure, so the
-  // backbone-server bin is built too.
-  execFileSync("pnpm", ["--filter", "@caucus/hook...", "build"], {
-    cwd: REPO_ROOT,
-    stdio: "inherit",
-  });
-}
 
 /**
  * Bearer tokens the subprocess server accepts (CAU-13). The hook scenario posts
@@ -156,7 +144,6 @@ describe("turn-start hook injection (over HTTP, real subprocess)", () => {
   const sessionId = "sess-hook-itest";
 
   beforeAll(async () => {
-    buildHook();
     const started = await startServerProcess();
     url = started.url;
     stopServer = started.stop;
