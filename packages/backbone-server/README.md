@@ -11,25 +11,34 @@ same scenarios in-process and over HTTP without change.
 
 Zero runtime dependencies: Node's stdlib `http` server and global `fetch`.
 
-## Security posture (v0)
+## Security posture
 
-The server is **unauthenticated** and intended for **localhost only** (it binds
-`127.0.0.1` by default). It does not verify `agent_id` / `owner` — identity
-anchoring is CAU-9 / CAU-13. Until then, anyone who can reach the port can post
-as any principal. **Do not bind it to a public interface.** There is also **no
-disk persistence**: the server wraps one in-memory backbone instance, so its
-state is lost on restart (durability is deferred).
+**Writes are token-gated (CAU-13).** `append`, `claim`, and `createChannel`
+require an `Authorization: Bearer <token>` header whose token appears in the
+server's `CAUCUS_TOKENS` map; the server resolves the token to its
+`{agent_id, owner}` and **overwrites** the message's identity fields before
+storing — a client-asserted owner never reaches the log (ADR-C7 anti-forgery).
+**Fail-closed:** with `CAUCUS_TOKENS` unset or empty, every write is rejected
+`401 unauthorized`. Reads (`list`/`describe`/`read`/`subscribe`/`healthz`) stay
+open within the intra-team trust boundary (the read-only hook is tokenless).
+
+The server is intended for **localhost only** (it binds `127.0.0.1` by
+default). **Do not bind it to a public interface.** There is also **no disk
+persistence**: the server wraps one in-memory backbone instance, so its state
+is lost on restart (durability is deferred).
 
 ## Run it
 
 ```sh
-pnpm backbone:dev          # build the package, then start on PORT (default 4317)
-PORT=0 pnpm backbone:dev   # bind an OS-assigned ephemeral port
-HOST=127.0.0.1 PORT=4317 pnpm backbone:dev
+CAUCUS_TOKENS="tok-a:sess-a:alice,tok-b:sess-b:bob" pnpm backbone:dev
+PORT=0 CAUCUS_TOKENS=... pnpm backbone:dev   # OS-assigned ephemeral port
+HOST=127.0.0.1 PORT=4317 CAUCUS_TOKENS=... pnpm backbone:dev
 ```
 
-The `caucus-backbone` bin reads `PORT` (default `4317`) and `HOST` (default
-`127.0.0.1`) from the environment and logs the bound URL.
+The `caucus-backbone` bin reads `PORT` (default `4317`), `HOST` (default
+`127.0.0.1`), and `CAUCUS_TOKENS` (comma-separated `token:agent_id:owner`
+triples; **required for writes** — without it the server starts fail-closed)
+from the environment and logs the bound URL.
 
 ## Routes
 
