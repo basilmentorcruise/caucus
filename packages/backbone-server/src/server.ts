@@ -8,10 +8,16 @@
  * re-validate inputs — the backbone is the single validation authority
  * (see `./wire-errors.ts`).
  *
- * **Security posture (v0).** This server is UNAUTHENTICATED and intended for
- * localhost only. Identity anchoring (verifying `agent_id`/`owner`) is CAU-9 /
- * CAU-13; until then anyone who can reach the port can post as any principal.
- * Do not bind it to a public interface.
+ * **Security posture (v0).** WRITES are token-gated; READS are open within the
+ * trust boundary (ADR-C9). The three write routes — `POST /channels`,
+ * `/append`, `/claim` — require a bearer token that resolves in the configured
+ * {@link TokenMap}; the server then ANCHORS the resolved identity onto the
+ * message (overwriting any client-supplied `agent_id`/`owner`/`created_by`), so
+ * the stored `owner` cannot be forged (ADR-C7, CAU-13). Reads and `/healthz`
+ * are tokenless — the read-only hook stays open. **Fail-closed:** an
+ * EMPTY/unset token map authorizes NOBODY, so with no `CAUCUS_TOKENS` ALL writes
+ * return `401`. Bind localhost only; the listener is still unauthenticated for
+ * reads, so do not expose the port off-host.
  *
  * The HTTP method/route handlers are `createChannel`, `listChannels`,
  * `describeChannel`, `subscribe`, `append`, `readSince` (CAU-5/CAU-6), and
@@ -26,7 +32,8 @@ import type { Backbone, Cursor } from "@caucus/backbone";
 import { InMemoryBackbone } from "@caucus/backbone";
 import type { MessageInput } from "@caucus/schema";
 
-import { mapError, type WireErrorBody } from "./wire-errors.js";
+import { resolveToken, type TokenIdentity, type TokenMap } from "./tokens.js";
+import { mapError, UnauthorizedError, type WireErrorBody } from "./wire-errors.js";
 
 /** Max raw request body the server will buffer before rejecting with 413. */
 export const MAX_BODY_BYTES = 256 * 1024;
@@ -39,6 +46,27 @@ export interface ServerOptions {
   readonly port?: number;
   /** Bind host. Defaults to `127.0.0.1` (localhost only). */
   readonly host?: string;
+  /**
+   * Bearer-token → identity map gating the three write routes (CAU-13). Omitted
+   * or empty ⇒ fail-closed: every write returns `401` (see the module doc).
+   * Reads ignore it.
+   */
+  readonly tokens?: TokenMap;
+}
+
+/**
+ * Per-request authorization context threaded into {@link dispatch}: the
+ * configured token map plus the bearer token extracted from the request (the
+ * `Authorization` header with its case-insensitive `Bearer ` prefix stripped).
+ * Header extraction happens in {@link createServer} so `dispatch` stays
+ * socket-free. Both fields are optional: an absent map ⇒ fail-closed (no writes
+ * authorized); an absent bearer ⇒ the write is unauthenticated.
+ */
+export interface AuthContext {
+  /** The configured token map; `undefined`/empty ⇒ all writes 401. */
+  readonly tokens?: TokenMap;
+  /** The presented bearer token, prefix-stripped; `undefined` ⇒ none sent. */
+  readonly bearer?: string;
 }
 
 /** A started server with its resolved URL and a clean shutdown. */
@@ -128,11 +156,48 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 const BODY_MUST_BE_OBJECT = "request body must be a JSON object";
 
 /**
- * Pure request dispatch — NO sockets. Given a method, path, and already-parsed
- * JSON body (or `undefined` when there was no body), call the backbone and
- * return a status + JSON. This is the whole router; {@link createServer} only
- * wraps it with body-buffering and serialization, so every route, status, and
- * error-mapping case is unit-testable without a live socket.
+ * Extract the bearer token from a raw `Authorization` header value: strip a
+ * case-insensitive `Bearer ` prefix and trim. Returns `undefined` for an absent
+ * header or one without the prefix (so a non-Bearer scheme never resolves). The
+ * token text is never logged here (ADR-C12). Lives in the socket-facing layer so
+ * {@link dispatch} stays header-free.
+ */
+function bearerFromHeader(header: string | undefined): string | undefined {
+  if (header === undefined) return undefined;
+  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+  if (match?.[1] === undefined) return undefined;
+  const token = match[1].trim();
+  return token === "" ? undefined : token;
+}
+
+/**
+ * Resolve the bearer in `auth` to its identity, or throw {@link
+ * UnauthorizedError} when it is missing, empty, or unknown (CAU-13). The throw
+ * is mapped to an IDENTICAL `401` by `mapError`, so the response is the same for
+ * "no token" and "unknown token" — no oracle. A `undefined`/empty token map
+ * resolves nothing, which is the fail-closed default (all writes 401).
+ */
+function requireIdentity(auth: AuthContext): TokenIdentity {
+  const identity = resolveToken(auth.tokens ?? new Map(), auth.bearer);
+  if (identity === undefined) {
+    throw new UnauthorizedError();
+  }
+  return identity;
+}
+
+/**
+ * Pure request dispatch — NO sockets. Given a method, path, already-parsed JSON
+ * body (or `undefined` when there was no body), and the per-request
+ * {@link AuthContext}, call the backbone and return a status + JSON. This is the
+ * whole router; {@link createServer} only wraps it with body-buffering, header
+ * extraction, and serialization, so every route, status, and error-mapping case
+ * is unit-testable without a live socket.
+ *
+ * The three write routes (`POST /channels`, `/append`, `/claim`) require a
+ * resolved bearer identity and ANCHOR it onto the message — building a NEW body
+ * with the resolved `agent_id`/`owner` (createChannel: `created_by`) overwriting
+ * whatever the client supplied (anti-forgery by construction; client identity
+ * fields are advisory). Reads and `/healthz` ignore `auth`.
  *
  * Malformed-JSON and payload-too-large are detected during body buffering, so
  * they never reach here — `dispatch` assumes `body` is a parsed value.
@@ -142,6 +207,7 @@ export async function dispatch(
   method: string,
   path: string,
   body: unknown,
+  auth: AuthContext = {},
 ): Promise<DispatchResult> {
   try {
     // Path parsing can throw on malformed percent-encoding (`/channels/%ZZ`);
@@ -166,8 +232,13 @@ export async function dispatch(
           // as a raw `TypeError` → generic 500. The backbone remains the single
           // SEMANTIC validation authority; this only guards the body's shape.
           if (!isPlainObject(body)) return invalidRequest(BODY_MUST_BE_OBJECT);
+          // Anchor `created_by` to the token's owner (overwrite, never reject —
+          // any client-supplied `created_by` is advisory). Build a NEW object;
+          // never mutate the parsed body.
+          const identity = requireIdentity(auth);
+          const anchored = { ...body, created_by: identity.owner };
           const descriptor = await backbone.createChannel(
-            body as unknown as Parameters<Backbone["createChannel"]>[0],
+            anchored as unknown as Parameters<Backbone["createChannel"]>[0],
           );
           return { status: 201, json: descriptor };
         }
@@ -202,7 +273,20 @@ export async function dispatch(
           case "append": {
             // Structural guard only — the backbone validates message fields.
             if (!isPlainObject(body)) return invalidRequest(BODY_MUST_BE_OBJECT);
-            const result = await backbone.append(channel, body as unknown as MessageInput);
+            // Anchor identity to the token (overwrite, never reject). A NEW
+            // object is built — the parsed body is never mutated — and this
+            // happens BEFORE the backbone, so seatbelt accounting keys on the
+            // anchored agent_id, not the client's claimed one.
+            const identity = requireIdentity(auth);
+            const anchored = {
+              ...body,
+              agent_id: identity.agent_id,
+              owner: identity.owner,
+            };
+            const result = await backbone.append(
+              channel,
+              anchored as unknown as MessageInput,
+            );
             return { status: 201, json: result };
           }
           case "read": {
@@ -228,7 +312,19 @@ export async function dispatch(
             // (see http-client.ts / wire-errors.ts). Only validation/not-found
             // failures throw, and those flow through the centralized mapper.
             if (!isPlainObject(body)) return invalidRequest(BODY_MUST_BE_OBJECT);
-            const result = await backbone.claim(channel, body as unknown as MessageInput);
+            // Anchor identity to the token (overwrite, never reject); NEW object,
+            // no mutation. The overwrite precedes the backbone, so first-write-
+            // wins and seatbelt accounting both key on the anchored identity.
+            const identity = requireIdentity(auth);
+            const anchored = {
+              ...body,
+              agent_id: identity.agent_id,
+              owner: identity.owner,
+            };
+            const result = await backbone.claim(
+              channel,
+              anchored as unknown as MessageInput,
+            );
             return { status: 200, json: result };
           }
           default:
@@ -255,6 +351,7 @@ export async function dispatch(
  */
 export function createServer(opts: ServerOptions = {}): Server {
   const backbone = opts.backbone ?? new InMemoryBackbone();
+  const tokens = opts.tokens;
 
   return createHttpServer((req, res) => {
     const chunks: Buffer[] = [];
@@ -305,6 +402,7 @@ export function createServer(opts: ServerOptions = {}): Server {
           req.method ?? "GET",
           req.url ?? "/",
           parsed,
+          { tokens, bearer: bearerFromHeader(req.headers.authorization) },
         );
         send(result.status, result.json);
       })().catch((err: unknown) => {

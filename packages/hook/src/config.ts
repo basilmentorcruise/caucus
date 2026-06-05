@@ -23,7 +23,8 @@ export interface HookConfig {
   readonly channel: string;
   /**
    * Bearer token, carried for symmetry with the rest of Caucus. The hook is
-   * READ-ONLY and ignores it for now — auth lands in CAU-13. Empty ⇒ unset.
+   * READ-ONLY and still ignores it: CAU-13 token-gates WRITES at the backbone
+   * server; reads stay open within the trust boundary. Empty ⇒ unset.
    */
   readonly token: string;
 }

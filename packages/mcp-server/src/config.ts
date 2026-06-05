@@ -1,15 +1,18 @@
 /**
  * Session configuration and identity for the MCP server (CAU-9).
  *
- * v0 identity model (ADR-C7; the *anchored* form lands in CAU-13): a session's
- * agent→human identity is supplied out-of-band by whoever spawns the server, as
- * a single `CAUCUS_TOKEN` env var of the form `"<agent_id>:<owner>"`. The
- * channel the session joins is `CAUCUS_CHANNEL`.
+ * Identity model (ADR-C7, anchored as of CAU-13): a session's agent→human
+ * identity is supplied out-of-band by whoever spawns the server, as a single
+ * `CAUCUS_TOKEN` env var of the form `"<agent_id>:<owner>"`. The channel the
+ * session joins is `CAUCUS_CHANNEL`.
  *
- * {@link parseToken} is the seam CAU-13 hardens: today it splits a plaintext
- * token; tomorrow it resolves an opaque, server-anchored credential into the
- * same {@link SessionIdentity} — without changing that type or any caller. The
- * rest of the server depends only on the resolved identity, never on the token.
+ * The local {@link parseToken} split is COSMETIC/OFFLINE only: it feeds
+ * `caucus_status` display and the in-process backbone path. On the shared HTTP
+ * backbone the SERVER is authoritative — it resolves the bearer token against
+ * its own `CAUCUS_TOKENS` map and overwrites message identity server-side, so
+ * whatever a misconfigured client believes about itself never reaches the log.
+ * The rest of the server depends only on the resolved identity, never on the
+ * token.
  */
 
 /**

@@ -16,13 +16,19 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { HttpBackbone } from "./http-client.js";
 import { startServer, type RunningServer } from "./server.js";
+import { parseTokenMap } from "./tokens.js";
+import { UnauthorizedError } from "./wire-errors.js";
 
 let server: RunningServer;
 let client: HttpBackbone;
 
+/** Writes are token-gated (CAU-13); the live-server tests carry a valid token. */
+const TOKENS = parseTokenMap("tok-a:a:alice");
+const TOKEN = "tok-a";
+
 beforeAll(async () => {
-  server = await startServer({ port: 0 });
-  client = new HttpBackbone(server.url);
+  server = await startServer({ port: 0, tokens: TOKENS });
+  client = new HttpBackbone(server.url, { token: TOKEN });
 });
 
 afterAll(async () => {
@@ -107,7 +113,8 @@ describe("HttpBackbone — round-trips against a live server", () => {
   });
 
   it("shares server state with a second client (cross-client visibility)", async () => {
-    const a = new HttpBackbone(server.url);
+    // `a` writes, so it carries a token; `b` only reads, so it stays tokenless.
+    const a = new HttpBackbone(server.url, { token: TOKEN });
     const b = new HttpBackbone(server.url);
     await a.createChannel({ channel: "shared", purpose: "p", created_by: "a" });
     const bCursor = await b.subscribe("shared");
@@ -248,12 +255,70 @@ describe("HttpBackbone — stubbed fetch for not-yet-served cases", () => {
   });
 });
 
+describe("HttpBackbone — auth (CAU-13)", () => {
+  it("a tokenless client's write is rejected with UnauthorizedError (401), token never echoed", async () => {
+    const tokenless = new HttpBackbone(server.url);
+    try {
+      await tokenless.createChannel({
+        channel: "auth-probe",
+        purpose: "p",
+        created_by: "alice",
+      });
+      expect.unreachable("write without a token must throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnauthorizedError);
+      expect((err as UnauthorizedError).code).toBe("unauthorized");
+      expect((err as Error).message).not.toContain("tok-a");
+    }
+  });
+
+  it("an unknown token gets the identical rejection (no oracle)", async () => {
+    const wrong = new HttpBackbone(server.url, { token: "tok-unknown" });
+    let unknownMsg = "";
+    try {
+      await wrong.createChannel({
+        channel: "auth-probe-2",
+        purpose: "p",
+        created_by: "alice",
+      });
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnauthorizedError);
+      unknownMsg = (err as Error).message;
+      expect(unknownMsg).not.toContain("tok-unknown");
+    }
+    const none = new HttpBackbone(server.url);
+    try {
+      await none.createChannel({
+        channel: "auth-probe-3",
+        purpose: "p",
+        created_by: "alice",
+      });
+    } catch (err) {
+      // Identical message for missing vs unknown — no token-probing oracle.
+      expect((err as Error).message).toBe(unknownMsg);
+    }
+  });
+
+  it("sends Authorization: Bearer on requests when a token is configured", async () => {
+    let seenAuth: string | null | undefined;
+    const spyFetch: typeof fetch = (_input, init) => {
+      seenAuth = new Headers(init?.headers).get("authorization");
+      return Promise.resolve(
+        new Response(JSON.stringify({ channels: [] }), { status: 200 }),
+      );
+    };
+    const c = new HttpBackbone("http://stub", { token: "tok-a", fetch: spyFetch });
+    await c.listChannels();
+    expect(seenAuth).toBe("Bearer tok-a");
+  });
+});
+
 describe("HttpBackbone end-to-end with a server over a shared backbone instance", () => {
   it("client and server observe the same in-memory backbone", async () => {
     const shared = new InMemoryBackbone();
-    const srv = await startServer({ port: 0, backbone: shared });
+    const srv = await startServer({ port: 0, backbone: shared, tokens: TOKENS });
     try {
-      const c = new HttpBackbone(srv.url);
+      const c = new HttpBackbone(srv.url, { token: TOKEN });
       await c.createChannel({ channel: "e2e", purpose: "p", created_by: "a" });
       // The server's backbone now has the channel — observe it directly.
       const direct = await shared.describeChannel("e2e");

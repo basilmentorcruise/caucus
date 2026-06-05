@@ -17,7 +17,7 @@ import {
 } from "@caucus/backbone";
 import { describe, expect, it } from "vitest";
 
-import { backboneErrorFromWire, mapError } from "./wire-errors.js";
+import { backboneErrorFromWire, mapError, UnauthorizedError } from "./wire-errors.js";
 
 describe("mapError — status mapping", () => {
   it("invalid_channel_name → 400", () => {
@@ -57,6 +57,14 @@ describe("mapError — status mapping", () => {
     expect(m.status).toBe(409);
     expect(m.body.error.code).toBe("duplicate_post");
     expect(m.body.error.message).toContain("Duplicate of your previous post");
+  });
+
+  it("unauthorized → 401 with the fixed, value-free message (CAU-13)", () => {
+    const m = mapError(new UnauthorizedError());
+    expect(m.status).toBe(401);
+    expect(m.body.error.code).toBe("unauthorized");
+    expect(m.body.error.message).toBe("missing or invalid token");
+    expect(m.body.error.issues).toBeUndefined();
   });
 
   it("invalid_message → 400 and passes issues through", () => {
@@ -158,6 +166,15 @@ describe("backboneErrorFromWire — reconstruction registry", () => {
     expect(err).toBeInstanceOf(DuplicatePostError);
     expect(err.code).toBe("duplicate_post");
     expect(err.message).toBe(original.message);
+  });
+
+  it("round-trips UnauthorizedError (instanceof + code + fixed message) (CAU-13)", () => {
+    const original = new UnauthorizedError();
+    const wire = mapError(original).body;
+    const err = backboneErrorFromWire(wire);
+    expect(err).toBeInstanceOf(UnauthorizedError);
+    expect(err.code).toBe("unauthorized");
+    expect(err.message).toBe("missing or invalid token");
   });
 
   it("unrecognized code → generic BackboneError preserving the code", () => {

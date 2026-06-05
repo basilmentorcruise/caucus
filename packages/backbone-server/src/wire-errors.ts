@@ -26,6 +26,26 @@ import {
   UnknownChannelError,
 } from "@caucus/backbone";
 
+/**
+ * Raised when a write is presented WITHOUT a valid bearer token (CAU-13). This
+ * is a TRANSPORT concern — the `@caucus/backbone` contract has no notion of
+ * tokens (the in-process backbone trusts its caller), so the error lives here in
+ * `backbone-server` rather than in `@caucus/backbone`. The message is a FIXED
+ * string and never names the presented token (ADR-C12); "missing" and "invalid"
+ * are deliberately collapsed into one message so a `401` is not an oracle that
+ * distinguishes a valid-but-unknown token from no token at all.
+ *
+ * It is a {@link BackboneError} subclass purely so it flows through the same
+ * `mapError` / reconstruction machinery as every other wire error; the
+ * `HttpBackbone` client reconstructs it from the `unauthorized` code.
+ */
+export class UnauthorizedError extends BackboneError {
+  constructor() {
+    super("missing or invalid token", "unauthorized");
+    this.name = "UnauthorizedError";
+  }
+}
+
 /** The body of every error response. */
 export interface WireErrorBody {
   readonly error: {
@@ -61,6 +81,8 @@ function statusForCode(code: string): number {
     case "invalid_message":
     case "invalid_cursor":
       return 400;
+    case "unauthorized":
+      return 401;
     case "unknown_channel":
       return 404;
     case "channel_exists":
@@ -134,6 +156,10 @@ export function backboneErrorFromWire(body: WireErrorBody): BackboneError {
       return rateLimitedFromMessage(message);
     case "duplicate_post":
       return new DuplicatePostError();
+    case "unauthorized":
+      // Fixed-message, value-free: reconstructed identically regardless of why
+      // the token was rejected (missing vs unknown — no oracle).
+      return new UnauthorizedError();
     default: {
       // Unrecognized code: preserve the code faithfully on a generic error.
       const generic = new BackboneError(message, code);

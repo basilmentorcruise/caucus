@@ -59,12 +59,25 @@ function buildHook(): void {
   });
 }
 
+/**
+ * Bearer tokens the subprocess server accepts (CAU-13). The hook scenario posts
+ * as TWO principals, so two tokens are configured; each `HttpBackbone` carries
+ * the matching bearer and the server anchors writes to that token's identity
+ * (`{ agent_id: "<who>-agent", owner: "<who>" }`).
+ */
+const TOK_ALICE = "tok-alice";
+const TOK_BOB = "tok-bob";
+const SERVER_TOKENS = `${TOK_ALICE}:alice-agent:alice,${TOK_BOB}:bob-agent:bob`;
+
 /** Start the backbone server as its own process; resolve with its base URL. */
 function startServerProcess(): Promise<{ url: string; stop: () => void }> {
   const child: ChildProcessWithoutNullStreams = spawn(
     "node",
     [SERVER_BIN],
-    { cwd: REPO_ROOT, env: { ...process.env, PORT: "0", HOST: "127.0.0.1" } },
+    {
+      cwd: REPO_ROOT,
+      env: { ...process.env, PORT: "0", HOST: "127.0.0.1", CAUCUS_TOKENS: SERVER_TOKENS },
+    },
   ) as ChildProcessWithoutNullStreams;
 
   return new Promise((resolveUrl, reject) => {
@@ -135,7 +148,10 @@ function status(agent: string, owner: string, body: string): MessageInput {
 describe("turn-start hook injection (over HTTP, real subprocess)", () => {
   let url: string;
   let stopServer: () => void;
+  // Two clients: writes are token-gated and anchored, and the scenario posts as
+  // two principals, so each carries its own bearer (CAU-13).
   let backbone: HttpBackbone;
+  let backboneBob: HttpBackbone;
   let home: string;
   const sessionId = "sess-hook-itest";
 
@@ -144,7 +160,8 @@ describe("turn-start hook injection (over HTTP, real subprocess)", () => {
     const started = await startServerProcess();
     url = started.url;
     stopServer = started.stop;
-    backbone = new HttpBackbone(url);
+    backbone = new HttpBackbone(url, { token: TOK_ALICE });
+    backboneBob = new HttpBackbone(url, { token: TOK_BOB });
     home = await mkdtemp(join(tmpdir(), "caucus-hook-itest-"));
     await backbone.createChannel({
       channel: CHANNEL,
@@ -166,9 +183,9 @@ describe("turn-start hook injection (over HTTP, real subprocess)", () => {
 
     // Five messages arrive from two principals (alice, bob).
     await backbone.append(CHANNEL, finding("alice-agent", "alice", "login accepts expired JWTs"));
-    await backbone.claim(CHANNEL, claim("bob-agent", "bob", "auth-timeout repro"));
+    await backboneBob.claim(CHANNEL, claim("bob-agent", "bob", "auth-timeout repro"));
     await backbone.append(CHANNEL, question("alice-agent", "alice", "did the 14:02 deploy cause this?"));
-    await backbone.append(CHANNEL, answer("bob-agent", "bob", "yes — rollback in progress"));
+    await backboneBob.append(CHANNEL, answer("bob-agent", "bob", "yes — rollback in progress"));
     await backbone.append(CHANNEL, status("alice-agent", "alice", "watching error rate"));
 
     // RUN 1 — injects the delta WITH identity, claim target, and status tags
@@ -193,7 +210,7 @@ describe("turn-start hook injection (over HTTP, real subprocess)", () => {
     expect(runHookBin(home, url, sessionId).trim()).toBe("");
 
     // One more message arrives.
-    await backbone.append(CHANNEL, finding("bob-agent", "bob", "found the regressor commit"));
+    await backboneBob.append(CHANNEL, finding("bob-agent", "bob", "found the regressor commit"));
 
     // RUN 3 — shows ONLY the new message, not the already-seen five (AC2: no
     // re-injection).

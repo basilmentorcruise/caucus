@@ -18,13 +18,31 @@ import {
   dispatch,
   startServer,
   MAX_BODY_BYTES,
+  type AuthContext,
   type RunningServer,
 } from "./server.js";
+import { parseTokenMap } from "./tokens.js";
 
 /** Read a JSON response body as an arbitrary record (test-only convenience). */
 async function jsonBody(res: Response): Promise<Record<string, unknown>> {
   return (await res.json()) as Record<string, unknown>;
 }
+
+/**
+ * Token map + bearers for the write-route tests (CAU-13). Writes are now token-
+ * gated and ANCHORED, so every write dispatch passes an {@link AuthContext}.
+ * `tok-a` anchors to `{ agent_id: "a", owner: "alice" }` and `tok-b` to
+ * `{ agent_id: "b", owner: "bob" }` — chosen to match the identities the
+ * existing write tests already author, so anchoring is a no-op for them while
+ * the gate is exercised.
+ */
+const TOKENS = parseTokenMap("tok-a:a:alice,tok-b:b:bob");
+/** Authorized as alice (`agent_id "a"`, `owner "alice"`). */
+const AUTH: AuthContext = { tokens: TOKENS, bearer: "tok-a" };
+/** Authorized as bob (`agent_id "b"`, `owner "bob"`). */
+const AUTH_B: AuthContext = { tokens: TOKENS, bearer: "tok-b" };
+/** A valid Authorization header for the socket-level (fetch) write tests. */
+const BEARER_A = { authorization: "Bearer tok-a" } as const;
 
 /**
  * Issue a raw HTTP GET against `url` + `rawPath` using `node:http` (the `fetch`
@@ -68,7 +86,7 @@ describe("dispatch — routing", () => {
       channel: "c1",
       purpose: "investigate",
       created_by: "alice",
-    });
+    }, AUTH);
     expect(res.status).toBe(201);
     expect(res.json).toMatchObject({ channel: "c1", kind: "ephemeral" });
   });
@@ -102,7 +120,7 @@ describe("dispatch — routing", () => {
       owner: "alice",
       msg_id: newMsgId(),
       body: "found it",
-    });
+    }, AUTH);
     expect(res.status).toBe(201);
     expect(res.json).toMatchObject({ cursor: 1, message: { body: "found it" } });
   });
@@ -144,7 +162,7 @@ describe("dispatch — routing", () => {
       msg_id: newMsgId(),
       body: "claiming",
       target: "db",
-    });
+    }, AUTH);
     expect(res.status).toBe(200);
     const result = res.json as {
       outcome: string;
@@ -257,7 +275,7 @@ describe("dispatch — request-body coercion (CAU-6)", () => {
       channel: "c1",
       purpose: "p",
       created_by: "alice",
-    });
+    }, AUTH);
     expect(created.status).toBe(201);
     const appended = await dispatch(bb, "POST", "/channels/c1/append", {
       type: "finding",
@@ -265,7 +283,7 @@ describe("dispatch — request-body coercion (CAU-6)", () => {
       owner: "alice",
       msg_id: newMsgId(),
       body: "found it",
-    });
+    }, AUTH);
     expect(appended.status).toBe(201);
     expect(appended.json).toMatchObject({ cursor: 1 });
   });
@@ -325,7 +343,7 @@ describe("dispatch — backbone errors map cleanly", () => {
       channel: "c1",
       purpose: "p",
       created_by: "alice",
-    });
+    }, AUTH);
     expect(res.status).toBe(409);
     expect(res.json).toMatchObject({ error: { code: "channel_exists" } });
   });
@@ -345,7 +363,7 @@ describe("dispatch — backbone errors map cleanly", () => {
       owner: "alice",
       msg_id: "not-a-ulid",
       body: "x",
-    });
+    }, AUTH);
     expect(res.status).toBe(400);
     const body = res.json as { error: { code: string; issues?: string[] } };
     expect(body.error.code).toBe("invalid_message");
@@ -369,18 +387,20 @@ describe("dispatch — claim route (CAU-7)", () => {
 
   it("conflict is a 200 `already_claimed` RESULT carrying the holder, NOT an error envelope", async () => {
     const bb = await seeded();
-    const first = await dispatch(bb, "POST", "/channels/c1/claim", claimBody("db"));
+    const first = await dispatch(bb, "POST", "/channels/c1/claim", claimBody("db"), AUTH);
     expect(first.status).toBe(200);
     expect((first.json as { outcome: string }).outcome).toBe("granted");
 
     // A second claim on the same target loses first-write-wins. The HTTP layer
     // must surface this as a normal 200 value (the client maps it as a result,
-    // never a throw), and the value must identify the holder.
+    // never a throw), and the value must identify the holder. The second claim
+    // authenticates as bob (anchored from its own bearer).
     const second = await dispatch(
       bb,
       "POST",
       "/channels/c1/claim",
       claimBody("db", { agent_id: "b", owner: "bob" }),
+      AUTH_B,
     );
     expect(second.status).toBe(200);
     const body = second.json as {
@@ -411,6 +431,7 @@ describe("dispatch — claim route (CAU-7)", () => {
       "POST",
       "/channels/c1/claim",
       claimBody("db", { msg_id: "not-a-ulid" }),
+      AUTH,
     );
     expect(res.status).toBe(400);
     const body = res.json as { error: { code: string; issues?: string[] } };
@@ -420,7 +441,7 @@ describe("dispatch — claim route (CAU-7)", () => {
 
   it("claim on an unknown channel → 404 unknown_channel", async () => {
     const bb = new InMemoryBackbone();
-    const res = await dispatch(bb, "POST", "/channels/ghost/claim", claimBody("db"));
+    const res = await dispatch(bb, "POST", "/channels/ghost/claim", claimBody("db"), AUTH);
     expect(res.status).toBe(404);
     expect(res.json).toMatchObject({ error: { code: "unknown_channel" } });
   });
@@ -430,9 +451,168 @@ describe("dispatch — claim route (CAU-7)", () => {
     // backbone enforces this; this test locks that the HTTP append route does
     // NOT become a side door for minting claim messages.
     const bb = await seeded();
-    const res = await dispatch(bb, "POST", "/channels/c1/append", claimBody("db"));
+    const res = await dispatch(bb, "POST", "/channels/c1/append", claimBody("db"), AUTH);
     expect(res.status).toBe(400);
     expect(res.json).toMatchObject({ error: { code: "invalid_message" } });
+  });
+});
+
+describe("dispatch — identity anchoring + auth gate (CAU-13)", () => {
+  /** A finding body that SPOOFS mallory — the server must overwrite it. */
+  function spoofedFinding(over: Record<string, unknown> = {}) {
+    return {
+      type: "finding",
+      agent_id: "mallory-agent",
+      owner: "mallory",
+      msg_id: newMsgId(),
+      body: "spoof",
+      ...over,
+    };
+  }
+  function spoofedClaim(target: string) {
+    return {
+      type: "claim",
+      agent_id: "mallory-agent",
+      owner: "mallory",
+      msg_id: newMsgId(),
+      body: "claiming",
+      target,
+    };
+  }
+
+  it("append OVERWRITES a spoofed agent_id/owner with the token's identity", async () => {
+    const bb = await seeded();
+    // Spy on what the backbone actually receives.
+    const captured: { agent_id: string; owner: string }[] = [];
+    const orig = bb.append.bind(bb);
+    bb.append = async (channel, msg) => {
+      captured.push({ agent_id: msg.agent_id, owner: msg.owner });
+      return orig(channel, msg);
+    };
+
+    const res = await dispatch(bb, "POST", "/channels/c1/append", spoofedFinding(), AUTH);
+    expect(res.status).toBe(201);
+    // Backbone saw the ANCHORED identity, never the spoofed one.
+    expect(captured).toEqual([{ agent_id: "a", owner: "alice" }]);
+    expect((res.json as { message: { owner: string } }).message.owner).toBe("alice");
+  });
+
+  it("claim OVERWRITES a spoofed agent_id/owner with the token's identity", async () => {
+    const bb = await seeded();
+    const captured: { agent_id: string; owner: string }[] = [];
+    const orig = bb.claim.bind(bb);
+    bb.claim = async (channel, msg) => {
+      captured.push({ agent_id: msg.agent_id, owner: msg.owner });
+      return orig(channel, msg);
+    };
+
+    const res = await dispatch(bb, "POST", "/channels/c1/claim", spoofedClaim("db"), AUTH);
+    expect(res.status).toBe(200);
+    expect(captured).toEqual([{ agent_id: "a", owner: "alice" }]);
+  });
+
+  it("createChannel anchors created_by to the token's owner (overwrites spoof)", async () => {
+    const bb = new InMemoryBackbone();
+    const res = await dispatch(bb, "POST", "/channels", {
+      channel: "c1",
+      purpose: "p",
+      created_by: "mallory",
+    }, AUTH);
+    expect(res.status).toBe(201);
+    expect((res.json as { created_by: string }).created_by).toBe("alice");
+  });
+
+  it("does not MUTATE the parsed body (anchoring builds a new object)", async () => {
+    const bb = await seeded();
+    const body = spoofedFinding();
+    await dispatch(bb, "POST", "/channels/c1/append", body, AUTH);
+    // The caller's object is untouched — only a copy was anchored.
+    expect(body.agent_id).toBe("mallory-agent");
+    expect(body.owner).toBe("mallory");
+  });
+
+  it("a write with a MISSING bearer → 401 unauthorized", async () => {
+    const bb = await seeded();
+    for (const [path, b] of [
+      ["/channels", { channel: "x", purpose: "p", created_by: "a" }],
+      ["/channels/c1/append", spoofedFinding()],
+      ["/channels/c1/claim", spoofedClaim("db")],
+    ] as const) {
+      const res = await dispatch(bb, "POST", path, b, { tokens: TOKENS });
+      expect(res.status).toBe(401);
+      expect(res.json).toMatchObject({
+        error: { code: "unauthorized", message: "missing or invalid token" },
+      });
+    }
+  });
+
+  it("a write with an UNKNOWN bearer → 401 with the IDENTICAL body (no oracle)", async () => {
+    const bb = await seeded();
+    const missing = await dispatch(bb, "POST", "/channels/c1/append", spoofedFinding(), {
+      tokens: TOKENS,
+    });
+    const unknown = await dispatch(bb, "POST", "/channels/c1/append", spoofedFinding(), {
+      tokens: TOKENS,
+      bearer: "not-a-real-token",
+    });
+    expect(missing.status).toBe(401);
+    expect(unknown.status).toBe(401);
+    // Byte-identical envelopes — the response cannot distinguish the two.
+    expect(JSON.stringify(unknown.json)).toBe(JSON.stringify(missing.json));
+  });
+
+  it("fail-closed: with NO token map every write is 401", async () => {
+    const bb = await seeded();
+    // No `tokens` and a (would-be valid) bearer: still 401, because the empty
+    // map authorizes nobody.
+    const res = await dispatch(bb, "POST", "/channels/c1/append", spoofedFinding(), {
+      bearer: "tok-a",
+    });
+    expect(res.status).toBe(401);
+    expect(res.json).toMatchObject({ error: { code: "unauthorized" } });
+  });
+
+  it("reads and healthz are tokenless even on a gated server", async () => {
+    const bb = await seeded();
+    // GET describe, GET list, POST subscribe, POST read, GET healthz — no auth.
+    expect((await dispatch(bb, "GET", "/channels/c1", undefined)).status).toBe(200);
+    expect((await dispatch(bb, "GET", "/channels", undefined)).status).toBe(200);
+    expect((await dispatch(bb, "POST", "/channels/c1/subscribe", undefined)).status).toBe(200);
+    expect((await dispatch(bb, "POST", "/channels/c1/read", { cursor: 0 })).status).toBe(200);
+    expect((await dispatch(bb, "GET", "/healthz", undefined)).status).toBe(200);
+  });
+
+  it("over a real socket: write requires a Bearer header; reads do not (CAU-13)", async () => {
+    const bb = await seeded();
+    const srv = await startServer({ port: 0, backbone: bb, tokens: TOKENS });
+    try {
+      // No header → 401.
+      const noAuth = await fetch(`${srv.url}/channels/c1/append`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(spoofedFinding()),
+      });
+      expect(noAuth.status).toBe(401);
+
+      // Case-insensitive `bearer ` prefix is accepted; identity is anchored.
+      const ok = await fetch(`${srv.url}/channels/c1/append`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "bearer tok-a" },
+        body: JSON.stringify(spoofedFinding()),
+      });
+      expect(ok.status).toBe(201);
+      expect(((await ok.json()) as { message: { owner: string } }).message.owner).toBe("alice");
+
+      // Read is open with no header.
+      const read = await fetch(`${srv.url}/channels/c1/read`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ cursor: 0 }),
+      });
+      expect(read.status).toBe(200);
+    } finally {
+      await srv.close();
+    }
   });
 });
 
@@ -457,10 +637,10 @@ describe("server lifecycle (sockets)", () => {
   });
 
   it("round-trips create → describe over a real socket", async () => {
-    running = await startServer({ port: 0 });
+    running = await startServer({ port: 0, tokens: TOKENS });
     const create = await fetch(`${running.url}/channels`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...BEARER_A },
       body: JSON.stringify({ channel: "live", purpose: "p", created_by: "alice" }),
     });
     expect(create.status).toBe(201);
@@ -493,12 +673,13 @@ describe("server lifecycle (sockets)", () => {
   });
 
   it("empty-body POST is handled (parsed as undefined) — read with no body → 400", async () => {
-    running = await startServer({ port: 0 });
+    running = await startServer({ port: 0, tokens: TOKENS });
     await fetch(`${running.url}/channels`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...BEARER_A },
       body: JSON.stringify({ channel: "c1", purpose: "p", created_by: "a" }),
     });
+    // Read is tokenless even on a token-gated server.
     const res = await fetch(`${running.url}/channels/c1/read`, { method: "POST" });
     expect(res.status).toBe(400);
     expect((await jsonBody(res)).error).toMatchObject({ code: "invalid_cursor" });
