@@ -1,0 +1,12 @@
+{
+  "name": "@caucus/example-war-room-demo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Demo seed data & identities for the war-room MVP demo (CAU-27).",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@caucus/backbone-server": "workspace:*",
+    "@caucus/schema": "workspace:*"
+  }
+}

@@ -29,8 +29,14 @@ export default tseslint.config(
     },
   },
   {
-    // Plain Node scripts (no TS types) run in the Node runtime.
-    files: ["scripts/**/*.{js,mjs,cjs}", "*.config.{js,mjs,cjs}"],
+    // Plain Node scripts and runnable examples (no TS types) run in the Node
+    // runtime. `examples/**` ships executable demo `.mjs` (CAU-27) that use the
+    // same Node globals as scripts/.
+    files: [
+      "scripts/**/*.{js,mjs,cjs}",
+      "examples/**/*.{js,mjs,cjs}",
+      "*.config.{js,mjs,cjs}",
+    ],
     languageOptions: {
       globals: {
         console: "readonly",

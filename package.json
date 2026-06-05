@@ -11,13 +11,14 @@
   },
   "scripts": {
     "lint": "eslint .",
-    "typecheck": "tsc --build --force && pnpm -r exec tsc -p tsconfig.test.json --noEmit",
+    "typecheck": "tsc --build --force && pnpm --filter \"./packages/*\" exec tsc -p tsconfig.test.json --noEmit",
     "check:anchors": "node scripts/check-md-anchors.mjs",
     "test": "node scripts/check-md-anchors.mjs && vitest run --coverage",
     "build": "tsc --build",
     "clean": "tsc --build --clean",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "backbone:dev": "pnpm --filter @caucus/backbone-server build && node packages/backbone-server/dist/bin.js",
+    "demo:seed": "node examples/war-room-demo/seed.mjs",
     "changeset": "changeset",
     "changeset:version": "changeset version",
     "release": "pnpm build && changeset publish"
