@@ -36,6 +36,15 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@20.19.41)
 
+  examples/war-room-demo:
+    dependencies:
+      '@caucus/backbone-server':
+        specifier: workspace:*
+        version: link:../../packages/backbone-server
+      '@caucus/schema':
+        specifier: workspace:*
+        version: link:../../packages/schema
+
   packages/backbone:
     dependencies:
       '@caucus/schema':
