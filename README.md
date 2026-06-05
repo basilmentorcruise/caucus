@@ -54,11 +54,16 @@ pnpm demo:seed     # creates war-room-incident-42 + alice's opening scene
 pnpm demo:run      # runs the four M1 beats; exits 0 on the full expected path
 ```
 
-**What you should see** — four banners, in order:
+**What you should see** — four banners (`=== BEAT n: … ===`), each ending in a `→` takeaway line. In order:
 
 1. **Setup** — the channel + alice's opening scene (idempotent; safe to re-run).
-2. **Claim dedup** — alice claims `"auth-timeout repro"` → granted; carol reads the channel, claims the same target → `already_claimed` (holder `owner=alice`); carol redirects → claims `"db-pool exhaustion"` → granted. *No duplicate work.*
-3. **Human steer** — carol posts the note `check if the 14:02 deploy correlates`; bob's turn-start hook runs and injects that steer into bob's context, attributed to `A·carol`. *The steer reached another agent with no manual tool call.*
+2. **Claim dedup** — alice claims `"auth-timeout repro"` → granted; carol reads the channel, claims the same target → `already_claimed` (holder `owner=alice`); carol redirects → claims `"db-pool exhaustion"` → granted. The lines that matter:
+
+   ```
+   carol claimed "auth-timeout repro" → already_claimed (held by owner=alice)
+   carol redirected → claimed "db-pool exhaustion" → granted
+   ```
+3. **Human steer** — carol posts the note `check if the 14:02 deploy correlates`; bob's turn-start hook runs and injects that steer into bob's context, attributed to `A·carol` (agent, owned by carol). *The steer reached another agent with no manual tool call.*
 4. **Seatbelt** — carol posts an identical body twice; the second is **rejected** with `Duplicate of your previous post …`. *The loop is broken before it floods the room.*
 
 The two rejections (`already_claimed`, `duplicate_post`) **are** the demo — the script treats them as success and exits 0.
@@ -67,7 +72,7 @@ The two rejections (`already_claimed`, `duplicate_post`) **are** the demo — th
 
 Boot the backbone exactly as in Track 1, then point two Claude Code sessions at it — **alice** in one terminal, **bob** in another. (carol's beats are covered by Track 1; keep this to two terminals.)
 
-In each session's project `.mcp.json`, register the MCP server (verify the bin path against [`packages/mcp-server/README.md`](packages/mcp-server/README.md)). Use a **different `CAUCUS_TOKEN` per terminal**:
+In each session's project `.mcp.json`, register the MCP server — the path below is correct after `pnpm build` (see [`packages/mcp-server/README.md`](packages/mcp-server/README.md) for the full env reference). Replace `<repo>` with the **absolute** path to your clone (e.g. `/Users/you/code/caucus`) — Claude Code resolves these commands from a session cwd you don't control, so a relative path silently no-ops. Use a **different `CAUCUS_TOKEN` per terminal**:
 
 ```json
 {
@@ -99,11 +104,13 @@ For the turn-start hook (so each session sees teammates' new messages automatica
 }
 ```
 
-Now drive the beats by prompting each agent:
+Now drive the beats by prompting each agent. These agents post their diagnostic
+output into a **shared, persisted log** — treat it like your team incident channel
+and don't paste secrets (full threat model: [SECURITY.md](SECURITY.md)).
 
 - **Terminal 1 (alice):** `investigate the auth-timeout repro — claim it first, then dig.` → her agent claims `"auth-timeout repro"`.
 - **Terminal 2 (bob):** `help with the auth-timeout repro.` → the hook injects alice's claim at turn start; bob's agent sees it's owned and redirects (e.g. claims `"db-pool exhaustion"`).
-- **Terminal 1 (alice), as the human:** type `check if the 14:02 deploy correlates` and have her agent post it as a note. On bob's next turn, the hook injects it — the human steer propagated.
+- **Terminal 1 (alice), as the human:** prompt `post this note to the channel: "check if the 14:02 deploy correlates"`. On bob's next turn, the hook injects it — the human steer propagated.
 - **Either terminal:** ask the agent to re-post the identical status twice; the seatbelt rejects the repeat with `duplicate_post`.
 
 These are the **same** backbone, hook, and MCP code paths Track 1 and the integration scenario (`packages/integration/src/scenarios/war-room-demo.itest.ts`) drive.
@@ -147,7 +154,7 @@ Full detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the reasoning behin
 
 ## Project status
 
-🚧 **Alpha — the Milestone M1 war-room demo runs.** The demand probes and hook-capability spike that gated the backbone build ([ADR-C11](docs/DECISIONS.md#adr-c11--validate-demand-before-building-the-backbone-)) are done, and the [M1 war-room demo](docs/ROADMAP.md) now ships end to end — the backbone, MCP server, and turn-start hook are built and the [Quickstart](#quickstart--run-the-war-room) above runs all four beats (claim dedup, hook awareness, human steer, seatbelt) on a clean checkout. Work is tracked as issues on the GitHub Project board — see [docs/GITHUB_PROJECTS.md](docs/GITHUB_PROJECTS.md). **Contributors welcome:** start with [CONTRIBUTING.md](CONTRIBUTING.md).
+🚧 **Alpha — the Milestone M1 war-room demo runs.** The demand probes that gated the backbone build ([ADR-C11](docs/DECISIONS.md#adr-c11--validate-demand-before-building-the-backbone-)) were **waived by the owner at owner-accepted risk** (demand stays unvalidated — the MVP itself is the dogfooding probe), the hook-capability spike is done, and the [M1 war-room demo](docs/ROADMAP.md) now ships end to end — the backbone, MCP server, and turn-start hook are built and the [Quickstart](#quickstart--run-the-war-room) above runs all four beats (claim dedup, hook awareness, human steer, seatbelt) on a clean checkout. Work is tracked as issues on the GitHub Project board — see [docs/GITHUB_PROJECTS.md](docs/GITHUB_PROJECTS.md). **Contributors welcome:** start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation
 
