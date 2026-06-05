@@ -50,13 +50,22 @@ async function main(): Promise<void> {
     stderr: (line) => process.stderr.write(line),
   });
 
-  if (out !== "") process.stdout.write(out);
+  if (out !== "") {
+    // Wait for the pipe write to DRAIN before the explicit exit below runs:
+    // stdout-to-a-pipe is async, and process.exit() does not flush it. Today's
+    // payload (INJECTED_DELTA_CAP_CHARS ≈ 8 KB) fits the typical 64 KB pipe
+    // buffer, but that safety is incidental — never couple correctness to the
+    // cap staying under an undocumented OS buffer size.
+    await new Promise<void>((resolve) => {
+      process.stdout.write(out, () => resolve());
+    });
+  }
 }
 
 // Exit 0 no matter what: a `UserPromptSubmit` hook that exits non-zero can block
 // the turn. Any unexpected error is logged to stderr and swallowed. We exit
 // EXPLICITLY so a lingering keep-alive socket can never hold the process open
-// past the work being done.
+// past the work being done (stdout has already drained inside main()).
 main()
   .catch((err: unknown) => {
     process.stderr.write(
