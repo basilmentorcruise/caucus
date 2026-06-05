@@ -20,5 +20,11 @@ export default defineConfig({
   test: {
     include: ["packages/integration/src/**/*.itest.ts"],
     coverage: { enabled: false },
+    // Build every spawned bin ONCE before any scenario runs. Scenarios that
+    // spawn real subprocesses (hook / backbone-server / mcp-server) need their
+    // `dist/*.js` to exist; building per-file raced under vitest's parallel file
+    // execution (two concurrent `tsc --build` invocations), so the build is
+    // hoisted here (CAU-50). See packages/integration/src/global-setup.ts.
+    globalSetup: ["packages/integration/src/global-setup.ts"],
   },
 });

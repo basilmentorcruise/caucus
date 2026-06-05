@@ -81,6 +81,22 @@ await server.close();
 `instanceof` / `.code` branching across the network. A lost claim is a normal
 `already_claimed` **result** (HTTP 200), never a throw.
 
+### Bearer token convention
+
+The bearer a client presents is the **map key** — the colon-free FIRST segment
+of a `CAUCUS_TOKENS` entry. For the entry `tok-alice-secret:alice-agent:alice`,
+the bearer is `tok-alice-secret` and the server anchors that session to
+`{ agent_id: "alice-agent", owner: "alice" }`:
+
+```ts
+const backbone = new HttpBackbone(server.url, { token: "tok-alice-secret" });
+```
+
+The bearer is a **per-session opaque secret**, never the structured
+`agent:owner` pair (which is not a secret). The MCP server forwards its
+`CAUCUS_TOKEN` here verbatim — see
+[`@caucus/mcp-server` → Connecting to the shared backbone](../mcp-server/README.md#connecting-to-the-shared-backbone).
+
 ## Claim route (CAU-7)
 
 `POST /channels/:channel/claim` enforces first-write-wins atomically in the
