@@ -13,8 +13,16 @@
       "default": "./dist/index.js"
     }
   },
+  "bin": {
+    "caucus-hook": "./dist/bin.js"
+  },
   "files": ["dist"],
   "scripts": {
     "build": "tsc --build"
+  },
+  "dependencies": {
+    "@caucus/backbone": "workspace:*",
+    "@caucus/backbone-server": "workspace:*",
+    "@caucus/schema": "workspace:*"
   }
 }
