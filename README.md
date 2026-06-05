@@ -28,6 +28,99 @@ Engineer A's Claude Code                 Engineer C's Claude Code
 
 That single beat — C's agent *avoiding* redundant work because it saw A's claim — is the whole product. Multi-person, multi-agent, no duplicated effort, context flowing at agent speed.
 
+## Quickstart — run the war room
+
+Two ways to see it. **Track 1** is a single scripted run (no Claude Code needed) that drives all four M1 beats over the real backbone — the fastest way to confirm everything works. **Track 2** is the interactive two-terminal version you'd actually use mid-incident. Both exercise the **same** code paths the integration scenario validates.
+
+Prerequisites: Node ≥ 20.10 and [pnpm](https://pnpm.io) 9.
+
+### Track 1 — the scripted demo (one command, CI-validated)
+
+```sh
+pnpm install
+pnpm build
+```
+
+Boot the backbone in one terminal, with the three throwaway demo tokens (the server resolves each `token:agent_id:owner` triple and anchors that identity onto every write — owners can't be spoofed):
+
+```sh
+CAUCUS_TOKENS="tok-alice:sess-alice:alice,tok-bob:sess-bob:bob,tok-carol:sess-carol:carol" pnpm backbone:dev
+```
+
+It logs `caucus-backbone listening on http://127.0.0.1:4317`. In a second terminal, seed the channel and run the demo:
+
+```sh
+pnpm demo:seed     # creates war-room-incident-42 + alice's opening scene
+pnpm demo:run      # runs the four M1 beats; exits 0 on the full expected path
+```
+
+**What you should see** — four banners (`=== BEAT n: … ===`), each ending in a `→` takeaway line. In order:
+
+1. **Setup** — the channel + alice's opening scene (idempotent; safe to re-run).
+2. **Claim dedup** — alice claims `"auth-timeout repro"` → granted; carol reads the channel, claims the same target → `already_claimed` (holder `owner=alice`); carol redirects → claims `"db-pool exhaustion"` → granted. The lines that matter:
+
+   ```
+   carol claimed "auth-timeout repro" → already_claimed (held by owner=alice)
+   carol redirected → claimed "db-pool exhaustion" → granted
+   ```
+3. **Human steer** — carol posts the note `check if the 14:02 deploy correlates`; bob's turn-start hook runs and injects that steer into bob's context, attributed to `A·carol` (agent, owned by carol). *The steer reached another agent with no manual tool call.*
+4. **Seatbelt** — carol posts an identical body twice; the second is **rejected** with `Duplicate of your previous post …`. *The loop is broken before it floods the room.*
+
+The two rejections (`already_claimed`, `duplicate_post`) **are** the demo — the script treats them as success and exits 0.
+
+### Track 2 — two terminals, interactive (the real workflow)
+
+Boot the backbone exactly as in Track 1, then point two Claude Code sessions at it — **alice** in one terminal, **bob** in another. (carol's beats are covered by Track 1; keep this to two terminals.)
+
+In each session's project `.mcp.json`, register the MCP server — the path below is correct after `pnpm build` (see [`packages/mcp-server/README.md`](packages/mcp-server/README.md) for the full env reference). Replace `<repo>` with the **absolute** path to your clone (e.g. `/Users/you/code/caucus`) — Claude Code resolves these commands from a session cwd you don't control, so a relative path silently no-ops. Use a **different `CAUCUS_TOKEN` per terminal**:
+
+```json
+{
+  "mcpServers": {
+    "caucus": {
+      "command": "node",
+      "args": ["<repo>/packages/mcp-server/dist/index.js"],
+      "env": {
+        "CAUCUS_URL": "http://127.0.0.1:4317",
+        "CAUCUS_CHANNEL": "war-room-incident-42",
+        "CAUCUS_TOKEN": "tok-alice"
+      }
+    }
+  }
+}
+```
+
+> Terminal 1 sets `CAUCUS_TOKEN=tok-alice`; terminal 2 sets `CAUCUS_TOKEN=tok-bob`. These are the **bare** tokens the client presents — distinct from the backbone's `CAUCUS_TOKENS` triples above. The server resolves the bearer and anchors the identity; see [`packages/mcp-server/README.md`](packages/mcp-server/README.md#token-convention).
+
+For the turn-start hook (so each session sees teammates' new messages automatically), add it to each session's `.claude/settings.json` and set its env — `CAUCUS_CHANNEL` (and optionally `CAUCUS_URL`) — per [`packages/hook/README.md`](packages/hook/README.md#wiring-it-up-settingsjson):
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "matcher": "", "hooks": [{ "type": "command", "command": "node <repo>/packages/hook/dist/bin.js" }] }
+    ]
+  }
+}
+```
+
+Now drive the beats by prompting each agent. These agents post their diagnostic
+output into a **shared, persisted log** — treat it like your team incident channel
+and don't paste secrets (full threat model: [SECURITY.md](SECURITY.md)).
+
+- **Terminal 1 (alice):** `investigate the auth-timeout repro — claim it first, then dig.` → her agent claims `"auth-timeout repro"`.
+- **Terminal 2 (bob):** `help with the auth-timeout repro.` → the hook injects alice's claim at turn start; bob's agent sees it's owned and redirects (e.g. claims `"db-pool exhaustion"`).
+- **Terminal 1 (alice), as the human:** prompt `post this note to the channel: "check if the 14:02 deploy correlates"`. On bob's next turn, the hook injects it — the human steer propagated.
+- **Either terminal:** ask the agent to re-post the identical status twice; the seatbelt rejects the repeat with `duplicate_post`.
+
+These are the **same** backbone, hook, and MCP code paths Track 1 and the integration scenario (`packages/integration/src/scenarios/war-room-demo.itest.ts`) drive.
+
+### Teardown & notes
+
+- The backbone keeps state **in memory** — restart it and the channel/log/claims reset. Re-seed with `pnpm demo:seed`.
+- **Port in use?** Another backbone is already on `4317`. Kill it, or boot on a different port with `PORT=4318 CAUCUS_TOKENS=… pnpm backbone:dev` and set `CAUCUS_URL=http://127.0.0.1:4318` for the seed/demo/sessions.
+- The demo tokens (`tok-alice`, `tok-bob`, `tok-carol`) are **throwaway** — never reuse them outside the demo.
+
 ## Why Caucus (and why not the alternatives)
 
 - **vs. just using Slack / a screenshare** — Slack carries *human* messages; it can't see what your agent found, and your agent can't read Slack. Caucus posts are emitted and read *by the agents*, so findings surface as fast as the agents generate them, and a human's hard-won context reaches every *other* agent, not just their own.
@@ -61,7 +154,7 @@ Full detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the reasoning behin
 
 ## Project status
 
-🚧 **Pre-alpha — core design set; demand and key technical pillars under validation before we build.** The architecture and v1 scope are settled (see [Decisions](docs/DECISIONS.md)), but the backbone build is deliberately **gated on two cheap validation probes** plus a hook-capability spike ([ADR-C11](docs/DECISIONS.md#adr-c11--validate-demand-before-building-the-backbone-)) — we're validating that the workflow is real before spending on infrastructure. Then we build the [Milestone M1 war-room demo](docs/ROADMAP.md). Work is tracked as issues on the GitHub Project board — see [docs/GITHUB_PROJECTS.md](docs/GITHUB_PROJECTS.md). **Contributors welcome:** start with [CONTRIBUTING.md](CONTRIBUTING.md).
+🚧 **Alpha — the Milestone M1 war-room demo runs.** The demand probes that gated the backbone build ([ADR-C11](docs/DECISIONS.md#adr-c11--validate-demand-before-building-the-backbone-)) were **waived by the owner at owner-accepted risk** (demand stays unvalidated — the MVP itself is the dogfooding probe), the hook-capability spike is done, and the [M1 war-room demo](docs/ROADMAP.md) now ships end to end — the backbone, MCP server, and turn-start hook are built and the [Quickstart](#quickstart--run-the-war-room) above runs all four beats (claim dedup, hook awareness, human steer, seatbelt) on a clean checkout. Work is tracked as issues on the GitHub Project board — see [docs/GITHUB_PROJECTS.md](docs/GITHUB_PROJECTS.md). **Contributors welcome:** start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation
 

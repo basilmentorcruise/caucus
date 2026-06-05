@@ -19,6 +19,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "backbone:dev": "pnpm --filter @caucus/backbone-server build && node packages/backbone-server/dist/bin.js",
     "demo:seed": "node examples/war-room-demo/seed.mjs",
+    "demo:run": "node examples/war-room-demo/demo.mjs",
     "changeset": "changeset",
     "changeset:version": "changeset version",
     "release": "pnpm build && changeset publish"
