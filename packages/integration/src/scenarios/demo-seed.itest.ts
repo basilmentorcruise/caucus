@@ -35,6 +35,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { HttpBackbone } from "@caucus/backbone-server";
+import { newMsgId } from "@caucus/schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // The seed config is the single source of truth (a plain `.mjs` outside the TS
@@ -70,14 +71,6 @@ const serverTokens = tokensEnv();
  * import the packages from `dist` and the server bin exists. `...` includes the
  * dependency closure (schema → backbone → backbone-server).
  */
-function buildSeedDeps(): void {
-  execFileSync(
-    "pnpm",
-    ["--filter", "@caucus/example-war-room-demo...", "build"],
-    { cwd: REPO_ROOT, stdio: "inherit" },
-  );
-}
-
 /** Start the backbone as its own process with the demo tokens; resolve its URL. */
 function startServerProcess(): Promise<{ url: string; stop: () => void }> {
   const child: ChildProcessWithoutNullStreams = spawn("node", [SERVER_BIN], {
@@ -129,7 +122,7 @@ describe("war-room demo seed (over HTTP, real subprocess)", () => {
   let reader: HttpBackbone;
 
   beforeAll(async () => {
-    buildSeedDeps();
+    // Builds are hoisted to the integration globalSetup (global-setup.ts).
     const started = await startServerProcess();
     url = started.url;
     stopServer = started.stop;
@@ -168,6 +161,7 @@ describe("war-room demo seed (over HTTP, real subprocess)", () => {
     // Sanity: the read consumed the whole log up to the subscribed head.
     expect(Number(cursor)).toBe(openingScene.length);
 
+
     // AC: a SECOND run is repeatable — exits 0 (execFileSync throws on non-zero),
     // reuses the existing channel, and adds NO new messages (the opening scene's
     // duplicate posts are skipped).
@@ -190,5 +184,25 @@ describe("war-room demo seed (over HTTP, real subprocess)", () => {
     const carolMsg = afterLoop.messages.find((m) => m.owner === "carol");
     expect(carolMsg, "carol's first loop post should be present").toBeDefined();
     expect(carolMsg!.agent_id).toBe("sess-carol");
+
+    // PROVE anchoring (not echoing): the seed's client-sent identity happens
+    // to equal the token's anchored identity, so the assertions above would
+    // also pass on a server that merely echoed the body. Send a post whose
+    // body claims a DIFFERENT identity with alice's bearer — the stored
+    // message must carry the token's identity, never the forged one.
+    const forger = new HttpBackbone(url, { token: "tok-alice" });
+    await forger.append(channel, {
+      type: "note",
+      body: "forge probe",
+      msg_id: newMsgId(),
+      agent_id: "sess-mallory",
+      owner: "mallory",
+    });
+    const afterForge = await reader.readSince(channel, 0);
+    const probe = afterForge.messages.find((m) => m.body === "forge probe");
+    expect(probe).toBeDefined();
+    expect(probe!.owner).toBe("alice");
+    expect(probe!.agent_id).toBe("sess-alice");
+    expect(afterForge.messages.some((m) => m.owner === "mallory")).toBe(false);
   });
 });

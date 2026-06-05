@@ -57,7 +57,8 @@ function clientFor(owner) {
  * cleanly ("repeatable"), so an already-existing channel is a no-op, not a
  * failure. Returns `true` when this run freshly created the channel, `false`
  * when it already existed — the caller posts the opening scene only on a fresh
- * create so re-runs don't pile up duplicate scenes. Any other error propagates.
+ * create. The opening scene is gated separately on channel EMPTINESS (see
+ * main). Any other error propagates.
  */
 async function ensureChannel(backbone) {
   try {
@@ -131,11 +132,17 @@ async function loopDemo(carol) {
 async function main() {
   console.log(`seeding ${CHANNEL} on ${URL}`);
   const alice = clientFor("alice");
-  const created = await ensureChannel(alice);
-  if (created) {
+  await ensureChannel(alice);
+  // Gate the opening scene on EMPTINESS, not create-freshness: an MCP server's
+  // startup bootstrap may have auto-created the channel empty before the seed
+  // ran (CAU-12 ensureChannel). Seeding iff the log is empty is the genuine
+  // idempotency — re-runs never pile up scenes, and a pre-created-but-empty
+  // room still gets its opening scene.
+  const { messages } = await alice.readSince(CHANNEL, 0, 1);
+  if (messages.length === 0) {
     await postOpeningScene(alice);
   } else {
-    console.log("opening scene already seeded — skipping (idempotent)");
+    console.log("channel already has messages — skipping opening scene (idempotent)");
   }
 
   if (LOOP) {

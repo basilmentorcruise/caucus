@@ -41,7 +41,15 @@ const REQUIRED_BINS = [
 export default function setup(): void {
   execFileSync(
     "pnpm",
-    ["--filter", "@caucus/mcp-server...", "--filter", "@caucus/hook...", "build"],
+    [
+      "--filter",
+      "@caucus/mcp-server...",
+      "--filter",
+      "@caucus/hook...",
+      "--filter",
+      "@caucus/example-war-room-demo...",
+      "build",
+    ],
     { cwd: REPO_ROOT, stdio: "inherit" },
   );
   // `tsc --build` trusts .tsbuildinfo: if dist/ was deleted but the buildinfo
