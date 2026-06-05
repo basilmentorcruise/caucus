@@ -272,3 +272,117 @@ describe("CAU-10 AC3 — tool descriptions + schema state the conventions", () =
     expect(result.isError).toBe(true);
   });
 });
+
+/** A second client bound to the same channel under a different identity. */
+async function connectSecondClient(
+  backbone: InMemoryBackbone,
+): Promise<Client> {
+  const server = createCaucusServer({
+    config: {
+      identity: { agent_id: "agent-2", owner: "bob" },
+      channel: "incident-1",
+    },
+    backbone,
+  });
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  const client = new Client({ name: "test-client-2", version: "0.0.0" });
+  await client.connect(clientTransport);
+  return client;
+}
+
+describe("CAU-11 AC1 — claim surfaces granted vs already_claimed over MCP", () => {
+  it("first claim is granted; a different principal's claim of the same target is already_claimed (NOT isError)", async () => {
+    const backbone = await createdBackbone();
+    const alice = await connectClient(backbone);
+    const bob = await connectSecondClient(backbone);
+
+    const granted = jsonOf<{ outcome: string; msg_id: string; cursor: number }>(
+      (await alice.callTool({
+        name: "caucus_claim",
+        arguments: { target: "db", note: "taking the db angle" },
+      })) as CallToolResult,
+    );
+    expect(granted.outcome).toBe("granted");
+    expect(typeof granted.msg_id).toBe("string");
+
+    // A different principal claiming the same target loses — and that is a
+    // NORMAL result, not an error: the agent is told to pick different work.
+    const takenResult = (await bob.callTool({
+      name: "caucus_claim",
+      arguments: { target: "db" },
+    })) as CallToolResult;
+    expect(takenResult.isError).toBeFalsy();
+    const taken = jsonOf<{
+      outcome: string;
+      by: { agent_id: string; owner: string; ts: string; msg_id: string };
+    }>(takenResult);
+    expect(taken.outcome).toBe("already_claimed");
+    expect(taken.by.agent_id).toBe("agent-1");
+    expect(taken.by.owner).toBe("alice");
+    // Wire contract: the full holder identity survives the transport.
+    expect(taken.by.ts).toBeTruthy();
+    expect(taken.by.msg_id).toBeTruthy();
+  });
+});
+
+describe("CAU-11 AC2 — subscribe mints a cursor; read_channel(since) returns the delta", () => {
+  it("subscribe -> 2 posts -> read_channel{since:cursor} returns exactly the 2 new", async () => {
+    const client = await connectClient(await createdBackbone());
+
+    // Some history exists before the bookmark.
+    await client.callTool({
+      name: "caucus_post",
+      arguments: { type: "note", body: "old" },
+    });
+
+    // subscribe stands in for the CAU-14 hook's cursor mint: it bookmarks
+    // "now", then read_channel(since) returns only what arrived afterward.
+    const { cursor } = jsonOf<{ cursor: number }>(
+      (await client.callTool({
+        name: "caucus_subscribe",
+        arguments: {},
+      })) as CallToolResult,
+    );
+
+    await client.callTool({
+      name: "caucus_post",
+      arguments: { type: "status", body: "new-1" },
+    });
+    await client.callTool({
+      name: "caucus_post",
+      arguments: { type: "finding", body: "new-2" },
+    });
+
+    const delta = jsonOf<{ count: number; messages: { body: string }[] }>(
+      (await client.callTool({
+        name: "caucus_read_channel",
+        arguments: { since: cursor },
+      })) as CallToolResult,
+    );
+    expect(delta.count).toBe(2);
+    expect(delta.messages.map((m) => m.body)).toEqual(["new-1", "new-2"]);
+  });
+});
+
+describe("CAU-11 AC3 — claim/subscribe descriptions carry the conventions", () => {
+  it("lists both tools with convention-bearing descriptions", async () => {
+    const client = await connectClient(await createdBackbone());
+    const { tools } = await client.listTools();
+
+    const claim = tools.find((t) => t.name === "caucus_claim");
+    const subscribe = tools.find((t) => t.name === "caucus_subscribe");
+    expect(claim).toBeDefined();
+    expect(subscribe).toBeDefined();
+    expect(claim?.description).toBeTruthy();
+    expect(subscribe?.description).toBeTruthy();
+
+    // Claim coaches: claim BEFORE investigating, and already_claimed ⇒ build on
+    // / pick different work, not a failure.
+    expect(claim?.description).toMatch(/BEFORE/i);
+    expect(claim?.description).toMatch(/already_claimed|build on/i);
+    // Subscribe explains the since-cursor contract.
+    expect(subscribe?.description).toMatch(/since/i);
+  });
+});
