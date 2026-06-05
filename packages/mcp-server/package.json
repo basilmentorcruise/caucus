@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@caucus/backbone": "workspace:*",
+    "@caucus/backbone-server": "workspace:*",
     "@caucus/schema": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.4.3"

@@ -8,17 +8,18 @@
  * `session.ts`, `identity.ts`, `config.ts`, and `tools/`.
  */
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { InMemoryBackbone } from "@caucus/backbone";
 import { loadConfig } from "./config.js";
 import { createCaucusServer } from "./server.js";
 import { ensureChannel } from "./bootstrap.js";
+import { selectBackbone } from "./wiring.js";
 
 async function main(): Promise<void> {
   const config = loadConfig(process.env);
-  // TODO(CAU-5/6): replace with HttpBackbone from @caucus/backbone-server once
-  // merged. No HTTP backbone client exists yet, so the server runs against a
-  // process-local InMemoryBackbone placeholder.
-  const backbone = new InMemoryBackbone();
+  // Shared HTTP backbone when CAUCUS_URL is set (the two-terminal demo + hook
+  // need ONE store); a process-local InMemoryBackbone otherwise (offline/dev
+  // fallback). The selection — and the bearer-token + identity convention — is
+  // documented and unit-tested in wiring.ts; index.ts stays thin (CAU-50).
+  const backbone = selectBackbone(process.env);
   // Ensure the session's channel exists before serving: a spawned server
   // otherwise has no `CAUCUS_CHANNEL` created, so every write would fail with
   // `unknown_channel` (CAU-10 validation gap). Idempotent — see ensureChannel.

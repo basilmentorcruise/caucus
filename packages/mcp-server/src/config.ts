@@ -81,12 +81,53 @@ export function parseToken(token: string): SessionIdentity {
 }
 
 /**
+ * The cosmetic identity used for an OPAQUE (colon-free) `CAUCUS_TOKEN` on the
+ * shared HTTP backbone. The token is a per-session secret (CAU-13 / security
+ * hand-off) and must NEVER be displayed, so the placeholder is token-free: both
+ * principals read as `"session"`. This is display-only — the server resolves the
+ * bearer against its `CAUCUS_TOKENS` map and anchors the REAL identity onto every
+ * message (ADR-C7), so what lands in the log is correct regardless of this value.
+ */
+const OPAQUE_TOKEN_IDENTITY: SessionIdentity = {
+  agent_id: "session",
+  owner: "(anchored server-side)",
+};
+
+/**
+ * Resolve `CAUCUS_TOKEN` into a {@link SessionIdentity}, honoring the shared vs.
+ * offline distinction.
+ *
+ * - **Offline (`shared === false`).** The local identity IS authoritative (no
+ *   server to anchor it), so the token MUST be the structured `agent:owner`
+ *   form — a colon-free token is rejected via {@link parseToken}.
+ * - **Shared (`shared === true`, i.e. `CAUCUS_URL` set).** The token is the HTTP
+ *   bearer — a per-session OPAQUE secret (e.g. `tok-alice-1`) that the server's
+ *   `CAUCUS_TOKENS` map (entry `tok-alice-1:agent:owner`, where the secret is
+ *   the colon-free FIRST segment) resolves and anchors. A colon-free opaque
+ *   token therefore can't be split locally; rather than fail (the bearer is
+ *   valid; identity is server-authoritative), it maps to a cosmetic
+ *   {@link OPAQUE_TOKEN_IDENTITY} for `caucus_status` display ONLY. A token that
+ *   DOES contain a colon is still parsed for a nicer local display.
+ */
+function resolveIdentity(token: string, shared: boolean): SessionIdentity {
+  if (shared && !token.includes(":")) {
+    // Opaque bearer secret: never displayed, server anchors the real identity.
+    return OPAQUE_TOKEN_IDENTITY;
+  }
+  return parseToken(token);
+}
+
+/**
  * Build a {@link ServerConfig} from a process environment.
  *
- * Requires `CAUCUS_TOKEN` (resolved via {@link parseToken}) and `CAUCUS_CHANNEL`
- * (the default channel, trimmed and required). Throws {@link ConfigError} when
- * either is missing or invalid so the server fails fast at startup rather than
- * ever emitting an unidentified message.
+ * Requires `CAUCUS_TOKEN` and `CAUCUS_CHANNEL` (the default channel, trimmed).
+ * Throws {@link ConfigError} when either is missing/blank so the server fails
+ * fast rather than ever emitting an unidentified message.
+ *
+ * Token handling depends on whether `CAUCUS_URL` is set (the shared HTTP
+ * backbone — CAU-50): see {@link resolveIdentity}. In BOTH modes a MISSING or
+ * blank token is fatal; only the colon requirement is relaxed for an opaque
+ * bearer on the shared backbone.
  */
 export function loadConfig(
   env: Record<string, string | undefined>,
@@ -99,8 +140,9 @@ export function loadConfig(
   if (channel === undefined || channel.trim() === "") {
     throw new ConfigError("CAUCUS_CHANNEL is required");
   }
+  const shared = (env.CAUCUS_URL ?? "").trim() !== "";
   return {
-    identity: parseToken(token),
+    identity: resolveIdentity(token.trim(), shared),
     channel: channel.trim(),
   };
 }
