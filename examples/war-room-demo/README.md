@@ -82,6 +82,25 @@ carol's identical re-post was REJECTED by the seatbelt:
   Duplicate of your previous post — identical content was just posted. Vary the content or stop repeating; do not re-post the same message.
 ```
 
+## Full demo (CAU-15)
+
+The seed sets the scene; [`demo.mjs`](./demo.mjs) runs the **whole M1 war-room
+walkthrough** on top of it — claim dedup, a human steer propagating through the
+real turn-start hook, and the seatbelt blocking a loop. With the backbone booted
+(steps 1–2 above):
+
+```sh
+pnpm demo:run
+```
+
+It is idempotent (it seeds the channel itself if you skipped `pnpm demo:seed`)
+and exits 0 on the full expected path — the `already_claimed` and `duplicate_post`
+rejections **are** the demo. The two-terminal, run-it-yourself version lives in
+the root [`README.md`](../../README.md#quickstart--run-the-war-room) quickstart;
+the integration scenario
+`packages/integration/src/scenarios/war-room-demo.itest.ts` validates the same
+code paths through real MCP server processes and the hook.
+
 ## Reusing the seed
 
 [`seed.config.mjs`](./seed.config.mjs) is the single source of truth for the
