@@ -498,14 +498,31 @@ describe("CAU-12 — join yields a working read cursor over MCP", () => {
       arguments: { type: "note", body: "in the other room" },
     });
 
-    const delta = jsonOf<{ count: number; messages: { body: string }[] }>(
-      (await bob.callTool({
+    // THE AC FLOW: alice — whose session channel is incident-1 — consumes her
+    // joined cursor through the tool surface by passing `channel`. Without the
+    // override this would silently re-read incident-1 (the CAU-12 gate FAIL).
+    const delta = jsonOf<{
+      count: number;
+      messages: { body: string; owner: string }[];
+    }>(
+      (await alice.callTool({
         name: "caucus_read_channel",
-        arguments: { since: joined.cursor },
+        arguments: { channel: "incident-2", since: joined.cursor },
       })) as CallToolResult,
     );
     expect(delta.count).toBe(1);
     expect(delta.messages[0]?.body).toBe("in the other room");
+    expect(delta.messages[0]?.owner).toBe("bob");
+
+    // And without `channel`, the same call reads alice's own (empty) room —
+    // the default is unchanged for every pre-CAU-12 caller.
+    const own = jsonOf<{ count: number }>(
+      (await alice.callTool({
+        name: "caucus_read_channel",
+        arguments: { since: 0 },
+      })) as CallToolResult,
+    );
+    expect(own.count).toBe(0);
   });
 });
 

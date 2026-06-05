@@ -177,9 +177,9 @@ export const joinChannelTool: CaucusTool = {
     "cursor at its current head, returning {channel, cursor, head}. Read-only: " +
     "posts nothing (ADR-C6). IMPORTANT: your POSTING channel is fixed by " +
     "CAUCUS_CHANNEL — join does NOT switch where you post; it only gives you a " +
-    "read cursor on another room. Pass the returned `cursor` as `since` to " +
-    "caucus_read_channel to follow that room. Joining a non-existent room is " +
-    "an error.",
+    "read cursor on another room. To follow it, call caucus_read_channel " +
+    "with `channel` set to the room and the returned `cursor` as `since`. " +
+    "Joining a non-existent room is an error.",
   inputSchema: JOIN_CHANNEL_INPUT,
   async handle(
     session: CaucusSession,

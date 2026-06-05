@@ -10,6 +10,11 @@
  * Cursor semantics (coordinator-ratified): `since` is an opaque numeric cursor;
  * omitting it means read from the channel start (`0`). A not-yet-created
  * channel is not an error for a read — it yields an empty page at cursor `0`.
+ *
+ * `channel` (CAU-12): optional override so a cursor minted by
+ * caucus_join_channel is actually consumable — reads default to the session
+ * channel but may follow any existing room. Reads are identity-free and the
+ * posting channel stays fixed by CAUCUS_CHANNEL (writes are unaffected).
  */
 import { z } from "zod";
 import { UnknownChannelError } from "@caucus/backbone";
@@ -37,12 +42,22 @@ const READ_CHANNEL_INPUT = {
       "Maximum messages to return. Absent ⇒ all new messages. Use it to stay " +
         "within context budget.",
     ),
+  channel: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Channel to read. Absent ⇒ your session channel. Pass a room you " +
+        "joined via caucus_join_channel (with its cursor as `since`) to " +
+        "follow it.",
+    ),
 } as const satisfies ZodRawShapeCompat;
 
 /** Parsed `caucus_read_channel` args (validated by the SDK before `handle`). */
 interface ReadChannelArgs {
   readonly since?: number;
   readonly limit?: number;
+  readonly channel?: string;
 }
 
 /** The `caucus_read_channel` tool. */
@@ -55,16 +70,17 @@ export const readChannelTool: CaucusTool = {
     "messages in append order with identity (agent_id/owner) and type, so " +
     "you can see who is on what. Omit `since` to read from the beginning; " +
     "pass back the returned `cursor` as `since` to get only what's new. Use " +
-    "`limit` to cap volume.",
+    "`limit` to cap volume; use `channel` to read a room you joined " +
+    "(default: your session channel).",
   inputSchema: READ_CHANNEL_INPUT,
   async handle(
     session: CaucusSession,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
-    const { since, limit } = args as ReadChannelArgs;
+    const { since, limit, channel } = args as ReadChannelArgs;
     try {
       const { messages, cursor } = await session.reader.readSince(
-        session.channel,
+        channel ?? session.channel,
         since ?? 0,
         limit,
       );
