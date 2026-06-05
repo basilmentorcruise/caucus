@@ -9,6 +9,17 @@
  */
 import { parseEnvConfig } from "./config.js";
 import { startServer } from "./server.js";
+import { TokenMapParseError } from "./tokens.js";
 
-const server = await startServer(parseEnvConfig());
-console.log(`caucus-backbone listening on ${server.url}`);
+try {
+  const server = await startServer(parseEnvConfig());
+  console.log(`caucus-backbone listening on ${server.url}`);
+} catch (err) {
+  // Misconfiguration fails loud but CLEAN: the positional message (never the
+  // token text — ADR-C12) instead of a raw stack trace.
+  if (err instanceof TokenMapParseError) {
+    console.error(`caucus-backbone: ${err.message}`);
+    process.exit(1);
+  }
+  throw err;
+}
