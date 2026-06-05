@@ -40,6 +40,37 @@ describe("createSession", () => {
     expect(messages[0]?.body).toBe("looking into it");
   });
 
+  describe("createChannel() — sanctioned write, owner anchored server-side (CAU-12)", () => {
+    it("creates a channel attributed to the session owner (created_by cannot be forged)", async () => {
+      const backbone = new InMemoryBackbone();
+      const session = createSession(config, backbone);
+
+      const descriptor = await session.createChannel({
+        channel: "war-room-2",
+        purpose: "checkout 500s",
+      });
+      expect(descriptor.channel).toBe("war-room-2");
+      expect(descriptor.purpose).toBe("checkout 500s");
+      // Owner is taken from the session identity, NOT supplied by the caller:
+      // SessionCreateChannelOptions has no created_by field to forge.
+      expect(descriptor.created_by).toBe("alice");
+      expect(descriptor.kind).toBe("ephemeral");
+
+      // It really landed on the backbone.
+      const described = await backbone.describeChannel("war-room-2");
+      expect(described.created_by).toBe("alice");
+    });
+
+    it("propagates ChannelExistsError when the channel already exists", async () => {
+      const backbone = await freshBackbone(); // "incident-1" already created
+      const session = createSession(config, backbone);
+
+      await expect(
+        session.createChannel({ channel: "incident-1", purpose: "dup" }),
+      ).rejects.toThrow();
+    });
+  });
+
   it("claim() grants a claim message carrying the session identity", async () => {
     const backbone = await freshBackbone();
     const session = createSession(config, backbone);
@@ -110,6 +141,12 @@ describe("createSession", () => {
       void session.reader.createChannel;
       // @ts-expect-error the raw backbone is no longer exposed under this name
       void session.backbone;
+
+      // createChannel is a SANCTIONED write: it MUST be reachable on the session
+      // (no @ts-expect-error here — this line must typecheck) but NOT on the
+      // reader (probed above). It's the create path the channel tools use, with
+      // created_by anchored server-side.
+      expect(typeof session.createChannel).toBe("function");
 
       // Touch the session so the test has a runtime assertion too.
       expect(session.channel).toBe("incident-1");

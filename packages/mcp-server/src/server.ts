@@ -18,6 +18,12 @@ import { postTool, postFindingTool } from "./tools/post.js";
 import { readChannelTool } from "./tools/read-channel.js";
 import { claimTool } from "./tools/claim.js";
 import { subscribeTool } from "./tools/subscribe.js";
+import {
+  listChannelsTool,
+  describeChannelTool,
+  createChannelTool,
+  joinChannelTool,
+} from "./tools/channels.js";
 
 /** Inputs to {@link createCaucusServer}. */
 export interface CreateCaucusServerOptions {
@@ -26,8 +32,9 @@ export interface CreateCaucusServerOptions {
   /** The backbone the session writes to / reads from. */
   readonly backbone: Backbone;
   /**
-   * The tools to register. Defaults to the built-in set (`caucus_status` plus
-   * the CAU-10 write/read tools); CAU-11/12 tools are injected here.
+   * The tools to register. Defaults to the built-in set (`caucus_status`, the
+   * CAU-10 write/read tools, the CAU-11 claim/subscribe tools, and the CAU-12
+   * channel discovery + create/join tools); a test may inject a custom set.
    */
   readonly tools?: readonly CaucusTool[];
 }
@@ -47,6 +54,10 @@ export function createCaucusServer({
     readChannelTool,
     claimTool,
     subscribeTool,
+    listChannelsTool,
+    describeChannelTool,
+    createChannelTool,
+    joinChannelTool,
   ],
 }: CreateCaucusServerOptions): McpServer {
   const session = createSession(config, backbone);
