@@ -1,12 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { PACKAGE_NAME, packageName } from "./index.js";
 
-describe("@caucus/hook placeholder", () => {
-  it("exposes its package name constant", () => {
-    expect(PACKAGE_NAME).toBe("@caucus/hook");
+import * as hook from "./index.js";
+
+describe("@caucus/hook public surface", () => {
+  it("re-exports the config, checkpoint, render, and run entrypoints", () => {
+    expect(typeof hook.loadHookConfig).toBe("function");
+    expect(typeof hook.checkpointPath).toBe("function");
+    expect(typeof hook.readCheckpoint).toBe("function");
+    expect(typeof hook.writeCheckpoint).toBe("function");
+    expect(typeof hook.renderMessage).toBe("function");
+    expect(typeof hook.renderDelta).toBe("function");
+    expect(typeof hook.parseHookInput).toBe("function");
+    expect(typeof hook.runHook).toBe("function");
   });
 
-  it("returns the package name from packageName()", () => {
-    expect(packageName()).toBe("@caucus/hook");
+  it("re-exports the shared constants", () => {
+    expect(typeof hook.DEFAULT_CAUCUS_URL).toBe("string");
+    expect(typeof hook.BODY_TRUNCATE_CHARS).toBe("number");
+    expect(typeof hook.HOOK_TIMEOUT_MS).toBe("number");
+    expect(hook.DELTA_HEADER).toContain("CAUCUS");
+    expect(hook.DELTA_FOOTER).toContain("CAUCUS");
   });
 });

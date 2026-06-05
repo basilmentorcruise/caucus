@@ -51,7 +51,17 @@ importers:
         specifier: workspace:*
         version: link:../schema
 
-  packages/hook: {}
+  packages/hook:
+    dependencies:
+      '@caucus/backbone':
+        specifier: workspace:*
+        version: link:../backbone
+      '@caucus/backbone-server':
+        specifier: workspace:*
+        version: link:../backbone-server
+      '@caucus/schema':
+        specifier: workspace:*
+        version: link:../schema
 
   packages/integration:
     dependencies:
