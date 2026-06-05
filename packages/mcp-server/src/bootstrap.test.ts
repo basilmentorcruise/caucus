@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ChannelExistsError,
   InMemoryBackbone,
   UnknownChannelError,
   type Backbone,
@@ -95,5 +96,51 @@ describe("ensureChannel (CAU-12 startup bootstrap)", () => {
     expect(created).toBe(true);
     expect(descriptor.created_by).toBe("alice");
     expect(descriptor.purpose).toContain("auto-created");
+  });
+
+  it("tolerates losing the describe-then-create race (ChannelExistsError ⇒ success)", async () => {
+    // Two sessions booting concurrently against a SHARED backbone (CAU-50)
+    // can both see "missing" and race the create. The loser must treat the
+    // now-existing channel as success, not crash at startup.
+    let describeCalls = 0;
+    const existing: ChannelDescriptor = {
+      channel: "incident-1",
+      kind: "ephemeral",
+      purpose: "created by the race winner",
+      verbosity: "quiet",
+      created_by: "bob",
+      created_ts: "2026-06-04T00:00:00.000Z",
+      head: 0,
+    };
+    const stub: Pick<Backbone, "describeChannel" | "createChannel"> = {
+      describeChannel(): Promise<ChannelDescriptor> {
+        describeCalls += 1;
+        // First describe: missing (pre-race). Second: the winner created it.
+        return describeCalls === 1
+          ? Promise.reject(new UnknownChannelError("incident-1"))
+          : Promise.resolve(existing);
+      },
+      createChannel(): Promise<ChannelDescriptor> {
+        return Promise.reject(new ChannelExistsError("incident-1"));
+      },
+    };
+
+    const descriptor = await ensureChannel(stub as Backbone, config);
+    expect(describeCalls).toBe(2);
+    expect(descriptor).toEqual(existing);
+  });
+
+  it("a non-exists create failure still propagates", async () => {
+    const stub: Pick<Backbone, "describeChannel" | "createChannel"> = {
+      describeChannel(): Promise<ChannelDescriptor> {
+        return Promise.reject(new UnknownChannelError("incident-1"));
+      },
+      createChannel(): Promise<ChannelDescriptor> {
+        return Promise.reject(new Error("create exploded"));
+      },
+    };
+    await expect(ensureChannel(stub as Backbone, config)).rejects.toThrow(
+      "create exploded",
+    );
   });
 });

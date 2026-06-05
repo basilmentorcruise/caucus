@@ -15,7 +15,7 @@
  * swallowed. It lives here — not inlined in `index.ts` — so it is unit-testable
  * without spawning a subprocess.
  */
-import { UnknownChannelError } from "@caucus/backbone";
+import { ChannelExistsError, UnknownChannelError } from "@caucus/backbone";
 import type { Backbone, ChannelDescriptor } from "@caucus/backbone";
 import type { ServerConfig } from "./config.js";
 
@@ -39,10 +39,21 @@ export async function ensureChannel(
     // malformed slug ⇒ InvalidChannelNameError) is a real misconfiguration and
     // must propagate, not be masked by a create attempt.
     if (!(err instanceof UnknownChannelError)) throw err;
-    return backbone.createChannel({
-      channel,
-      purpose: "caucus session channel (auto-created at startup)",
-      created_by: config.identity.owner,
-    });
+    try {
+      return await backbone.createChannel({
+        channel,
+        purpose: "caucus session channel (auto-created at startup)",
+        created_by: config.identity.owner,
+      });
+    } catch (createErr) {
+      // describe-then-create is a TOCTOU: two sessions booting concurrently
+      // against a SHARED backbone (CAU-50, HttpBackbone) can both see
+      // "missing" and race the create. Losing that race means the channel now
+      // exists — which is this function's success condition, not a failure.
+      // Caught by error type so it survives the HTTP 409 → ChannelExistsError
+      // reconstruction. Anything else still propagates.
+      if (!(createErr instanceof ChannelExistsError)) throw createErr;
+      return backbone.describeChannel(channel);
+    }
   }
 }

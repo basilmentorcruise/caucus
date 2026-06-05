@@ -186,12 +186,12 @@ export const joinChannelTool: CaucusTool = {
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
     const { channel } = args as unknown as JoinChannelArgs;
-    // Verify the room exists FIRST so a typo'd/non-existent channel fails
-    // loudly here (UnknownChannelError propagates), rather than minting a dead
-    // bookmark — same rationale as caucus_subscribe's divergence from
-    // caucus_read_channel. describeChannel gives us the head for the result.
-    const { head } = await session.reader.describeChannel(channel);
+    // subscribe() both verifies the room exists (UnknownChannelError
+    // propagates for a typo'd/non-existent channel — same rationale as
+    // caucus_subscribe's divergence from caucus_read_channel) and mints the
+    // cursor at the current head in ONE call, so cursor === head is atomic by
+    // construction rather than racing a separate describeChannel.
     const cursor = await session.reader.subscribe(channel);
-    return jsonResult({ channel, cursor, head });
+    return jsonResult({ channel, cursor, head: cursor });
   },
 };
