@@ -22,7 +22,7 @@ CAUCUS_URL ?= http://127.0.0.1:$(PORT)
 .DEFAULT_GOAL := help
 
 .PHONY: help install build lint typecheck test integration check clean \
-        backbone seed demo demo-loop
+        backbone seed demo demo-loop watch
 
 help: ## List available targets
 	@grep -E '^[a-z][a-z-]*:.*##' $(MAKEFILE_LIST) | \
@@ -62,3 +62,6 @@ demo: ## Run the scripted four-beat war-room demo (backbone must be running)
 
 demo-loop: ## Seed plus the seatbelt loop beat (duplicate post visibly rejected)
 	CAUCUS_URL=$(CAUCUS_URL) pnpm demo:seed -- --loop
+
+watch: ## Live IRC-style tail of the war-room channel (Ctrl-C to stop)
+	CAUCUS_URL=$(CAUCUS_URL) pnpm demo:watch
