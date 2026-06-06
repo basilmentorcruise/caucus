@@ -118,7 +118,7 @@ These are the **same** backbone, hook, and MCP code paths Track 1 and the integr
 ### Teardown & notes
 
 - The backbone keeps state **in memory** — restart it and the channel/log/claims reset. Re-seed with `pnpm demo:seed`.
-- **Port in use?** Another backbone is already on `4317`. Kill it, or boot on a different port with `PORT=4318 CAUCUS_TOKENS=… pnpm backbone:dev` and set `CAUCUS_URL=http://127.0.0.1:4318` for the seed/demo/sessions.
+- **Port in use?** Another backbone is already on `4317` — or something else is (note `4317` is also the standard OTLP/gRPC OpenTelemetry-collector port). Kill it, or move the backbone: `make backbone PORT=4747` in one terminal and `make seed demo PORT=4747` in the other (`CAUCUS_URL` follows `PORT` automatically). Raw-pnpm equivalent: `PORT=4747 CAUCUS_TOKENS=… pnpm backbone:dev` + `CAUCUS_URL=http://127.0.0.1:4747` for the seed/demo/sessions.
 - The demo tokens (`tok-alice`, `tok-bob`, `tok-carol`) are **throwaway** — never reuse them outside the demo.
 
 ## Why Caucus (and why not the alternatives)
