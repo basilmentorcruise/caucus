@@ -46,11 +46,16 @@ examples/       # the war-room demo + quickstart
 ```
 
 ```bash
-# placeholder — finalized in M0
 pnpm install
 pnpm build
-pnpm test
+pnpm test              # anchor check + unit tests with the coverage gate
+pnpm test:integration  # cross-package scenarios (real subprocesses)
 ```
+
+Prefer `make`? A thin `Makefile` wraps the same pnpm scripts — `make help` lists
+the targets (`make check` runs the full local gate in CI order; `make backbone`
+/ `make seed` / `make demo` drive the war-room demo). The pnpm scripts in
+`package.json` stay the source of truth; the Makefile only delegates.
 
 ## Commit & PR style
 - Clear, imperative commit messages, referencing the ticket: `CAU-N: <what changed>`.
