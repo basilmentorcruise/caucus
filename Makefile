@@ -12,6 +12,13 @@ SHELL := /bin/sh
 # The seed identities (must match examples/war-room-demo/seed.config.mjs).
 DEMO_TOKENS := tok-alice:sess-alice:alice,tok-bob:sess-bob:bob,tok-carol:sess-carol:carol
 
+# Backbone port. Override per-invocation when 4317 collides locally (it is
+# also the standard OTLP/gRPC OpenTelemetry-collector port):
+#   make backbone PORT=4747       # terminal 1
+#   make seed demo PORT=4747      # terminal 2 — CAUCUS_URL follows PORT
+PORT ?= 4317
+CAUCUS_URL ?= http://127.0.0.1:$(PORT)
+
 .DEFAULT_GOAL := help
 
 .PHONY: help install build lint typecheck test integration check clean \
@@ -44,14 +51,14 @@ check: lint typecheck test build integration ## The full local gate, in CI order
 clean: ## Remove build output (tsc --build --clean)
 	pnpm clean
 
-backbone: ## Boot the shared backbone with the demo seed tokens (Ctrl-C to stop)
-	CAUCUS_TOKENS="$(DEMO_TOKENS)" pnpm backbone:dev
+backbone: ## Boot the shared backbone with the demo seed tokens (Ctrl-C to stop; PORT=<p> to move it)
+	CAUCUS_TOKENS="$(DEMO_TOKENS)" PORT=$(PORT) pnpm backbone:dev
 
 seed: ## Seed the war-room demo channel (idempotent; backbone must be running)
-	pnpm demo:seed
+	CAUCUS_URL=$(CAUCUS_URL) pnpm demo:seed
 
 demo: ## Run the scripted four-beat war-room demo (backbone must be running)
-	pnpm demo:run
+	CAUCUS_URL=$(CAUCUS_URL) pnpm demo:run
 
 demo-loop: ## Seed plus the seatbelt loop beat (duplicate post visibly rejected)
-	pnpm demo:seed -- --loop
+	CAUCUS_URL=$(CAUCUS_URL) pnpm demo:seed -- --loop
