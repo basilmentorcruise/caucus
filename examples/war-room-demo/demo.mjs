@@ -48,13 +48,15 @@ import { newMsgId } from "@caucus/schema";
 
 import {
   CHANNEL,
-  DEFAULT_URL,
+  checkArgs,
+  resolveUrl,
   IDENTITIES,
   OPENING_SCENE,
   PURPOSE,
 } from "./seed.config.mjs";
 
-const URL = process.env.CAUCUS_URL ?? DEFAULT_URL;
+checkArgs(process.argv.slice(2));
+const URL = resolveUrl();
 
 /** The two work items the dedup beat contends over (CAU-15 demo strings). */
 const TARGET_CONTESTED = "auth-timeout repro";

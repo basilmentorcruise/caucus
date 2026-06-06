@@ -33,14 +33,16 @@ import { newMsgId } from "@caucus/schema";
 
 import {
   CHANNEL,
-  DEFAULT_URL,
+  checkArgs,
+  resolveUrl,
   IDENTITIES,
   LOOP_BODY,
   OPENING_SCENE,
   PURPOSE,
 } from "./seed.config.mjs";
 
-const URL = process.env.CAUCUS_URL ?? DEFAULT_URL;
+checkArgs(process.argv.slice(2), ["--loop"]);
+const URL = resolveUrl();
 const LOOP = process.argv.slice(2).includes("--loop");
 
 /** A bearer-carrying client for a demo principal, looked up by owner. */
@@ -110,8 +112,22 @@ async function loopDemo(carol) {
       status: "fyi",
     });
 
-  await post();
-  console.log(`carol posted: ${LOOP_BODY}`);
+  try {
+    await post();
+    console.log(`carol posted: ${LOOP_BODY}`);
+  } catch (err) {
+    // Warm backbone: a PREVIOUS --loop run already left LOOP_BODY as carol's
+    // last message, so even the first post this run is the consecutive dup.
+    // That IS the demonstration — print it and succeed (idempotent re-runs).
+    if (err?.code === "duplicate_post") {
+      console.log(
+        "carol's identical post (left over from a previous --loop run) was REJECTED by the seatbelt:",
+      );
+      console.log(`  ${err.message}`);
+      return;
+    }
+    throw err;
+  }
 
   try {
     await post();
