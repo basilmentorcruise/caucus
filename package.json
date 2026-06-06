@@ -2,7 +2,7 @@
   "name": "caucus",
   "version": "0.0.0",
   "private": true,
-  "description": "Caucus — an agent war room for investigations & escalations.",
+  "description": "Caucus \u2014 an agent war room for investigations & escalations.",
   "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@9.15.0",
@@ -22,7 +22,8 @@
     "demo:run": "node examples/war-room-demo/demo.mjs",
     "changeset": "changeset",
     "changeset:version": "changeset version",
-    "release": "pnpm build && changeset publish"
+    "release": "pnpm build && changeset publish",
+    "demo:watch": "node examples/war-room-demo/watch.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",

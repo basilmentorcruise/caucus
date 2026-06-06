@@ -7,6 +7,7 @@
   "type": "module",
   "dependencies": {
     "@caucus/backbone-server": "workspace:*",
-    "@caucus/schema": "workspace:*"
+    "@caucus/schema": "workspace:*",
+    "@caucus/hook": "workspace:*"
   }
 }
