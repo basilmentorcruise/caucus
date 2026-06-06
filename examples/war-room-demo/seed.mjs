@@ -33,7 +33,7 @@ import { newMsgId } from "@caucus/schema";
 
 import {
   CHANNEL,
-  checkArgs,
+  parseArgs,
   resolveUrl,
   IDENTITIES,
   LOOP_BODY,
@@ -41,8 +41,8 @@ import {
   PURPOSE,
 } from "./seed.config.mjs";
 
-checkArgs(process.argv.slice(2), ["--loop"]);
-const URL = resolveUrl();
+const OVERRIDES = parseArgs(process.argv.slice(2), ["--loop"]);
+const URL = resolveUrl(process.env, OVERRIDES);
 const LOOP = process.argv.slice(2).includes("--loop");
 
 /** A bearer-carrying client for a demo principal, looked up by owner. */
