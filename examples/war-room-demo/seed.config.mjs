@@ -58,37 +58,55 @@ export const LOOP_BODY =
 /** Default backbone URL the seed talks to (localhost-only; see ADR-C9). */
 export const DEFAULT_URL = "http://127.0.0.1:4317";
 
+/** The make-style `VAR=value` overrides the demo scripts accept as args. */
+const ARG_OVERRIDES = ["PORT", "CAUCUS_URL"];
+
 /**
- * Resolve the backbone URL the way every demo script should: `CAUCUS_URL`
- * wins; else `PORT` (matching the backbone bin's env) builds a localhost URL;
- * else the default. Keeps `make demo PORT=…`, `PORT=… pnpm demo:run`, and
- * `CAUCUS_URL=…` all working consistently.
+ * Parse make-style `VAR=value` positional args (`pnpm demo:run PORT=4747` —
+ * the owner's muscle memory from `make demo PORT=4747`, where make parses
+ * `VAR=value` anywhere). Returns the overrides; rejects genuinely unknown
+ * args LOUDLY (silently ignoring one once sent the demo at the wrong port
+ * with an opaque `fetch failed`).
  */
-export function resolveUrl(env = process.env) {
-  if (env.CAUCUS_URL && env.CAUCUS_URL.trim() !== "") return env.CAUCUS_URL;
-  if (env.PORT && env.PORT.trim() !== "") return `http://127.0.0.1:${env.PORT.trim()}`;
-  return DEFAULT_URL;
+export function parseArgs(argv, allowed = []) {
+  const overrides = {};
+  const unknown = [];
+  for (const a of argv) {
+    // `--` is the standard end-of-options separator (pnpm forwards it through
+    // on `pnpm demo:seed -- --loop`) — never an unknown arg.
+    if (a === "--" || allowed.includes(a)) continue;
+    const eq = a.indexOf("=");
+    const key = eq > 0 ? a.slice(0, eq) : undefined;
+    if (key !== undefined && ARG_OVERRIDES.includes(key)) {
+      overrides[key] = a.slice(eq + 1);
+    } else {
+      unknown.push(a);
+    }
+  }
+  if (unknown.length > 0) {
+    console.error(
+      `unknown argument(s): ${unknown.join(" ")}\n` +
+        `Supported: ${allowed.join(" ") || "(none)"} and make-style ` +
+        `${ARG_OVERRIDES.map((k) => `${k}=…`).join(" / ")}, e.g.:\n` +
+        `  pnpm demo:run PORT=4747\n` +
+        `  make demo PORT=4747`,
+    );
+    process.exit(2);
+  }
+  return overrides;
 }
 
 /**
- * Reject unknown positional args LOUDLY. The real-user stumble this guards:
- * `pnpm demo:run PORT=4747` passes `PORT=4747` as an argv string (env vars go
- * BEFORE the command) — silently ignoring it sent the demo at the wrong port
- * with an opaque `fetch failed`.
+ * Resolve the backbone URL: make-style arg overrides win (mirroring make,
+ * where command-line `VAR=value` beats the environment), then `CAUCUS_URL`
+ * env, then `PORT` env (matching the backbone bin), then the default.
  */
-export function checkArgs(argv, allowed = []) {
-  // `--` is the standard end-of-options separator (pnpm forwards it through
-  // on `pnpm demo:seed -- --loop`) — never an unknown arg.
-  const unknown = argv.filter((a) => a !== "--" && !allowed.includes(a));
-  if (unknown.length === 0) return;
-  console.error(
-    `unknown argument(s): ${unknown.join(" ")}\n` +
-      `To pick a port, set it as an ENVIRONMENT variable, not an argument:\n` +
-      `  make demo PORT=4747            # make-native\n` +
-      `  PORT=4747 pnpm demo:run        # env form (before the command)\n` +
-      `  CAUCUS_URL=http://127.0.0.1:4747 pnpm demo:run`,
-  );
-  process.exit(2);
+export function resolveUrl(env = process.env, overrides = {}) {
+  const url = overrides.CAUCUS_URL ?? env.CAUCUS_URL;
+  if (url && url.trim() !== "") return url.trim();
+  const port = overrides.PORT ?? env.PORT;
+  if (port && port.trim() !== "") return `http://127.0.0.1:${port.trim()}`;
+  return DEFAULT_URL;
 }
 
 /**
