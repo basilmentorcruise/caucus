@@ -170,7 +170,8 @@ export function backboneErrorFromWire(body: WireErrorBody): BackboneError {
       // other reconstructions); instanceof + .code are exact.
       return new ChannelFullError(
         extractChannel(message),
-        extractLimit(message, /holds at most (\d+) messages/),
+        // `messages?`: the source error pluralizes (`1 message` / `2 messages`).
+        extractLimit(message, /holds at most (\d+) messages?/),
       );
     case "channel_limit":
       return new ChannelLimitError(

@@ -135,6 +135,18 @@ describe("rate limit — per-(channel, agent) isolation", () => {
     expect(() => sb.checkRate(CH, A, clock.now())).toThrow(RateLimitedError);
     expect(() => sb.checkRate("incident-2", A, clock.now())).not.toThrow();
   });
+
+  it("pairs that would collide under a space-joined key stay distinct", () => {
+    // agent_id MAY contain spaces (only control chars are rejected), so a
+    // plain-space separator would fold ("war", "room agent") and
+    // ("war room", "agent") into one budget. The NUL separator keeps them
+    // apart. Regression test for the #key separator.
+    const clock = fakeClock();
+    const sb = new Seatbelt({ maxPostsPerMinute: 1, clock: clock.now });
+    sb.recordRate("war", "room agent", clock.now());
+    expect(() => sb.checkRate("war", "room agent", clock.now())).toThrow(RateLimitedError);
+    expect(() => sb.checkRate("war room", "agent", clock.now())).not.toThrow();
+  });
 });
 
 describe("checkRate records nothing (the claim-loser split)", () => {

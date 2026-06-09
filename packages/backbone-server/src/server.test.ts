@@ -761,7 +761,7 @@ describe("dispatch — CAU-74 resource caps over the wire", () => {
     // The envelope names the channel and the cap — never the rejected body.
     const message = (res.json as { error: { message: string } }).error.message;
     expect(message).toContain('"c1"');
-    expect(message).toContain("at most 1 messages");
+    expect(message).toContain("at most 1 message.");
     expect(message).not.toContain("over the cap");
   });
 

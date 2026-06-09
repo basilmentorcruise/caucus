@@ -211,6 +211,17 @@ describe("backboneErrorFromWire — reconstruction registry", () => {
     expect(err.message).toBe(original.message);
   });
 
+  it("round-trips ChannelFullError with a singular limit (`1 message`)", () => {
+    // The source message pluralizes, so the recovery regex must accept both
+    // "message" and "messages".
+    const original = new ChannelFullError("incident-1", 1);
+    expect(original.message).toContain("at most 1 message.");
+    const err = backboneErrorFromWire(mapError(original).body) as ChannelFullError;
+    expect(err).toBeInstanceOf(ChannelFullError);
+    expect(err.limit).toBe(1);
+    expect(err.message).toBe(original.message);
+  });
+
   it("round-trips ChannelLimitError (instanceof + code + limit) (CAU-74)", () => {
     const original = new ChannelLimitError(2);
     const wire = mapError(original).body;

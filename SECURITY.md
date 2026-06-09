@@ -185,7 +185,11 @@ defend against any of the following:
   arithmetic: with the defaults (30 posts/min/channel, 120/min global per agent, 10 creates/min
   per owner, 10 000 messages/channel, 1 000 channels, 4 096 tracked seatbelt entries per map) a
   channel tops out around ~330 MB theoretical worst case (10k messages × 16k-char bodies), and at
-  the capped rates filling one channel takes ~83 minutes of sustained max-rate posting per token.
+  the capped rates filling one channel takes ~5.6 h for a single token (per-channel cap 30/min),
+  or ~83 min with four colluding tokens (global cap 120/min each). That ~330 MB figure is per
+  channel: with `maxChannels` = 1 000 the backbone-wide theoretical bound is ~330 GB — the count
+  caps bound *counts*, not bytes, to a host-survivable level, and the operative byte bound is the
+  per-token ingest rate (120 msg/min × ~32 KB ≈ 3.8 MB/min, ≈ ~5.5 GB/day per token).
   The residual posture, stated honestly: the seatbelt and caps are cooperative-abuse /
   accidental-loop controls within the ADR-C9 trust boundary; they are not a defense against a
   hostile valid-token holder — the remedy for a hostile or compromised token is revocation, not

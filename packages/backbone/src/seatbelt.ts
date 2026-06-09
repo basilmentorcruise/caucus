@@ -153,7 +153,14 @@ export class Seatbelt {
   readonly #windowMs: number;
   readonly #clock: () => number;
 
-  /** State keyed by `channel + " " + agent_id` (NUL can't appear in either). */
+  /**
+   * State keyed by {@link Seatbelt.#key}: `channel + "\u0000" + agent_id`.
+   * NUL is a safe separator because it genuinely cannot appear in either
+   * part: channel slugs forbid it, and write-time validation (CAU-71)
+   * rejects every control character in `agent_id` — whereas plain spaces
+   * ARE allowed in `agent_id`, so a printable separator could collide
+   * distinct pairs.
+   */
   readonly #agents = new Map<string, AgentState>();
 
   /** Cross-channel rate state keyed by `agent_id` alone (CAU-74). */
@@ -207,7 +214,10 @@ export class Seatbelt {
   }
 
   #key(channel: string, agentId: string): string {
-    return `${channel} ${agentId}`;
+    // NUL separator, written as an escape sequence (a literal NUL byte in
+    // source would make git treat the file as binary). See the `#agents` doc
+    // for why NUL is the one safe choice: spaces may appear inside `agent_id`.
+    return `${channel}\u0000${agentId}`;
   }
 
   /**

@@ -199,7 +199,7 @@ export class ChannelFullError extends BackboneError {
 
   constructor(channel: string, limit: number) {
     super(
-      `Channel is full: ${JSON.stringify(channel)} holds at most ${limit} messages. Start a fresh channel to continue.`,
+      `Channel is full: ${JSON.stringify(channel)} holds at most ${limit} ${limit === 1 ? "message" : "messages"}. Start a fresh channel to continue.`,
       "channel_full",
     );
     this.name = "ChannelFullError";
@@ -218,7 +218,7 @@ export class ChannelLimitError extends BackboneError {
   readonly limit: number;
 
   constructor(limit: number) {
-    super(`channel limit reached: at most ${limit} channels`, "channel_limit");
+    super(`Channel limit reached: at most ${limit} channels`, "channel_limit");
     this.name = "ChannelLimitError";
     this.limit = limit;
   }
