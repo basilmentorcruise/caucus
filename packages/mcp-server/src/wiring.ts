@@ -42,6 +42,8 @@ import { InMemoryBackbone } from "@caucus/backbone";
 import type { Backbone } from "@caucus/backbone";
 import { HttpBackbone } from "@caucus/backbone-server";
 
+import { ConfigError } from "./config.js";
+
 /**
  * Select the backbone the entrypoint should serve, from the process
  * environment.
@@ -49,12 +51,17 @@ import { HttpBackbone } from "@caucus/backbone-server";
  * `CAUCUS_URL` (trimmed; an all-whitespace value counts as unset) decides:
  * set ⇒ an {@link HttpBackbone} against that URL carrying `CAUCUS_TOKEN` as its
  * bearer (CAU-13); unset ⇒ a process-local {@link InMemoryBackbone} (offline
- * fallback). The token is read here only to forward it as the bearer — it is
- * never logged or echoed (ADR-C12); identity parsing for display lives in
- * `loadConfig`.
+ * fallback). A set `CAUCUS_URL` is validated up front (CAU-75): it must parse
+ * as a URL with an `http:` or `https:` scheme, so a bad value fails fast at
+ * config time with a {@link ConfigError} instead of surfacing as a confusing
+ * fetch failure later. The error message NEVER echoes the URL value — a URL can
+ * carry userinfo credentials, and `String(err)` goes to stderr (ADR-C12). The
+ * token is read here only to forward it as the bearer — it is never logged or
+ * echoed (ADR-C12); identity parsing for display lives in `loadConfig`.
  *
  * @returns the selected {@link Backbone}. Pure w.r.t. its `env` argument so it
  *   is unit-testable without a process or a live server.
+ * @throws ConfigError if `CAUCUS_URL` is set but unparsable or non-http(s).
  */
 export function selectBackbone(
   env: Record<string, string | undefined>,
@@ -65,9 +72,22 @@ export function selectBackbone(
     // — the two-terminal demo and the hook require CAUCUS_URL (see module doc).
     return new InMemoryBackbone();
   }
+  // Fail fast on a malformed or non-http(s) URL (CAU-75). Neither message
+  // echoes the value: a URL can embed userinfo credentials (ADR-C12).
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new ConfigError("CAUCUS_URL is not a valid URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new ConfigError(`CAUCUS_URL must use http: or https:, got "${parsed.protocol}"`);
+  }
   // Shared mode: every MCP server + the hook point at the one HTTP backbone.
-  // The bearer is CAUCUS_TOKEN verbatim; an empty/unset token means no header is
-  // sent and writes will 401 (config.ts still requires the token, so this is
-  // belt-and-suspenders). The HttpBackbone never logs or echoes the token.
+  // The ORIGINAL trimmed string is passed through (not parsed.toString(), which
+  // can rewrite the URL). The bearer is CAUCUS_TOKEN verbatim; an empty/unset
+  // token means no header is sent and writes will 401 (config.ts still requires
+  // the token, so this is belt-and-suspenders). The HttpBackbone never logs or
+  // echoes the token.
   return new HttpBackbone(url, { token: env.CAUCUS_TOKEN });
 }

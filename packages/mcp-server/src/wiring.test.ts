@@ -17,6 +17,7 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryBackbone } from "@caucus/backbone";
 import { HttpBackbone } from "@caucus/backbone-server";
+import { ConfigError } from "./config.js";
 import { selectBackbone } from "./wiring.js";
 
 describe("selectBackbone (CAU-50 AC1 — CAUCUS_URL switches the backbone)", () => {
@@ -81,5 +82,50 @@ describe("selectBackbone (CAU-50 AC1 — CAUCUS_URL switches the backbone)", () 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe("http://127.0.0.1:5599/channels");
     expect(calls[0]?.auth).toBe("Bearer tok-alice-secret");
+  });
+});
+
+describe("selectBackbone (CAU-75 — CAUCUS_URL scheme validation)", () => {
+  it("a non-http(s) scheme → ConfigError (ftp:, file:)", () => {
+    expect(() => selectBackbone({ CAUCUS_URL: "ftp://x" })).toThrow(ConfigError);
+    expect(() => selectBackbone({ CAUCUS_URL: "ftp://x" })).toThrow(
+      'CAUCUS_URL must use http: or https:, got "ftp:"',
+    );
+    expect(() => selectBackbone({ CAUCUS_URL: "file:///x" })).toThrow(ConfigError);
+  });
+
+  it("an unparsable URL → ConfigError", () => {
+    expect(() => selectBackbone({ CAUCUS_URL: "not a url" })).toThrow(ConfigError);
+    expect(() => selectBackbone({ CAUCUS_URL: "not a url" })).toThrow(
+      "CAUCUS_URL is not a valid URL",
+    );
+    expect(() => selectBackbone({ CAUCUS_URL: ":::" })).toThrow(ConfigError);
+  });
+
+  it("http: and https: URLs still yield an HttpBackbone", () => {
+    expect(selectBackbone({ CAUCUS_URL: "http://127.0.0.1:4317" })).toBeInstanceOf(
+      HttpBackbone,
+    );
+    expect(selectBackbone({ CAUCUS_URL: "https://caucus.example.com" })).toBeInstanceOf(
+      HttpBackbone,
+    );
+  });
+
+  it("HYGIENE: the error never echoes the URL value or the token (ADR-C12)", () => {
+    // A bad URL carrying userinfo credentials, alongside a real-looking token.
+    // String(err) goes to stderr, so neither secret may appear in the message.
+    let thrown: unknown;
+    try {
+      selectBackbone({
+        CAUCUS_URL: "http://user:hunter2@nope^",
+        CAUCUS_TOKEN: "tok-secret",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(ConfigError);
+    const message = String(thrown);
+    expect(message).not.toContain("tok-secret");
+    expect(message).not.toContain("hunter2");
   });
 });

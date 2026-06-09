@@ -33,6 +33,7 @@ export { parseEnvConfig, type EnvConfig } from "./config.js";
 export {
   parseTokenMap,
   resolveToken,
+  tokenDigest,
   TokenMapParseError,
   type TokenIdentity,
   type TokenMap,

@@ -16,6 +16,12 @@
  * you MUST configure at least one token. Reads stay open within the trust
  * boundary (ADR-C9); this gate is for writes only.
  */
+import { createHash } from "node:crypto";
+
+/** SHA-256 hex digest of a bearer token — the TokenMap key. */
+export function tokenDigest(token: string): string {
+  return createHash("sha256").update(token, "utf8").digest("hex");
+}
 
 /** The agent→human identity a single bearer token grants. */
 export interface TokenIdentity {
@@ -25,7 +31,13 @@ export interface TokenIdentity {
   readonly owner: string;
 }
 
-/** An immutable bearer-token → {@link TokenIdentity} lookup. */
+/**
+ * An immutable bearer-token → {@link TokenIdentity} lookup. Keys are SHA-256
+ * hex digests of the token (see {@link tokenDigest}), NEVER the token text —
+ * so the stored map carries no raw secret and lookups are timing-safe (the
+ * presented token is hashed before comparison; map access compares digests,
+ * not secret bytes).
+ */
 export type TokenMap = ReadonlyMap<string, TokenIdentity>;
 
 /**
@@ -90,11 +102,16 @@ export function parseTokenMap(env: string | undefined): TokenMap {
     if (token === "" || agent_id === "" || owner === "") {
       throw new TokenMapParseError(`CAUCUS_TOKENS entry ${pos} is malformed`);
     }
-    if (map.has(token)) {
+    // The map is keyed by the token's SHA-256 digest, never the plaintext
+    // (timing-safe lookup; no raw secret retained). Duplicate detection keys
+    // on the digest too — same token value ⇒ same digest ⇒ same positional
+    // rejection as before.
+    const key = tokenDigest(token);
+    if (map.has(key)) {
       throw new TokenMapParseError(`CAUCUS_TOKENS entry ${pos} is malformed`);
     }
 
-    map.set(token, { agent_id, owner });
+    map.set(key, { agent_id, owner });
   }
 
   return map;
@@ -105,6 +122,10 @@ export function parseTokenMap(env: string | undefined): TokenMap {
  * if the token is absent, empty, or unknown. The caller maps `undefined` to an
  * IDENTICAL `401` for both "no token" and "unknown token" so the response is
  * not an oracle distinguishing a valid-but-unknown token from no token at all.
+ *
+ * Timing-safe: the presented token is hashed with {@link tokenDigest} and the
+ * DIGEST is looked up, so lookup timing never depends on how many bytes of the
+ * secret a probe got right.
  */
 export function resolveToken(
   map: TokenMap,
@@ -113,5 +134,5 @@ export function resolveToken(
   if (presented === undefined || presented === "") {
     return undefined;
   }
-  return map.get(presented);
+  return map.get(tokenDigest(presented));
 }

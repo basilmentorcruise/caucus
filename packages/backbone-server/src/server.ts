@@ -38,6 +38,29 @@ import { mapError, UnauthorizedError, type WireErrorBody } from "./wire-errors.j
 /** Max raw request body the server will buffer before rejecting with 413. */
 export const MAX_BODY_BYTES = 256 * 1024;
 
+// Slowloris guard (CAU-75): the body cap alone does not bound TIME, so a client
+// trickling bytes could hold a connection open indefinitely. Every request here
+// is a small local JSON exchange — 30 s is far above any real request — so we
+// pin tight, explicit socket timeouts.
+/** Full header block must arrive within 10 s (must stay < REQUEST_TIMEOUT_MS). */
+export const HEADERS_TIMEOUT_MS = 10_000;
+/** Whole request (incl. body) must complete within 30 s. */
+export const REQUEST_TIMEOUT_MS = 30_000;
+/** Idle keep-alive sockets close after 5 s (Node default, pinned explicitly). */
+export const KEEP_ALIVE_TIMEOUT_MS = 5_000;
+/**
+ * How often Node sweeps sockets for expired headers/request timeouts. The
+ * default 30 s would let a 10 s headersTimeout slip to ~40 s wall-clock.
+ */
+export const CONNECTIONS_CHECK_INTERVAL_MS = 5_000;
+
+/**
+ * `http.Server` with the `connectionsCheckingInterval` runtime property, which
+ * @types/node only exposes as a creation OPTION (Node stores it on the instance
+ * and reads it when the sweep timer starts on `listen`).
+ */
+type ServerWithCheckInterval = Server & { connectionsCheckingInterval: number };
+
 /** Options for {@link createServer} / {@link startServer}. */
 export interface ServerOptions {
   /** Backbone to serve. Defaults to a fresh in-memory instance. */
@@ -353,7 +376,7 @@ export function createServer(opts: ServerOptions = {}): Server {
   const backbone = opts.backbone ?? new InMemoryBackbone();
   const tokens = opts.tokens;
 
-  return createHttpServer((req, res) => {
+  const server = createHttpServer((req, res) => {
     const chunks: Buffer[] = [];
     let size = 0;
     let aborted = false;
@@ -416,6 +439,17 @@ export function createServer(opts: ServerOptions = {}): Server {
       });
     });
   });
+
+  // Bounded socket timeouts (CAU-75) — see the constants above for rationale.
+  server.headersTimeout = HEADERS_TIMEOUT_MS;
+  server.requestTimeout = REQUEST_TIMEOUT_MS;
+  server.keepAliveTimeout = KEEP_ALIVE_TIMEOUT_MS;
+  // Node honors this assignment (the sweep timer starts on `listen`), but
+  // @types/node only types it as a creation option — hence the narrow cast.
+  (server as ServerWithCheckInterval).connectionsCheckingInterval =
+    CONNECTIONS_CHECK_INTERVAL_MS;
+
+  return server;
 }
 
 /**
@@ -436,8 +470,15 @@ export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
         reject(new Error("server did not bind to a TCP port"));
         return;
       }
-      // IPv6 hosts need brackets in a URL; 127.0.0.1 / localhost do not.
-      const hostForUrl = address.family === "IPv6" ? `[${host}]` : host;
+      // Build the URL from the BOUND address, not the requested host (CAU-75):
+      // a wildcard bind ("0.0.0.0" / "::") is not dialable, and every consumer
+      // dials this URL locally — so substitute the matching loopback literal.
+      // IPv6 hosts need brackets in a URL; IPv4 literals do not.
+      const boundHost =
+        address.address === "0.0.0.0" ? "127.0.0.1"
+        : address.address === "::" ? "::1"
+        : address.address;
+      const hostForUrl = address.family === "IPv6" ? `[${boundHost}]` : boundHost;
       resolve({
         url: `http://${hostForUrl}:${address.port}`,
         port: address.port,

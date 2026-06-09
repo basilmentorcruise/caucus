@@ -17,7 +17,11 @@ import {
   createServer,
   dispatch,
   startServer,
+  CONNECTIONS_CHECK_INTERVAL_MS,
+  HEADERS_TIMEOUT_MS,
+  KEEP_ALIVE_TIMEOUT_MS,
   MAX_BODY_BYTES,
+  REQUEST_TIMEOUT_MS,
   type AuthContext,
   type RunningServer,
 } from "./server.js";
@@ -735,6 +739,57 @@ describe("server lifecycle (sockets)", () => {
     const server = createServer();
     expect(server.listening).toBe(false);
     server.close();
+  });
+
+  it("createServer pins the slowloris timeout knobs (CAU-75)", () => {
+    // The contract is "the knobs are set" — no live slow-client probe (flaky
+    // and slow); Node's own machinery enforces the timeouts once configured.
+    const server = createServer();
+    expect(server.headersTimeout).toBe(HEADERS_TIMEOUT_MS);
+    expect(server.requestTimeout).toBe(REQUEST_TIMEOUT_MS);
+    expect(server.keepAliveTimeout).toBe(KEEP_ALIVE_TIMEOUT_MS);
+    // Runtime property; @types/node only types it as a creation option.
+    expect(
+      (server as typeof server & { connectionsCheckingInterval: number })
+        .connectionsCheckingInterval,
+    ).toBe(CONNECTIONS_CHECK_INTERVAL_MS);
+    // The header window must close before the whole-request window.
+    expect(HEADERS_TIMEOUT_MS).toBeLessThan(REQUEST_TIMEOUT_MS);
+    server.close();
+  });
+
+  it("HOST=0.0.0.0 (wildcard) → a dialable 127.0.0.1 URL (CAU-75)", async () => {
+    running = await startServer({ port: 0, host: "0.0.0.0" });
+    expect(running.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    // Empirical dialability: the substituted loopback URL actually answers.
+    const res = await fetch(`${running.url}/healthz`);
+    expect(res.status).toBe(200);
+  });
+
+  it('HOST="::" (IPv6 wildcard) → a dialable http://[::1]:<port> URL (CAU-75)', async () => {
+    // Skip-if-listen-fails guard: some runners have no IPv6 stack.
+    try {
+      running = await startServer({ port: 0, host: "::" });
+    } catch {
+      return;
+    }
+    expect(running.url).toMatch(/^http:\/\/\[::1\]:\d+$/);
+    const res = await fetch(`${running.url}/healthz`);
+    expect(res.status).toBe(200);
+  });
+
+  it('HOST="::1" stays bracketed in the URL', async () => {
+    try {
+      running = await startServer({ port: 0, host: "::1" });
+    } catch {
+      return;
+    }
+    expect(running.url).toMatch(/^http:\/\/\[::1\]:\d+$/);
+  });
+
+  it("default host yields the unchanged 127.0.0.1 URL", async () => {
+    running = await startServer({ port: 0 });
+    expect(running.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
   });
 });
 

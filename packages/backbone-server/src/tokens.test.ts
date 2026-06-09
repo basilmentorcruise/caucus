@@ -1,33 +1,41 @@
 /**
  * Unit tests for the token map (CAU-13): parse, resolve, owner-with-colons, and
  * — critically — that a parse error is POSITIONAL and never leaks the token text
- * (ADR-C12).
+ * (ADR-C12). Since CAU-75 the map is keyed by SHA-256 digests of the token, so
+ * lookups go through `resolveToken` (or `tokenDigest`), never raw `map.get`.
  */
 import { describe, expect, it } from "vitest";
 
-import { parseTokenMap, resolveToken, TokenMapParseError } from "./tokens.js";
+import { parseTokenMap, resolveToken, tokenDigest, TokenMapParseError } from "./tokens.js";
 
 describe("parseTokenMap", () => {
   it("parses a single tok:agent:owner entry", () => {
     const map = parseTokenMap("tok-a:alice-agent:alice");
-    expect(map.get("tok-a")).toEqual({ agent_id: "alice-agent", owner: "alice" });
+    expect(resolveToken(map, "tok-a")).toEqual({ agent_id: "alice-agent", owner: "alice" });
     expect(map.size).toBe(1);
   });
 
   it("parses multiple comma-separated entries", () => {
     const map = parseTokenMap("t1:a1:alice,t2:a2:bob");
-    expect(map.get("t1")).toEqual({ agent_id: "a1", owner: "alice" });
-    expect(map.get("t2")).toEqual({ agent_id: "a2", owner: "bob" });
+    expect(resolveToken(map, "t1")).toEqual({ agent_id: "a1", owner: "alice" });
+    expect(resolveToken(map, "t2")).toEqual({ agent_id: "a2", owner: "bob" });
   });
 
   it("lets the owner contain further colons", () => {
     const map = parseTokenMap("tok:agent:a:b:c");
-    expect(map.get("tok")).toEqual({ agent_id: "agent", owner: "a:b:c" });
+    expect(resolveToken(map, "tok")).toEqual({ agent_id: "agent", owner: "a:b:c" });
   });
 
   it("trims surrounding whitespace on token, agent_id, and owner", () => {
     const map = parseTokenMap("  tok  :  agent  :  owner  ");
-    expect(map.get("tok")).toEqual({ agent_id: "agent", owner: "owner" });
+    expect(resolveToken(map, "tok")).toEqual({ agent_id: "agent", owner: "owner" });
+  });
+
+  it("keys the map by SHA-256 digest — the token plaintext is NEVER a key (CAU-75)", () => {
+    const map = parseTokenMap("tok:agent:owner");
+    expect(map.has("tok")).toBe(false);
+    expect(map.has(tokenDigest("tok"))).toBe(true);
+    expect(map.get(tokenDigest("tok"))).toEqual({ agent_id: "agent", owner: "owner" });
   });
 
   it("returns an empty map for undefined, empty, or all-whitespace input", () => {
@@ -117,5 +125,18 @@ describe("resolveToken", () => {
   it("returns undefined against an empty (fail-closed) map", () => {
     const empty = parseTokenMap(undefined);
     expect(resolveToken(empty, "tok-a")).toBeUndefined();
+  });
+});
+
+describe("tokenDigest (CAU-75)", () => {
+  it("is deterministic and yields a 64-char lowercase hex digest", () => {
+    const d1 = tokenDigest("tok-a");
+    const d2 = tokenDigest("tok-a");
+    expect(d1).toBe(d2);
+    expect(d1).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("distinct tokens yield distinct digests", () => {
+    expect(tokenDigest("tok-a")).not.toBe(tokenDigest("tok-b"));
   });
 });
