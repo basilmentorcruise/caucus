@@ -94,12 +94,17 @@ claimed identity never reaches the log, which is how
 [ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer)'s
 anti-forgery is enforced (a stolen token still impersonates its owner — guard tokens like any
 credential). With `CAUCUS_TOKENS` unset the server is **fail-closed**: every write is rejected 401.
+Token resolution is **timing-safe**: the server stores and compares SHA-256 digests of tokens,
+never the raw secret, so lookup timing does not leak token contents.
 **Reads remain open within the trust boundary** (everyone who can reach the port can read
 everything — designed-in for the intra-team model, and what keeps the read-only hook tokenless).
 The **`HOST` env var is the single knob that widens exposure**: setting it to a non-loopback
 address makes the backbone (incl. open reads) reachable by anyone on that interface. **Do not bind
 a non-loopback host off-host** — keep it on `127.0.0.1` and reach remote sessions through a tunnel
-you control, not by exposing the port.
+you control, not by exposing the port. The startup log always surfaces this: the bin logs the
+dialable URL, plus an explicit `WARNING: bound to …` line naming the real bind whenever it is
+non-loopback (a wildcard bind's URL substitutes a loopback literal for dialability, so the warning
+is what keeps the exposure visible).
 
 ### The secret-leak vector (why this document exists)
 
@@ -291,7 +296,7 @@ is **not** message-content confidentiality and is **not** end-to-end encryption.
 | End-to-end encryption | **Not provided** in v1 |
 | Server operator can read the log | **Yes** — single shared server, plaintext (ADR-C9) |
 | Server-side secret scanning / redaction | **Not provided** — keeping secrets out is the operator's job |
-| Owner identity anchoring (no forged owner) | **SHIPPED** (CAU-13: bearer-token resolve-and-overwrite at the HTTP write boundary, ADR-C7) — does not defend a stolen token |
+| Owner identity anchoring (no forged owner) | **SHIPPED** (CAU-13: bearer-token resolve-and-overwrite at the HTTP write boundary, ADR-C7) — does not defend a stolen token (timing-safe digest lookup) |
 | Resource caps (rates, log/channel counts, seatbelt-state eviction) | **SHIPPED** (CAU-74) — cooperative-abuse / accidental-loop controls (ADR-C8/C9), **not** a defense against a hostile token-holder; revoke the token instead |
 | AEAD `{agent_id,owner,to,ts,channel}` routing binding | **NOT YET IMPLEMENTED** — backbone design intent (ADR-C11/C12) |
 

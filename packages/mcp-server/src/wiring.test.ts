@@ -17,6 +17,7 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryBackbone } from "@caucus/backbone";
 import { HttpBackbone } from "@caucus/backbone-server";
+import { ConfigError } from "./config.js";
 import { selectBackbone } from "./wiring.js";
 
 describe("selectBackbone (CAU-50 AC1 — CAUCUS_URL switches the backbone)", () => {
@@ -81,5 +82,88 @@ describe("selectBackbone (CAU-50 AC1 — CAUCUS_URL switches the backbone)", () 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe("http://127.0.0.1:5599/channels");
     expect(calls[0]?.auth).toBe("Bearer tok-alice-secret");
+  });
+});
+
+describe("selectBackbone (CAU-75 — CAUCUS_URL scheme validation)", () => {
+  it("a non-http(s) scheme → ConfigError (ftp:, file:)", () => {
+    expect(() => selectBackbone({ CAUCUS_URL: "ftp://x" })).toThrow(ConfigError);
+    expect(() => selectBackbone({ CAUCUS_URL: "ftp://x" })).toThrow(
+      "CAUCUS_URL must use http: or https:",
+    );
+    expect(() => selectBackbone({ CAUCUS_URL: "file:///x" })).toThrow(ConfigError);
+  });
+
+  it("a userinfo-bearing http URL → ConfigError (credentials never reach undici)", () => {
+    // A PARSABLE URL with embedded credentials passes the scheme check, so it
+    // would otherwise reach HttpBackbone — and undici rejects userinfo URLs at
+    // request time with a TypeError that echoes the FULL URL (password
+    // included) into the MCP tool-call context. It must be rejected here, with
+    // a message that names neither the URL nor the password (ADR-C12).
+    const env = { CAUCUS_URL: "http://user:hunter2@127.0.0.1:4747" };
+    expect(() => selectBackbone(env)).toThrow(ConfigError);
+    expect(() => selectBackbone(env)).toThrow(
+      "CAUCUS_URL must not contain credentials (userinfo)",
+    );
+    let thrown: unknown;
+    try {
+      selectBackbone(env);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(String(thrown)).not.toContain("hunter2");
+    // A bare username (no password) is userinfo too.
+    expect(() => selectBackbone({ CAUCUS_URL: "http://user@127.0.0.1:4747" })).toThrow(
+      ConfigError,
+    );
+  });
+
+  it("an unparsable URL → ConfigError", () => {
+    expect(() => selectBackbone({ CAUCUS_URL: "not a url" })).toThrow(ConfigError);
+    expect(() => selectBackbone({ CAUCUS_URL: "not a url" })).toThrow(
+      "CAUCUS_URL is not a valid URL",
+    );
+    expect(() => selectBackbone({ CAUCUS_URL: ":::" })).toThrow(ConfigError);
+  });
+
+  it("http: and https: URLs still yield an HttpBackbone", () => {
+    expect(selectBackbone({ CAUCUS_URL: "http://127.0.0.1:4317" })).toBeInstanceOf(
+      HttpBackbone,
+    );
+    expect(selectBackbone({ CAUCUS_URL: "https://caucus.example.com" })).toBeInstanceOf(
+      HttpBackbone,
+    );
+  });
+
+  it("HYGIENE: the error never echoes the URL value or the token (ADR-C12)", () => {
+    // A bad URL carrying userinfo credentials, alongside a real-looking token.
+    // String(err) goes to stderr, so neither secret may appear in the message.
+    let thrown: unknown;
+    try {
+      selectBackbone({
+        CAUCUS_URL: "http://user:hunter2@nope^",
+        CAUCUS_TOKEN: "tok-secret",
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(ConfigError);
+    const message = String(thrown);
+    expect(message).not.toContain("tok-secret");
+    expect(message).not.toContain("hunter2");
+  });
+
+  it("HYGIENE: a token pasted as CAUCUS_URL never echoes in the scheme error (ADR-C12)", () => {
+    // `new URL("tok-secret-scheme:4747")` PARSES — the token segment becomes
+    // the protocol ("tok-secret-scheme:") — so a scheme error that named the
+    // protocol would leak the pasted token verbatim to stderr.
+    let thrown: unknown;
+    try {
+      selectBackbone({ CAUCUS_URL: "tok-secret-scheme:4747" });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(ConfigError);
+    expect(String(thrown)).not.toContain("tok-secret-scheme");
   });
 });

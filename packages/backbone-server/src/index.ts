@@ -22,6 +22,7 @@ export type {
   ServerOptions,
 } from "./server.js";
 export {
+  bindExposureWarning,
   createServer,
   dispatch,
   startServer,
@@ -33,6 +34,7 @@ export { parseEnvConfig, type EnvConfig } from "./config.js";
 export {
   parseTokenMap,
   resolveToken,
+  tokenDigest,
   TokenMapParseError,
   type TokenIdentity,
   type TokenMap,

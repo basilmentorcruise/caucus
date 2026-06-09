@@ -20,6 +20,7 @@ import { InMemoryBackbone, type InMemoryBackboneOptions } from "@caucus/backbone
 import {
   HttpBackbone,
   startServer,
+  tokenDigest,
   type RunningServer,
   type TokenIdentity,
   type TokenMap,
@@ -48,11 +49,15 @@ export function identityForId(id: string): TokenIdentity {
   return { agent_id: `${id}-agent`, owner: id };
 }
 
-/** Build the bearer → identity map for a set of client ids (CAU-13). */
+/**
+ * Build the bearer → identity map for a set of client ids (CAU-13). Keys are
+ * SHA-256 digests of the bearer (CAU-75) — the server's TokenMap never stores
+ * token plaintext.
+ */
 function buildTokenMap(ids: readonly string[]): TokenMap {
   const map = new Map<string, TokenIdentity>();
   for (const id of ids) {
-    map.set(tokenFor(id), identityForId(id));
+    map.set(tokenDigest(tokenFor(id)), identityForId(id));
   }
   return map;
 }

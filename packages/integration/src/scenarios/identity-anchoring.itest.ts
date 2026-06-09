@@ -19,7 +19,12 @@
  * `fetch`.
  */
 import { InMemoryBackbone } from "@caucus/backbone";
-import { startServer, type RunningServer, type TokenMap } from "@caucus/backbone-server";
+import {
+  startServer,
+  tokenDigest,
+  type RunningServer,
+  type TokenMap,
+} from "@caucus/backbone-server";
 import { newMsgId } from "@caucus/schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -121,9 +126,13 @@ describe("server-anchored identity (CAU-13) — forge attempt via raw fetch", ()
   const FORGE_CH = "incident-forge";
   let server: RunningServer;
 
-  /** alice's bearer anchors to `{ agent_id: "alice-agent", owner: "alice" }`. */
+  /**
+   * alice's bearer anchors to `{ agent_id: "alice-agent", owner: "alice" }`.
+   * The map is keyed by the bearer's SHA-256 digest (CAU-75) — the server
+   * never stores token plaintext.
+   */
   const tokens: TokenMap = new Map([
-    [ALICE_TOKEN, identityForId("alice")],
+    [tokenDigest(ALICE_TOKEN), identityForId("alice")],
   ]);
 
   beforeAll(async () => {

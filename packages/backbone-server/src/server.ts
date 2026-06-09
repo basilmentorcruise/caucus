@@ -38,6 +38,22 @@ import { mapError, UnauthorizedError, type WireErrorBody } from "./wire-errors.j
 /** Max raw request body the server will buffer before rejecting with 413. */
 export const MAX_BODY_BYTES = 256 * 1024;
 
+// Slowloris guard (CAU-75): the body cap alone does not bound TIME, so a client
+// trickling bytes could hold a connection open indefinitely. Every request here
+// is a small local JSON exchange — 30 s is far above any real request — so we
+// pin tight, explicit socket timeouts.
+/** Full header block must arrive within 10 s (must stay < REQUEST_TIMEOUT_MS). */
+export const HEADERS_TIMEOUT_MS = 10_000;
+/** Whole request (incl. body) must complete within 30 s. */
+export const REQUEST_TIMEOUT_MS = 30_000;
+/** Idle keep-alive sockets close after 5 s (Node default, pinned explicitly). */
+export const KEEP_ALIVE_TIMEOUT_MS = 5_000;
+/**
+ * How often Node sweeps sockets for expired headers/request timeouts. The
+ * default 30 s would let a 10 s headersTimeout slip to ~40 s wall-clock.
+ */
+export const CONNECTIONS_CHECK_INTERVAL_MS = 5_000;
+
 /** Options for {@link createServer} / {@link startServer}. */
 export interface ServerOptions {
   /** Backbone to serve. Defaults to a fresh in-memory instance. */
@@ -73,6 +89,14 @@ export interface AuthContext {
 export interface RunningServer {
   /** Base URL, e.g. `http://127.0.0.1:4317`. */
   readonly url: string;
+  /**
+   * The interface address the listener is ACTUALLY bound to, e.g. `0.0.0.0`
+   * for a wildcard bind. `url` substitutes a dialable loopback literal for
+   * wildcard binds (see {@link startServer}), so the two can differ — consumers
+   * that report exposure (the bin's startup log) must use THIS field, never
+   * parse the URL back (CAU-75).
+   */
+  readonly boundHost: string;
   /** The actually-bound port (resolved even when `port: 0` was requested). */
   readonly port: number;
   /** Stop accepting connections and release the port. */
@@ -353,69 +377,83 @@ export function createServer(opts: ServerOptions = {}): Server {
   const backbone = opts.backbone ?? new InMemoryBackbone();
   const tokens = opts.tokens;
 
-  return createHttpServer((req, res) => {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    let aborted = false;
+  // `connectionsCheckingInterval` is a creation option (the others are plain
+  // instance properties, set after construction below): it tunes how often Node
+  // sweeps sockets for expired headers/request timeouts — see the constants
+  // above for rationale.
+  const server = createHttpServer(
+    { connectionsCheckingInterval: CONNECTIONS_CHECK_INTERVAL_MS },
+    (req, res) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      let aborted = false;
 
-    const send = (status: number, json: unknown): void => {
-      const payload = JSON.stringify(json);
-      res.writeHead(status, {
-        "content-type": "application/json; charset=utf-8",
-      });
-      res.end(payload);
-    };
+      const send = (status: number, json: unknown): void => {
+        const payload = JSON.stringify(json);
+        res.writeHead(status, {
+          "content-type": "application/json; charset=utf-8",
+        });
+        res.end(payload);
+      };
 
-    req.on("data", (chunk: Buffer) => {
-      if (aborted) return;
-      size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
-        aborted = true;
-        const body: WireErrorBody = {
-          error: { code: "payload_too_large", message: "request body too large" },
-        };
-        send(413, body);
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-
-    req.on("end", () => {
-      if (aborted) return;
-      void (async () => {
-        const raw = Buffer.concat(chunks).toString("utf8");
-        let parsed: unknown;
-        if (raw.length > 0) {
-          try {
-            parsed = JSON.parse(raw);
-          } catch {
-            const body: WireErrorBody = {
-              error: { code: "invalid_json", message: "request body is not valid JSON" },
-            };
-            send(400, body);
-            return;
-          }
+      req.on("data", (chunk: Buffer) => {
+        if (aborted) return;
+        size += chunk.length;
+        if (size > MAX_BODY_BYTES) {
+          aborted = true;
+          const body: WireErrorBody = {
+            error: { code: "payload_too_large", message: "request body too large" },
+          };
+          send(413, body);
+          req.destroy();
+          return;
         }
-        const result = await dispatch(
-          backbone,
-          req.method ?? "GET",
-          req.url ?? "/",
-          parsed,
-          { tokens, bearer: bearerFromHeader(req.headers.authorization) },
-        );
-        send(result.status, result.json);
-      })().catch((err: unknown) => {
-        // Defense-in-depth: `dispatch` maps its own errors, so reaching here
-        // means an unexpected throw in the handler itself. Never let it become
-        // an unhandled rejection that drops the response — map it to a clean
-        // envelope (500) via the same path the router uses.
-        if (aborted || res.writableEnded) return;
-        const mapped = mapError(err);
-        send(mapped.status, mapped.body);
+        chunks.push(chunk);
       });
-    });
-  });
+
+      req.on("end", () => {
+        if (aborted) return;
+        void (async () => {
+          const raw = Buffer.concat(chunks).toString("utf8");
+          let parsed: unknown;
+          if (raw.length > 0) {
+            try {
+              parsed = JSON.parse(raw);
+            } catch {
+              const body: WireErrorBody = {
+                error: { code: "invalid_json", message: "request body is not valid JSON" },
+              };
+              send(400, body);
+              return;
+            }
+          }
+          const result = await dispatch(
+            backbone,
+            req.method ?? "GET",
+            req.url ?? "/",
+            parsed,
+            { tokens, bearer: bearerFromHeader(req.headers.authorization) },
+          );
+          send(result.status, result.json);
+        })().catch((err: unknown) => {
+          // Defense-in-depth: `dispatch` maps its own errors, so reaching here
+          // means an unexpected throw in the handler itself. Never let it become
+          // an unhandled rejection that drops the response — map it to a clean
+          // envelope (500) via the same path the router uses.
+          if (aborted || res.writableEnded) return;
+          const mapped = mapError(err);
+          send(mapped.status, mapped.body);
+        });
+      });
+    },
+  );
+
+  // Bounded socket timeouts (CAU-75) — see the constants above for rationale.
+  server.headersTimeout = HEADERS_TIMEOUT_MS;
+  server.requestTimeout = REQUEST_TIMEOUT_MS;
+  server.keepAliveTimeout = KEEP_ALIVE_TIMEOUT_MS;
+
+  return server;
 }
 
 /**
@@ -436,10 +474,20 @@ export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
         reject(new Error("server did not bind to a TCP port"));
         return;
       }
-      // IPv6 hosts need brackets in a URL; 127.0.0.1 / localhost do not.
-      const hostForUrl = address.family === "IPv6" ? `[${host}]` : host;
+      // Build the URL from the BOUND address, not the requested host (CAU-75):
+      // a wildcard bind ("0.0.0.0" / "::") is not dialable, and every consumer
+      // dials this URL locally — so substitute the matching loopback literal.
+      // IPv6 hosts need brackets in a URL; IPv4 literals do not. The REAL bind
+      // is still exposed as `boundHost`, so the substitution can never mask
+      // exposure: the bin logs a warning from it (see `bindExposureWarning`).
+      const dialHost =
+        address.address === "0.0.0.0" ? "127.0.0.1"
+        : address.address === "::" ? "::1"
+        : address.address;
+      const hostForUrl = address.family === "IPv6" ? `[${dialHost}]` : dialHost;
       resolve({
         url: `http://${hostForUrl}:${address.port}`,
+        boundHost: address.address,
         port: address.port,
         close: () =>
           new Promise<void>((res, rej) => {
@@ -448,4 +496,24 @@ export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
       });
     });
   });
+}
+
+/** Interface addresses that keep the listener reachable on-host only. */
+const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1"]);
+
+/**
+ * The startup warning for a non-loopback bind, or `undefined` for a loopback
+ * one (CAU-75). {@link RunningServer.url} substitutes a dialable loopback
+ * literal for wildcard binds, so the startup log alone would make a
+ * `HOST=0.0.0.0` server LOOK loopback-only while it is exposed on every
+ * interface — HOST is the single knob that widens exposure (SECURITY.md). The
+ * bin prints this warning from {@link RunningServer.boundHost} so the real bind
+ * is always visible. Kept pure (and out of `bin.ts`) so the wording and the
+ * loopback/non-loopback split are unit-testable; `boundHost` is the
+ * kernel-resolved bind of the operator-configured `HOST`, so naming it in the
+ * log is fine under ADR-C12 (operator-controlled, never caller content).
+ */
+export function bindExposureWarning(boundHost: string): string | undefined {
+  if (LOOPBACK_ADDRESSES.has(boundHost)) return undefined;
+  return `WARNING: bound to ${boundHost} — reads are open to anyone who can reach this port (see SECURITY.md)`;
 }
