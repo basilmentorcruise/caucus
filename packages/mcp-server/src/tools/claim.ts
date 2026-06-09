@@ -28,7 +28,7 @@
  * into an error string.
  */
 import { z } from "zod";
-import { normalizeTarget } from "@caucus/schema";
+import { normalizeTarget, stripControlChars } from "@caucus/schema";
 import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import type { CaucusSession } from "../session.js";
 import type { ToolMessageDraft } from "../identity.js";
@@ -125,14 +125,27 @@ export const claimTool: CaucusTool = {
     // target, unknown channel) propagate untouched; the backbone's messages are
     // value-free (ADR-C12), so nothing here interpolates target/note.
     const result = await session.claim(draft);
-    const payload =
-      result.outcome === "granted"
-        ? {
-            outcome: "granted",
-            msg_id: result.message.msg_id,
-            cursor: result.cursor,
-          }
-        : { outcome: "already_claimed", by: result.by };
+    if (result.outcome === "granted") {
+      const payload = {
+        outcome: "granted",
+        msg_id: result.message.msg_id,
+        cursor: result.cursor,
+      };
+      return { content: [{ type: "text", text: JSON.stringify(payload) }] };
+    }
+    // `already_claimed.by` carries the winner's identity straight into this
+    // (losing) agent's model context. The free-form identity fields are
+    // poster-controlled, so sanitize them BEFORE serialization (CAU-73), the
+    // same defense read_channel applies. `ts`/`msg_id` are validated formats and
+    // left untouched.
+    const payload = {
+      outcome: "already_claimed",
+      by: {
+        ...result.by,
+        agent_id: stripControlChars(result.by.agent_id),
+        owner: stripControlChars(result.by.owner),
+      },
+    };
     return { content: [{ type: "text", text: JSON.stringify(payload) }] };
   },
 };

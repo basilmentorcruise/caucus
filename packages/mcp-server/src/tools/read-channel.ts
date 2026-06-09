@@ -45,8 +45,9 @@ import type { CaucusTool, ToolResult } from "./registry.js";
  * its `\n`/`\t` (JSON-escaped, terminal-inert, and useful line structure for the
  * receiving model) instead of gluing words across lines; the single-token
  * identity/target/addressee fields and the URL have no legitimate whitespace, so
- * they use the plain {@link stripControlChars}. Structural/validated fields
- * (`msg_id`/`agent_id`/`ts`/`v`/`thread`/`reply_to`) and the enum-safe
+ * they use the plain {@link stripControlChars}. `agent_id` is a non-empty
+ * free-form identity string like `owner`, so it is stripped too. Structural/validated
+ * fields (`msg_id`/`ts`/`v`/`thread`/`reply_to`) and the enum-safe
  * `status`/`type` are left untouched.
  */
 function sanitizeMessage(m: AppendedMessage): AppendedMessage {
@@ -55,6 +56,9 @@ function sanitizeMessage(m: AppendedMessage): AppendedMessage {
     body: stripControlCharsKeepWhitespace(m.body),
     owner: stripControlChars(m.owner),
   } as AppendedMessage & { target?: string; artifact?: string };
+  if (typeof m.agent_id === "string") {
+    sanitized.agent_id = stripControlChars(m.agent_id);
+  }
   if (typeof sanitized.target === "string") {
     sanitized.target = stripControlChars(sanitized.target);
   }

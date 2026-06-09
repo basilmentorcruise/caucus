@@ -159,7 +159,13 @@ defend against any of the following:
     before serializing a page into another agent's model context (CAU-73);
   - the `caucus_list_channels` / `caucus_describe_channel` descriptor tools, which strip
     `purpose`/`created_by` before serializing a descriptor into another agent's model context
-    (CAU-73).
+    (CAU-73);
+  - the `caucus_claim` tool, which strips the winner's `agent_id`/`owner` in an
+    `already_claimed.by` result before serializing it into the losing agent's model context (CAU-73);
+  - `caucus_read_channel` additionally strips the `agent_id` it serializes.
+
+  Read-side stripping is defense-in-depth; the root-cause fix is to reject/normalize control
+  characters at **write** time so the log never stores them (tracked in #71).
 
   This matters specifically for the serialization consumers because `JSON.stringify` does **not**
   escape C1 bytes (`\x80–\x9f`). All paths share a single `stripControlChars` exported from

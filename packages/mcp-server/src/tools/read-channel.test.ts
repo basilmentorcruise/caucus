@@ -170,6 +170,29 @@ describe("caucus_read_channel", () => {
       expect(m.to?.[0]).toContain("bob-agent");
     });
 
+    it("strips C1/ESC from agent_id in the serialized output", async () => {
+      const { backbone, session } = await createdSession();
+      // agent_id is a non-empty free-form identity string a malicious poster
+      // controls (they append with their own identity). It is serialized
+      // straight into another agent's context, so it must come back inert.
+      await backbone.append("incident-1", {
+        type: "finding",
+        agent_id: `evil${C1}${ESC}[2J`,
+        owner: "mallory",
+        msg_id: newMsgId(),
+        body: "hi",
+      });
+
+      const result = await readChannelTool.handle(session, {});
+      const raw = (result.content[0] as { type: "text"; text: string }).text;
+
+      expect(raw).not.toMatch(CONTROL_CHARS);
+      expect(raw).not.toContain(C1);
+      const env = JSON.parse(raw) as ReadEnvelope;
+      // Printable remnants survive; the control bytes are gone.
+      expect(env.messages[0]?.agent_id).toBe("evil[2J");
+    });
+
     it("strips control chars from a claim target (the ledger key) in output", async () => {
       const { backbone, session } = await createdSession();
       await backbone.claim("incident-1", {
