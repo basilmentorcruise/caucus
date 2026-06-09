@@ -19,6 +19,12 @@ DEMO_TOKENS := tok-alice:sess-alice:alice,tok-bob:sess-bob:bob,tok-carol:sess-ca
 PORT ?= 4317
 CAUCUS_URL ?= http://127.0.0.1:$(PORT)
 
+# Channel for `make watch` (CAU-67). Empty ⇒ the demo channel; a name tails
+# that channel; '*' multiplexes every channel:
+#   make watch CHANNEL=dogfood PORT=4747
+#   make watch CHANNEL='*' PORT=4747
+CHANNEL ?=
+
 .DEFAULT_GOAL := help
 
 .PHONY: help install build lint typecheck test integration check clean \
@@ -63,5 +69,5 @@ demo: ## Run the scripted four-beat war-room demo (backbone must be running)
 demo-loop: ## Seed plus the seatbelt loop beat (duplicate post visibly rejected)
 	CAUCUS_URL=$(CAUCUS_URL) pnpm demo:seed -- --loop
 
-watch: ## Live IRC-style tail of the war-room channel (Ctrl-C to stop)
-	CAUCUS_URL=$(CAUCUS_URL) pnpm demo:watch
+watch: ## Live IRC-style tail of a channel (CHANNEL=<name>, or CHANNEL='*' for all; default demo channel)
+	CAUCUS_URL=$(CAUCUS_URL) CAUCUS_CHANNEL=$(CHANNEL) pnpm demo:watch
