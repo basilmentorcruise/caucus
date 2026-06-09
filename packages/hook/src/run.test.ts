@@ -1,19 +1,21 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-  AppendResult,
-  Backbone,
-  ChannelDescriptor,
-  ClaimResult,
-  CreateChannelOptions,
-  Cursor,
-  ReadResult,
+import {
+  type AppendResult,
+  type Backbone,
+  type ChannelDescriptor,
+  type ClaimResult,
+  type CreateChannelOptions,
+  type Cursor,
+  InvalidCursorError,
+  type ReadResult,
+  UnknownChannelError,
 } from "@caucus/backbone";
 import type { MessageInput } from "@caucus/schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { checkpointPath, readCheckpoint } from "./checkpoint.js";
+import { checkpointPath, readCheckpoint, writeCheckpoint } from "./checkpoint.js";
 import { parseHookInput, runHook } from "./run.js";
 
 const CHANNEL = "incident-42";
@@ -32,6 +34,12 @@ class FakeBackbone implements Backbone {
   hangOn: "subscribe" | "readSince" | "none" = "none";
   /** When set, rejections use this value verbatim (e.g. a non-Error string). */
   rejectValue: unknown = new Error("boom");
+  /**
+   * A queue of values to reject the NEXT readSince call(s) with, one per call,
+   * then fall through to the normal log slice. Models an ephemeral restart: the
+   * stale-cursor read rejects once, the re-minted next read succeeds.
+   */
+  readSinceRejectQueue: unknown[] = [];
 
   push(...messages: AppendResult["message"][]): void {
     this.log.push(...messages);
@@ -46,6 +54,9 @@ class FakeBackbone implements Backbone {
 
   readSince(_channel: string, cursor: Cursor): Promise<ReadResult> {
     this.readCalls.push({ cursor });
+    if (this.readSinceRejectQueue.length > 0) {
+      return Promise.reject(this.readSinceRejectQueue.shift());
+    }
     if (this.throwOn === "readSince") return Promise.reject(this.rejectValue);
     if (this.hangOn === "readSince") return new Promise<ReadResult>(() => {});
     const messages = this.log.slice(cursor);
@@ -222,5 +233,162 @@ describe("runHook — fail open", () => {
     });
     expect(out).toBe("");
     expect(stderrLines).toHaveLength(1);
+  });
+});
+
+describe("runHook — self-heals a stale checkpoint after an ephemeral restart (CAU-72)", () => {
+  it("re-mints when readSince throws invalid_cursor, injects nothing, then resumes next run", async () => {
+    const bb = new FakeBackbone();
+    const env = { CAUCUS_CHANNEL: CHANNEL };
+    const path = checkpointPath(SESSION, CHANNEL, home);
+
+    // A stale on-disk checkpoint of 5 survives a restart that reset head to 0
+    // (the fake's log is empty ⇒ subscribe() returns 0).
+    await writeCheckpoint(path, 5, CHANNEL);
+    // The first readSince (cursor 5 > head 0) rejects with the real backbone
+    // out-of-range error; the re-minted read on the NEXT run succeeds normally.
+    bb.readSinceRejectQueue.push(
+      new InvalidCursorError("cursor must be an integer in [0, 0]", 5),
+    );
+
+    // Run 1: the stale read throws ⇒ self-heal. Inject nothing this turn.
+    const out1 = await runHook(deps(bb, env));
+    expect(out1).toBe("");
+    expect(bb.readCalls).toEqual([{ cursor: 5 }]); // tried the stale cursor
+    expect(bb.subscribeCalls).toBe(1); // re-minted at the fresh head
+
+    // Checkpoint re-minted to the fresh head (0), NOT the stale 5.
+    expect(await readCheckpoint(path, CHANNEL)).toBe(0);
+
+    // A value-free diagnostic — never the channel name or a url (ADR-C12).
+    expect(stderrLines).toHaveLength(1);
+    expect(stderrLines[0]).not.toContain(CHANNEL);
+    expect(stderrLines[0]).not.toContain("http");
+
+    // New messages arrive after the restart.
+    bb.push(appended("fresh after restart 1"), appended("fresh after restart 2"));
+
+    // Run 2: the session is no longer blind — it injects the fresh delta from
+    // the re-minted cursor (0), proving recovery.
+    const out2 = await runHook(deps(bb, env));
+    expect(out2).not.toBe("");
+    const ctx = (
+      JSON.parse(out2) as {
+        hookSpecificOutput: { additionalContext: string };
+      }
+    ).hookSpecificOutput.additionalContext;
+    expect(ctx).toContain("fresh after restart 1");
+    expect(ctx).toContain("fresh after restart 2");
+    expect(await readCheckpoint(path, CHANNEL)).toBe(2);
+  });
+
+  it("re-mints on an unknown_channel error (fresh backbone never recreated the channel)", async () => {
+    const bb = new FakeBackbone();
+    const env = { CAUCUS_CHANNEL: CHANNEL };
+    const path = checkpointPath(SESSION, CHANNEL, home);
+
+    await writeCheckpoint(path, 12, CHANNEL);
+    bb.readSinceRejectQueue.push(new UnknownChannelError(CHANNEL));
+
+    const out = await runHook(deps(bb, env));
+    expect(out).toBe(""); // inject nothing this turn
+    expect(bb.subscribeCalls).toBe(1); // re-minted
+    expect(await readCheckpoint(path, CHANNEL)).toBe(0); // healed to fresh head
+    expect(stderrLines).toHaveLength(1);
+  });
+
+  it("does NOT modify a valid checkpoint on a transient (connection-refused) error", async () => {
+    const bb = new FakeBackbone();
+    const env = { CAUCUS_CHANNEL: CHANNEL };
+    const path = checkpointPath(SESSION, CHANNEL, home);
+
+    // A genuine, in-range checkpoint and a transient fault (a non-out-of-range
+    // Error — e.g. ECONNREFUSED surfaces as a plain Error, not a BackboneError).
+    await writeCheckpoint(path, 3, CHANNEL);
+    bb.readSinceRejectQueue.push(new Error("connect ECONNREFUSED 127.0.0.1:5050"));
+
+    const out = await runHook(deps(bb, env));
+    expect(out).toBe(""); // fail open: inject nothing
+    // The checkpoint is UNTOUCHED — we don't clobber it for a brief outage.
+    expect(await readCheckpoint(path, CHANNEL)).toBe(3);
+    // No re-mint subscribe was attempted (pure no-op fail-open).
+    expect(bb.subscribeCalls).toBe(0);
+    expect(stderrLines).toHaveLength(1);
+    expect(stderrLines[0]).not.toContain(CHANNEL);
+  });
+
+  it("does NOT modify a valid checkpoint on a transient timeout (hung readSince)", async () => {
+    const bb = new FakeBackbone();
+    const env = { CAUCUS_CHANNEL: CHANNEL };
+    const path = checkpointPath(SESSION, CHANNEL, home);
+
+    await writeCheckpoint(path, 7, CHANNEL);
+    bb.hangOn = "readSince"; // never resolves ⇒ the client-side timeout fires
+
+    const out = await runHook({ ...deps(bb, env), timeoutMs: 50 });
+    expect(out).toBe("");
+    expect(await readCheckpoint(path, CHANNEL)).toBe(7); // untouched
+    expect(bb.subscribeCalls).toBe(0); // no re-mint on a transient timeout
+    expect(stderrLines).toHaveLength(1);
+  });
+
+  it("self-heals on an Error carrying .code = invalid_cursor that is NOT our class (foreign client)", async () => {
+    // A backbone client from a different build/realm surfaces an Error that
+    // carries the stable `.code` but fails `instanceof InvalidCursorError`
+    // (cross-realm, or a generic BackboneError the wire reconstructs for an
+    // unmodeled code). We branch on the wire-stable `.code`, not just the class.
+    const foreign = Object.assign(new Error("cursor must be in [0, 0]"), {
+      code: "invalid_cursor",
+    });
+    const bb = new FakeBackbone();
+    const env = { CAUCUS_CHANNEL: CHANNEL };
+    const path = checkpointPath(SESSION, CHANNEL, home);
+
+    await writeCheckpoint(path, 9, CHANNEL);
+    bb.readSinceRejectQueue.push(foreign);
+    expect(foreign instanceof InvalidCursorError).toBe(false); // sanity
+
+    const out = await runHook(deps(bb, env));
+    expect(out).toBe("");
+    expect(bb.subscribeCalls).toBe(1); // re-minted via .code discrimination
+    expect(await readCheckpoint(path, CHANNEL)).toBe(0);
+  });
+
+  it("does NOT self-heal an Error with an unrelated .code (treated as transient)", async () => {
+    const bb = new FakeBackbone();
+    const env = { CAUCUS_CHANNEL: CHANNEL };
+    const path = checkpointPath(SESSION, CHANNEL, home);
+
+    await writeCheckpoint(path, 4, CHANNEL);
+    bb.readSinceRejectQueue.push(
+      Object.assign(new Error("slow down"), { code: "rate_limited" }),
+    );
+
+    const out = await runHook(deps(bb, env));
+    expect(out).toBe("");
+    expect(bb.subscribeCalls).toBe(0); // no re-mint
+    expect(await readCheckpoint(path, CHANNEL)).toBe(4); // untouched
+  });
+
+  it("stays fail-open and value-free when the re-mint itself fails (subscribe throws)", async () => {
+    const bb = new FakeBackbone();
+    const env = { CAUCUS_CHANNEL: CHANNEL };
+    const path = checkpointPath(SESSION, CHANNEL, home);
+
+    await writeCheckpoint(path, 5, CHANNEL);
+    // Stale read triggers a re-mint, but the backbone has now gone down so the
+    // subscribe() re-mint also fails. We must still fail open, not throw.
+    bb.readSinceRejectQueue.push(new InvalidCursorError("out of range", 5));
+    bb.throwOn = "subscribe";
+
+    const out = await runHook(deps(bb, env));
+    expect(out).toBe(""); // fail open
+    expect(bb.subscribeCalls).toBe(1); // attempted the re-mint
+    // The re-mint never persisted, so the stale checkpoint is left as-is to be
+    // re-attempted next turn (NOT silently advanced).
+    expect(await readCheckpoint(path, CHANNEL)).toBe(5);
+    expect(stderrLines).toHaveLength(1);
+    expect(stderrLines[0]).not.toContain(CHANNEL);
+    expect(stderrLines[0]).not.toContain("http");
   });
 });

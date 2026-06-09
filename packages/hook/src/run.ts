@@ -21,8 +21,22 @@
  * checkpoint we MINT at the channel head and inject NOTHING this turn — the hook
  * surfaces only what arrives *after* the session started paying attention, never
  * a backlog dump.
+ *
+ * Self-heal (CAU-72): the backbone is in-memory/ephemeral, so a restart is
+ * normal — head resets to 0 while the on-disk checkpoint still holds a higher
+ * cursor. `readSince` then rejects with `invalid_cursor` (or `unknown_channel`
+ * if the channel was never recreated). Rather than fail open every turn forever
+ * (silently blind until the checkpoint is deleted by hand), we DISTINGUISH that
+ * stale-checkpoint signal from a transient outage and RE-MINT at the fresh head
+ * (inject nothing this turn, recover next). A transient fault keeps the pure
+ * no-op fail-open and never clobbers a still-valid checkpoint.
  */
-import type { Backbone, Cursor } from "@caucus/backbone";
+import {
+  type Backbone,
+  type Cursor,
+  InvalidCursorError,
+  UnknownChannelError,
+} from "@caucus/backbone";
 
 import { loadHookConfig } from "./config.js";
 import { checkpointPath, readCheckpoint, writeCheckpoint } from "./checkpoint.js";
@@ -117,6 +131,40 @@ function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
 }
 
 /**
+ * The backbone `.code` strings that signal a STALE checkpoint rather than a
+ * transient outage: the cursor points past a head the (ephemeral) backbone no
+ * longer has. On an in-memory backbone a restart resets head to 0 while the
+ * on-disk checkpoint still holds a higher cursor, so `readSince` rejects with
+ * `invalid_cursor` (cursor > head); a fresh backbone that never recreated the
+ * channel rejects with `unknown_channel`. Either means "re-mint", not "wait".
+ */
+const REMINT_CODES: ReadonlySet<string> = new Set([
+  new InvalidCursorError("", undefined).code,
+  new UnknownChannelError("").code,
+]);
+
+/**
+ * Does `err` indicate a stale checkpoint we should self-heal by re-minting,
+ * versus a transient fault we must ride out without touching the checkpoint?
+ *
+ * Matches on the backbone's stable `.code` (works for both the in-process
+ * {@link InvalidCursorError}/{@link UnknownChannelError} and the `HttpBackbone`
+ * client, which reconstructs the same codes from the wire). A timeout, a
+ * connection refusal, or any non-`BackboneError` throw has no matching code and
+ * is treated as transient — the existing pure no-op fail-open.
+ */
+function isStaleCheckpointError(err: unknown): boolean {
+  if (err instanceof InvalidCursorError || err instanceof UnknownChannelError) {
+    return true;
+  }
+  if (err !== null && typeof err === "object" && "code" in err) {
+    const code = (err as { code: unknown }).code;
+    return typeof code === "string" && REMINT_CODES.has(code);
+  }
+  return false;
+}
+
+/**
  * The turn-start hook body. Returns the stdout string to print: either `""`
  * (inject nothing) or the `UserPromptSubmit` injection JSON.
  *
@@ -128,8 +176,11 @@ function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
  *    RETURNED cursor (never a computed one), and inject — or `""` for an empty
  *    delta.
  *
- * Every backbone call is wrapped in the fail-fast timeout; ANY thrown error ⇒
- * one value-free stderr line and `""` (fail open).
+ * Every backbone call is wrapped in the fail-fast timeout. A STALE-checkpoint
+ * error (`invalid_cursor` / `unknown_channel` — an ephemeral-backbone restart)
+ * re-mints at the new head and injects nothing this turn (self-heal, CAU-72);
+ * any OTHER thrown error ⇒ one value-free stderr line and `""` (pure fail open,
+ * checkpoint untouched).
  */
 export async function runHook(deps: RunHookDeps): Promise<string> {
   const { backbone, env, sessionId, home, stderr } = deps;
@@ -167,9 +218,33 @@ export async function runHook(deps: RunHookDeps): Promise<string> {
     const block = renderDelta(result.messages);
     if (block === "") return "";
     return injectionEnvelope(block);
-  } catch {
-    // Fail open: a value-free line (never the channel/url/error — ADR-C12) and
-    // inject nothing so a backbone hiccup can't break or pollute the turn.
+  } catch (err) {
+    // A STALE checkpoint (cursor past a restarted ephemeral backbone's head, or
+    // a channel the fresh backbone never recreated) would otherwise wedge the
+    // session blind FOREVER: every turn re-throws the same `invalid_cursor` /
+    // `unknown_channel`. Self-heal — re-mint at the new head, inject nothing
+    // THIS turn (ADR-C6 — no backlog replay), and recover on the next.
+    if (isStaleCheckpointError(err)) {
+      try {
+        const head: Cursor = await withTimeout(
+          backbone.subscribe(channel),
+          timeoutMs,
+        );
+        await writeCheckpoint(path, head, channel);
+        // Quiet: the checkpoint is healed; next turn injects the fresh delta.
+        stderr("caucus-hook: re-synced checkpoint after backbone restart\n");
+        return "";
+      } catch {
+        // The re-mint itself failed (backbone now down, slow, etc.). Stay
+        // fail-open and value-free; we'll try to heal again next turn.
+        stderr("caucus-hook: skipped this turn (backbone unavailable or slow)\n");
+        return "";
+      }
+    }
+    // Transient fault (network refused, timeout, non-Error): pure no-op fail
+    // open. Inject nothing and DO NOT touch a valid checkpoint just because the
+    // server was briefly down. Value-free line (never the channel/url/error —
+    // ADR-C12) so a backbone hiccup can't break or pollute the turn.
     stderr("caucus-hook: skipped this turn (backbone unavailable or slow)\n");
     return "";
   }
