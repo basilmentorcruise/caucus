@@ -28,9 +28,18 @@
  * Secret hygiene (ADR-C12): the channel set + purposes are a shared, persisted,
  * human-facing log. `purpose` must never carry secrets, and nothing here
  * interpolates a channel name or purpose into an error string (the backbone's
- * errors are value-free).
+ * errors are value-free). The read tools also pass the poster-controlled
+ * descriptor free-text (`purpose`, `created_by`) through `stripControlChars`
+ * before serializing it into another agent's model context, so a token-holding
+ * poster cannot smuggle a terminal/C1 escape via a channel descriptor (CAU-73 —
+ * `JSON.stringify` does not escape C1 bytes).
  */
 import { z } from "zod";
+import {
+  stripControlChars,
+  stripControlCharsKeepWhitespace,
+} from "@caucus/schema";
+import type { ChannelDescriptor } from "@caucus/backbone";
 import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import type { CaucusSession } from "../session.js";
 import type { CaucusTool, ToolResult } from "./registry.js";
@@ -38,6 +47,26 @@ import type { CaucusTool, ToolResult } from "./registry.js";
 /** Wrap a JSON-serializable payload in the standard text result envelope. */
 function jsonResult(payload: unknown): ToolResult {
   return { content: [{ type: "text", text: JSON.stringify(payload) }] };
+}
+
+/**
+ * Neutralize terminal control characters in the poster-controlled free-text
+ * descriptor fields before serializing a descriptor into another agent's model
+ * context (CAU-73). `purpose` is caller-supplied free text — the same
+ * C1-injectable class as a message `body` — and `created_by` is a resolved owner
+ * label; both are emitted raw via `JSON.stringify` by `caucus_list_channels` and
+ * `caucus_describe_channel`, and `JSON.stringify` does NOT escape C1 bytes
+ * (`\x80–\x9f`). `purpose` may be multi-line, so it keeps `\n`/`\t`
+ * (terminal-inert under JSON, useful structure); `created_by` is a single-token
+ * label, so it uses the plain strip. The structural/validated fields
+ * (`channel`/`kind`/`verbosity`/`created_ts`/`head`) are left untouched.
+ */
+function sanitizeDescriptor(d: ChannelDescriptor): ChannelDescriptor {
+  return {
+    ...d,
+    purpose: stripControlCharsKeepWhitespace(d.purpose),
+    created_by: stripControlChars(d.created_by),
+  };
 }
 
 /** The `caucus_list_channels` tool. */
@@ -52,7 +81,13 @@ export const listChannelsTool: CaucusTool = {
   inputSchema: {},
   async handle(session: CaucusSession): Promise<ToolResult> {
     const channels = await session.reader.listChannels();
-    return jsonResult({ count: channels.length, channels });
+    // Sanitize each descriptor's poster-controlled free-text (purpose) and
+    // owner label before serializing into the model context (CAU-73). `count`
+    // is taken before mapping so it is unaffected.
+    return jsonResult({
+      count: channels.length,
+      channels: channels.map(sanitizeDescriptor),
+    });
   },
 };
 
@@ -96,7 +131,9 @@ export const describeChannelTool: CaucusTool = {
     const descriptor = await session.reader.describeChannel(
       channel ?? session.channel,
     );
-    return jsonResult(descriptor);
+    // Sanitize the poster-controlled free-text (purpose) and owner label before
+    // serializing into the model context (CAU-73).
+    return jsonResult(sanitizeDescriptor(descriptor));
   },
 };
 

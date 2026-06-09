@@ -14,8 +14,18 @@
  * ADR-C12: the artifact URL is NEVER rendered — only a `↗artifact` marker — so a
  * link with a token/secret in it can't be surfaced into context.
  */
-import { INJECTED_DELTA_CAP_CHARS, MESSAGE_TYPES } from "@caucus/schema";
+import {
+  INJECTED_DELTA_CAP_CHARS,
+  MESSAGE_TYPES,
+  stripControlChars,
+} from "@caucus/schema";
 import type { AppendedMessage } from "@caucus/backbone";
+
+// Re-exported so existing importers (and the CAU-69 render tests) can keep
+// reaching `stripControlChars` from `./render.js`. The implementation now lives
+// in `@caucus/schema` so the hook render path and the `caucus_read_channel` MCP
+// tool share one sanitizer (CAU-73); this module no longer owns it.
+export { stripControlChars };
 
 /** Max body characters rendered on one line; the rest is elided with `…`. */
 export const BODY_TRUNCATE_CHARS = 200;
@@ -27,34 +37,6 @@ const TYPE_WIDTH = Math.max(...MESSAGE_TYPES.map((t) => t.length));
 export const DELTA_HEADER = "=== CAUCUS CHANNEL (new since last turn) ===";
 /** The closing line of the injected block. */
 export const DELTA_FOOTER = "=== END CAUCUS ===";
-
-/**
- * Remove terminal control characters from an untrusted, poster-controlled
- * string before it is rendered onto a single line (CAU-69).
- *
- * `renderMessage` interpolates poster-controlled fields (`owner`, claim
- * `target`, `to[]`, `body`) into a string that is (a) injected into the agent's
- * context each turn (CAU-14 hook) and (b) printed to a human TTY by the demo
- * watcher. ANSI/OSC escapes (ESC `\x1b`, BEL `\x07`, DEL `\x7f`, …) embedded by
- * a token-holding poster would otherwise execute on those surfaces — cursor
- * manipulation, screen clears, terminal-title/clipboard OSC, and so on.
- *
- * We **strip** rather than replace with a placeholder: every rendered message
- * is already a single line, so there is no legitimate control character to
- * preserve, and removal keeps the output clean (a placeholder would only add
- * noise to the injected context and the TTY). The ranges neutralized are the C0
- * controls `\x00–\x1f` (this includes `\n`/`\t`, whose removal also helps
- * {@link renderBody} keep one message on one line), DEL `\x7f`, and the C1
- * controls `\x80–\x9f`. Printable ASCII `\x20–\x7e` and all multibyte UTF-8
- * (e.g. `↗`, `é`, `·`) pass through untouched. This is a deliberate byte
- * neutralization, NOT an ANSI-aware parser.
- */
-export function stripControlChars(s: string): string {
-  // C0 (\x00–\x1f) + DEL (\x7f) + C1 (\x80–\x9f). Written with \x escapes so the
-  // source stays plain ASCII and the intent is auditable at a glance.
-  // eslint-disable-next-line no-control-regex -- intentionally matching control bytes
-  return s.replace(/[\x00-\x1f\x7f-\x9f]/g, "");
-}
 
 /**
  * Truncate `body` to {@link BODY_TRUNCATE_CHARS}, appending `…` when it was

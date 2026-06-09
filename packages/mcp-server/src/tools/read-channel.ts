@@ -18,9 +18,58 @@
  */
 import { z } from "zod";
 import { UnknownChannelError } from "@caucus/backbone";
+import type { AppendedMessage } from "@caucus/backbone";
+import {
+  stripControlChars,
+  stripControlCharsKeepWhitespace,
+} from "@caucus/schema";
 import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import type { CaucusSession } from "../session.js";
 import type { CaucusTool, ToolResult } from "./registry.js";
+
+/**
+ * Neutralize terminal control characters in the untrusted, poster-controlled
+ * string fields of a message before it is serialized into another agent's
+ * model context (CAU-73, the live-consumer half of #71).
+ *
+ * `caucus_read_channel` `JSON.stringify`s messages straight into the model
+ * context. `JSON.stringify` escapes C0/ANSI-ESC bytes but passes C1 bytes
+ * (`\x80–\x9f`) through verbatim, so a poster could otherwise smuggle a C1
+ * control sequence cross-principal. We strip the SAME poster-controlled fields
+ * `renderMessage` sanitizes — `body`, `owner`, claim `target`, each `to[]`
+ * entry — PLUS the `artifact` URL, which the hook suppresses entirely (ADR-C12
+ * `↗artifact` marker) but this tool intentionally returns: a structured read
+ * gives back the URL, so it must be sanitized in place rather than hidden.
+ *
+ * `body` uses {@link stripControlCharsKeepWhitespace} so a multi-line body keeps
+ * its `\n`/`\t` (JSON-escaped, terminal-inert, and useful line structure for the
+ * receiving model) instead of gluing words across lines; the single-token
+ * identity/target/addressee fields and the URL have no legitimate whitespace, so
+ * they use the plain {@link stripControlChars}. `agent_id` is a non-empty
+ * free-form identity string like `owner`, so it is stripped too. Structural/validated
+ * fields (`msg_id`/`ts`/`v`/`thread`/`reply_to`) and the enum-safe
+ * `status`/`type` are left untouched.
+ */
+function sanitizeMessage(m: AppendedMessage): AppendedMessage {
+  const sanitized = {
+    ...m,
+    body: stripControlCharsKeepWhitespace(m.body),
+    owner: stripControlChars(m.owner),
+  } as AppendedMessage & { target?: string; artifact?: string };
+  if (typeof m.agent_id === "string") {
+    sanitized.agent_id = stripControlChars(m.agent_id);
+  }
+  if (typeof sanitized.target === "string") {
+    sanitized.target = stripControlChars(sanitized.target);
+  }
+  if (typeof m.artifact === "string") {
+    sanitized.artifact = stripControlChars(m.artifact);
+  }
+  if (m.to !== undefined) {
+    sanitized.to = m.to.map(stripControlChars);
+  }
+  return sanitized;
+}
 
 /** The input schema for `caucus_read_channel`: `since` and `limit`, both optional. */
 const READ_CHANNEL_INPUT = {
@@ -84,11 +133,19 @@ export const readChannelTool: CaucusTool = {
         since ?? 0,
         limit,
       );
+      // Sanitize untrusted string fields BEFORE serializing into another
+      // agent's context (CAU-73). `count` reflects the page size and is taken
+      // before mapping so it is unaffected by sanitization.
+      const sanitized = messages.map(sanitizeMessage);
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify({ cursor, count: messages.length, messages }),
+            text: JSON.stringify({
+              cursor,
+              count: messages.length,
+              messages: sanitized,
+            }),
           },
         ],
       };

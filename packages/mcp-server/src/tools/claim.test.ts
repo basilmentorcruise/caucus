@@ -1,10 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryBackbone } from "@caucus/backbone";
 import type { AppendedMessage } from "@caucus/backbone";
-import { isUlid, normalizeTarget, MalformedMessageError } from "@caucus/schema";
+import {
+  isUlid,
+  newMsgId,
+  normalizeTarget,
+  MalformedMessageError,
+} from "@caucus/schema";
 import type { ServerConfig } from "../config.js";
 import { createSession } from "../session.js";
 import { claimTool } from "./claim.js";
+
+// Control bytes for the CAU-73 sanitization test. Spelled with \x escapes so
+// this source file stays plain printable ASCII.
+const ESC = "\x1b"; // ANSI escape introducer
+const BEL = "\x07"; // bell / OSC string terminator
+const C1 = "\x9b"; // a C1 control byte (CSI); JSON.stringify does NOT escape it
+/** Matches any C0 (\x00–\x1f), DEL (\x7f), or C1 (\x80–\x9f) control byte. */
+// eslint-disable-next-line no-control-regex -- intentionally matching control bytes
+const CONTROL_CHARS = /[\x00-\x1f\x7f-\x9f]/;
 
 const config: ServerConfig = {
   identity: { agent_id: "agent-1", owner: "alice" },
@@ -161,6 +175,36 @@ describe("caucus_claim — already_claimed", () => {
     const after = (await readAll(backbone)).length;
     expect(after).toBe(before); // no second append
     expect(after).toBe(1);
+  });
+
+  it("sanitizes the winner's identity in already_claimed.by (CAU-73)", async () => {
+    const backbone = await freshBackbone();
+    // Stage a dirty WINNER by claiming directly against the backbone with
+    // poster-controlled (dirty) identity — bypassing the session's
+    // server-side anchoring, the way the read-channel tests do.
+    await backbone.claim("incident-1", {
+      type: "claim",
+      agent_id: `evil${C1}${ESC}[2J`,
+      owner: `mallory${ESC}]0;pwned${BEL}`,
+      msg_id: newMsgId(),
+      body: "mine first",
+      target: "db-pool",
+    });
+
+    // A second claimant contends the same target and loses; the winner's
+    // identity flows into its model context via `already_claimed.by`.
+    const second = createSession(config2, backbone);
+    const result = await claimTool.handle(second, { target: "db-pool" });
+    const raw = (result.content[0] as { type: "text"; text: string }).text;
+
+    // The serialized output the loser receives carries no control byte.
+    expect(raw).not.toMatch(CONTROL_CHARS);
+    expect(raw).not.toContain(C1);
+    // Printable remnants survive — only the control bytes are removed.
+    const env = JSON.parse(raw) as TakenEnvelope;
+    expect(env.outcome).toBe("already_claimed");
+    expect(env.by.agent_id).toContain("evil");
+    expect(env.by.owner).toContain("mallory");
   });
 
   it("a normalized-variant target still collides (dedup not dodged by spacing/NFC)", async () => {
