@@ -1,9 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryBackbone, type Backbone } from "@caucus/backbone";
 import type { AppendedMessage } from "@caucus/backbone";
+import { newMsgId } from "@caucus/schema";
 import type { ServerConfig } from "../config.js";
 import { createSession } from "../session.js";
 import { readChannelTool } from "./read-channel.js";
+
+// Control bytes used by the CAU-73 sanitization tests. Spelled with \x escapes
+// so this source file itself stays plain printable ASCII.
+const ESC = "\x1b"; // ANSI escape introducer
+const BEL = "\x07"; // bell / OSC string terminator
+const DEL = "\x7f"; // delete
+const C1 = "\x9b"; // a C1 control byte (CSI); JSON.stringify does NOT escape it
+
+/** Matches any C0 (\x00–\x1f), DEL (\x7f), or C1 (\x80–\x9f) control byte. */
+// eslint-disable-next-line no-control-regex -- intentionally matching control bytes
+const CONTROL_CHARS = /[\x00-\x1f\x7f-\x9f]/;
 
 const config: ServerConfig = {
   identity: { agent_id: "agent-1", owner: "alice" },
@@ -117,6 +129,95 @@ describe("caucus_read_channel", () => {
     expect(result.count).toBe(2);
     expect(result.cursor).toBe(2);
     expect(result.messages.map((m) => m.body)).toEqual(["a", "b"]);
+  });
+
+  // CAU-73: read_channel JSON.stringifies messages straight into another
+  // agent's model context. A malicious poster controls every field of their own
+  // message (they append with their own identity), so the untrusted string
+  // fields must be sanitized BEFORE serialization. The raw serialized text is
+  // what reaches the other agent, so we assert against it directly.
+  describe("CAU-73: control-character sanitization", () => {
+    // A dirty payload combining ANSI-ESC (\x1b[2J screen clear), BEL (\x07),
+    // DEL (\x7f), a C1 byte (\x9b CSI), and an OSC sequence.
+    const dirty = `${ESC}[2J before ${BEL} ${DEL} ${C1} ${ESC}]0;pwned${BEL} after`;
+
+    it("strips C0/DEL/C1 from body, owner, and to[] in the serialized output", async () => {
+      const { backbone, session } = await createdSession();
+      // A malicious poster appends directly with its own (poster-controlled)
+      // identity and addressing — bypassing this session's server-anchoring.
+      await backbone.append("incident-1", {
+        type: "finding",
+        agent_id: "evil-agent",
+        owner: `mallory${dirty}`,
+        msg_id: newMsgId(),
+        body: `finding ${dirty}`,
+        to: [`bob-agent${dirty}`],
+      });
+
+      const result = await readChannelTool.handle(session, {});
+      const raw = (result.content[0] as { type: "text"; text: string }).text;
+
+      // The serialized text the other agent receives contains NO control byte.
+      expect(raw).not.toMatch(CONTROL_CHARS);
+      expect(raw).not.toContain(C1);
+
+      // Printable remnants survive (only the control bytes are removed).
+      const env = JSON.parse(raw) as ReadEnvelope;
+      const m = env.messages[0]!;
+      expect(m.body).toContain("finding");
+      expect(m.body).toContain("after");
+      expect(m.owner).toContain("mallory");
+      expect(m.to?.[0]).toContain("bob-agent");
+    });
+
+    it("strips control chars from a claim target (the ledger key) in output", async () => {
+      const { backbone, session } = await createdSession();
+      await backbone.claim("incident-1", {
+        type: "claim",
+        agent_id: "evil-agent",
+        owner: "mallory",
+        msg_id: newMsgId(),
+        body: "on it",
+        target: `repro${dirty}`,
+      });
+
+      const result = await readChannelTool.handle(session, {});
+      const raw = (result.content[0] as { type: "text"; text: string }).text;
+
+      expect(raw).not.toMatch(CONTROL_CHARS);
+      expect(raw).not.toContain(C1);
+      const env = JSON.parse(raw) as ReadEnvelope;
+      expect(
+        (env.messages[0] as AppendedMessage & { target?: string }).target,
+      ).toContain("repro");
+    });
+
+    it("does not over-strip clean unicode", async () => {
+      const { session } = await createdSession();
+      await session.post({ type: "note", body: "↗ é café · naïve" });
+
+      const result = await readChannelTool.handle(session, {});
+      const raw = (result.content[0] as { type: "text"; text: string }).text;
+      const env = JSON.parse(raw) as ReadEnvelope;
+      expect(env.messages[0]?.body).toBe("↗ é café · naïve");
+    });
+
+    it("keeps the {cursor,count} shape unchanged after sanitization", async () => {
+      const { backbone, session } = await createdSession();
+      await backbone.append("incident-1", {
+        type: "finding",
+        agent_id: "evil-agent",
+        owner: "mallory",
+        msg_id: newMsgId(),
+        body: `dirty ${dirty}`,
+      });
+      await session.post({ type: "note", body: "clean" });
+
+      const env = envelope(await readChannelTool.handle(session, {}));
+      expect(env.cursor).toBe(2);
+      expect(env.count).toBe(2);
+      expect(env.messages).toHaveLength(2);
+    });
   });
 
   it("propagates an unexpected reader failure untouched", async () => {

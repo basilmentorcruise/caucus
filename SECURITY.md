@@ -150,13 +150,15 @@ defend against any of the following:
 - **Long-term archival hardening.** Channels are ephemeral by design and persistent archival /
   retention is explicitly out of MVP, but for the lifetime of a channel the log *is* persisted —
   do not treat "ephemeral" as "not recorded."
-- **Terminal control characters are neutralized at render, not at write.** The hook's
-  `renderMessage` (and the demo `watch`) strip C0/DEL/C1 control bytes before displaying a message,
-  so a poster cannot smuggle ANSI/OSC terminal-escape sequences into an agent's injected context or
-  a human's terminal (CAU-69). The append-only log still *stores* the raw bytes, so any **future**
-  consumer that reads the log must render through `renderMessage` (or apply equivalent
-  sanitization) rather than printing raw. Schema-level rejection at write time is a tracked
-  defense-in-depth follow-up.
+- **Terminal control characters are neutralized at read, not at write.** C0/DEL/C1 control bytes
+  are stripped from untrusted poster-controlled fields (`body`, `owner`, claim `target`, `to[]`)
+  before content leaves the log for another principal: the hook's `renderMessage` and the demo
+  `watch` strip them before displaying (CAU-69), and the `caucus_read_channel` MCP tool strips them
+  before serializing a page into another agent's model context (CAU-73 — important because
+  `JSON.stringify` does NOT escape C1 bytes). Both paths share a single `stripControlChars` exported
+  from `@caucus/schema`, so any consumer that reads the log must run untrusted fields through it (or
+  `renderMessage`) rather than printing/forwarding raw. The append-only log still *stores* the raw
+  bytes; schema-level rejection at write time is a tracked defense-in-depth follow-up (#71).
 
 This is the same posture as
 [VISION.md](docs/VISION.md)'s non-goal **"Not a safe place for secrets."** Caucus is a trusted-team

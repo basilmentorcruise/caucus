@@ -26,6 +26,7 @@ export {
   UnsupportedVersionError,
   MalformedMessageError,
 } from "./errors.js";
+export { stripControlChars } from "./sanitize.js";
 export { isUlid, newMsgId } from "./ulid.js";
 export { normalizeTarget } from "./target.js";
 export { validate } from "./validate.js";

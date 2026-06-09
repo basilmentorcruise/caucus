@@ -18,9 +18,42 @@
  */
 import { z } from "zod";
 import { UnknownChannelError } from "@caucus/backbone";
+import type { AppendedMessage } from "@caucus/backbone";
+import { stripControlChars } from "@caucus/schema";
 import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import type { CaucusSession } from "../session.js";
 import type { CaucusTool, ToolResult } from "./registry.js";
+
+/**
+ * Neutralize terminal control characters in the untrusted, poster-controlled
+ * string fields of a message before it is serialized into another agent's
+ * model context (CAU-73, the live-consumer half of #71).
+ *
+ * `caucus_read_channel` `JSON.stringify`s messages straight into the model
+ * context. `JSON.stringify` escapes C0/ANSI-ESC bytes but passes C1 bytes
+ * (`\x80–\x9f`) through verbatim, so a poster could otherwise smuggle a C1
+ * control sequence cross-principal. We strip the SAME fields `renderMessage`
+ * sanitizes — `body`, `owner`, claim `target`, and each `to[]` entry — using
+ * the shared {@link stripControlChars}. Structural/validated fields
+ * (`msg_id`/`agent_id`/`ts`/`v`/`thread`/`reply_to`) and the enum-safe
+ * `status`/`type` are left untouched; the artifact URL is never rendered by the
+ * hook but IS returned here as-is (read_channel is a structured read, not a TTY
+ * surface — ADR-C12's URL-hiding is the hook's render concern, not this tool's).
+ */
+function sanitizeMessage(m: AppendedMessage): AppendedMessage {
+  const sanitized = {
+    ...m,
+    body: stripControlChars(m.body),
+    owner: stripControlChars(m.owner),
+  } as AppendedMessage & { target?: string };
+  if (typeof sanitized.target === "string") {
+    sanitized.target = stripControlChars(sanitized.target);
+  }
+  if (m.to !== undefined) {
+    sanitized.to = m.to.map(stripControlChars);
+  }
+  return sanitized;
+}
 
 /** The input schema for `caucus_read_channel`: `since` and `limit`, both optional. */
 const READ_CHANNEL_INPUT = {
@@ -84,11 +117,19 @@ export const readChannelTool: CaucusTool = {
         since ?? 0,
         limit,
       );
+      // Sanitize untrusted string fields BEFORE serializing into another
+      // agent's context (CAU-73). `count` reflects the page size and is taken
+      // before mapping so it is unaffected by sanitization.
+      const sanitized = messages.map(sanitizeMessage);
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify({ cursor, count: messages.length, messages }),
+            text: JSON.stringify({
+              cursor,
+              count: messages.length,
+              messages: sanitized,
+            }),
           },
         ],
       };
