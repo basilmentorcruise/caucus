@@ -207,3 +207,103 @@ describe("turn-start hook injection (over HTTP, real subprocess)", () => {
     expect(ctx3).not.toContain("auth-timeout repro");
   });
 });
+
+/**
+ * Restart-recovery (CAU-72) — the ephemeral backbone is killed and restarted
+ * with head reset to 0 while the hook's on-disk checkpoint still holds a higher
+ * cursor. The pre-fix hook called `readSince(channel, stale)` ⇒ `invalid_cursor`
+ * EVERY turn and stayed blind forever. The fix self-heals: it re-mints at the
+ * fresh head (injecting nothing that turn) and recovers on the next.
+ *
+ * This is the highest-value missing test per the CAU-14 audit. It uses its own
+ * server lifecycle (the original server is killed mid-scenario) and a stable
+ * temp HOME so the checkpoint survives the restart, exactly mirroring the field
+ * failure.
+ */
+describe("turn-start hook self-heals after an ephemeral-backbone restart (CAU-72)", () => {
+  const CHANNEL_R = CHANNEL; // same channel name pre/post restart
+  let home: string;
+  const sessionId = "sess-hook-restart";
+
+  beforeAll(async () => {
+    home = await mkdtemp(join(tmpdir(), "caucus-hook-restart-"));
+  });
+
+  afterAll(async () => {
+    await rm(home, { recursive: true, force: true });
+  });
+
+  /** Spawn a server, create the channel, append `bodies`, return its lifecycle. */
+  async function bootWithMessages(
+    bodies: string[],
+  ): Promise<{ url: string; stop: () => void }> {
+    const started = await startServerProcess();
+    const client = new HttpBackbone(started.url, { token: TOK_ALICE });
+    await client.createChannel({
+      channel: CHANNEL_R,
+      purpose: "restart-recovery scenario",
+      created_by: "alice",
+    });
+    for (const body of bodies) {
+      await client.append(CHANNEL_R, finding("alice-agent", "alice", body));
+    }
+    return started;
+  }
+
+  /** Wait until the server process has actually exited (port freed). */
+  function waitExit(stop: () => void): Promise<void> {
+    return new Promise((res) => {
+      stop();
+      setTimeout(res, 300);
+    });
+  }
+
+  it("re-syncs the stale checkpoint and resumes injecting fresh messages", async () => {
+    // --- Incarnation 1: build a real, advanced checkpoint. ---
+    const gen1 = await bootWithMessages([
+      "pre-restart finding A",
+      "pre-restart finding B",
+      "pre-restart finding C",
+    ]);
+
+    // Pre-mint at head, then run again to advance the checkpoint PAST 0 — this
+    // is the cursor that will be stale after the restart.
+    expect(runHookBin(home, gen1.url, sessionId).trim()).toBe("");
+    // Nothing new since the mint (mint was at head=3) ⇒ quiet, checkpoint=3.
+    expect(runHookBin(home, gen1.url, sessionId).trim()).toBe("");
+
+    // --- KILL the ephemeral backbone. The checkpoint (3) survives on disk. ---
+    await waitExit(gen1.stop);
+
+    // --- Incarnation 2: a FRESH backbone, head reset to 0, channel recreated
+    // with brand-new messages. The on-disk checkpoint (3) now points past the
+    // new head — the exact stale-cursor defect. ---
+    const gen2 = await bootWithMessages([
+      "post-restart finding X",
+      "post-restart finding Y",
+    ]);
+
+    try {
+      // TURN 1 after restart: the stale read throws `invalid_cursor`; the hook
+      // self-heals (re-mint at the fresh head) and injects NOTHING this turn.
+      // Pre-fix this turn ALSO injected nothing — but never re-minted, so every
+      // later turn stayed blind. We prove recovery on the next turn.
+      expect(runHookBin(home, gen2.url, sessionId).trim()).toBe("");
+
+      // A new message arrives after the heal.
+      const client2 = new HttpBackbone(gen2.url, { token: TOK_BOB });
+      await client2.append(CHANNEL_R, finding("bob-agent", "bob", "post-heal finding Z"));
+
+      // TURN 2: the session is no longer blind — it injects the fresh delta
+      // (the messages appended after the re-mint), proving self-heal/recovery.
+      const ctx = additionalContext(runHookBin(home, gen2.url, sessionId));
+      expect(ctx).toContain("post-heal finding Z");
+      // It must NOT replay the pre-restart messages (re-minted at head, no
+      // backlog dump — ADR-C6).
+      expect(ctx).not.toContain("pre-restart finding");
+      expect(ctx).not.toContain("post-restart finding X");
+    } finally {
+      await waitExit(gen2.stop);
+    }
+  });
+});
