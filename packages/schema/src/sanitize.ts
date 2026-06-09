@@ -1,21 +1,31 @@
 /**
- * Shared terminal-control-character sanitization for untrusted, poster-
- * controlled string fields (CAU-69, CAU-73).
+ * Shared terminal-control-character handling for untrusted, poster-controlled
+ * string fields (CAU-69, CAU-73, CAU-71). This module is the single byte-set
+ * authority for BOTH defense layers:
  *
- * Caucus stores message content raw in its append-only log; sanitization is a
- * READ/DISPLAY-time defense (write-time rejection is the deeper #71 follow-up).
- * Any consumer that prints or forwards log content — the CAU-14 hook injection,
- * the demo `watch`, the `caucus_read_channel` MCP tool, and the
- * `caucus_list_channels` / `caucus_describe_channel` descriptor tools — MUST
- * pass the untrusted fields through {@link stripControlChars} (or its
- * whitespace-preserving sibling {@link stripControlCharsKeepWhitespace} for
- * structured JSON reads) so a token-holding poster cannot smuggle terminal
- * escapes (ANSI/OSC) or C1 bytes into another principal's context or TTY.
+ * - **Write layer (CAU-71):** the schema validator and the backbone's
+ *   `createChannel` boundary use the {@link containsControlChars} /
+ *   {@link containsControlCharsExceptWhitespace} predicates to REJECT
+ *   control-character-bearing fields, so escape-bearing content never enters
+ *   the append-only log in the first place.
+ * - **Read/display layer (CAU-69, CAU-73):** any consumer that prints or
+ *   forwards log content — the CAU-14 hook injection, the demo `watch`, the
+ *   `caucus_read_channel` MCP tool, and the `caucus_list_channels` /
+ *   `caucus_describe_channel` descriptor tools — MUST pass the untrusted
+ *   fields through {@link stripControlChars} (or its whitespace-preserving
+ *   sibling {@link stripControlCharsKeepWhitespace} for structured JSON
+ *   reads). This layer stays even though writes now reject: it covers any
+ *   pre-tightening log content and is defense-in-depth against a future write
+ *   path that skips validation.
  *
- * This lives in `@caucus/schema` because it is the one package both the hook
- * and the MCP server already depend on; keeping a single implementation here
- * prevents the two render paths from drifting (the original lived only in
- * `packages/hook/src/render.ts`).
+ * Together these stop a token-holding poster smuggling terminal escapes
+ * (ANSI/OSC) or C1 bytes into another principal's context or TTY.
+ *
+ * This lives in `@caucus/schema` because it is the one package the hook, the
+ * MCP server, and the backbone all already depend on; keeping a single
+ * implementation here prevents the write and read layers from drifting (the
+ * predicates are DERIVED from the strip functions, so the byte sets cannot
+ * diverge).
  */
 
 /**
@@ -65,4 +75,30 @@ export function stripControlCharsKeepWhitespace(s: string): string {
   // \x00–\x08, \x0b–\x1f, DEL \x7f, C1 \x80–\x9f.
   // eslint-disable-next-line no-control-regex -- intentionally matching control bytes
   return s.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+}
+
+/**
+ * True iff `s` contains any C0 (`\x00–\x1f`), DEL (`\x7f`), or C1 (`\x80–\x9f`)
+ * byte.
+ *
+ * The write-layer rejection predicate (CAU-71). Deliberately DERIVED from
+ * {@link stripControlChars} rather than re-spelling the ranges: the strip
+ * function is the one byte-set authority, so the write layer can never drift
+ * from the read layer.
+ */
+export function containsControlChars(s: string): boolean {
+  return stripControlChars(s) !== s;
+}
+
+/**
+ * Like {@link containsControlChars}, but tolerates `\t` and `\n` (the
+ * body-safe whitespace).
+ *
+ * Used at write time (CAU-71) for the multi-line free-text fields — message
+ * `body` and channel `purpose` — where `\t`/`\n` are legitimate structure.
+ * Derived from {@link stripControlCharsKeepWhitespace} for the same
+ * drift-proofing as {@link containsControlChars}.
+ */
+export function containsControlCharsExceptWhitespace(s: string): boolean {
+  return stripControlCharsKeepWhitespace(s) !== s;
 }

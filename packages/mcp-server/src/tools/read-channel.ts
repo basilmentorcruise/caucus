@@ -30,7 +30,10 @@ import type { CaucusTool, ToolResult } from "./registry.js";
 /**
  * Neutralize terminal control characters in the untrusted, poster-controlled
  * string fields of a message before it is serialized into another agent's
- * model context (CAU-73, the live-consumer half of #71).
+ * model context (CAU-73). Writes now REJECT these bytes at the schema
+ * validator (CAU-71), so this read-side strip is the second defense layer: it
+ * covers pre-CAU-71 log content and any future write path that skips
+ * validation.
  *
  * `caucus_read_channel` `JSON.stringify`s messages straight into the model
  * context. `JSON.stringify` escapes C0/ANSI-ESC bytes but passes C1 bytes

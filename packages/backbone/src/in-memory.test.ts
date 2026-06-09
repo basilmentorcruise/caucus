@@ -463,6 +463,60 @@ describe("validation & errors", () => {
   });
 });
 
+describe("control characters rejected at write (CAU-71)", () => {
+  const ESC = "\x1b"; // ANSI escape introducer
+
+  it("rejects an append whose body carries ESC; head unchanged", async () => {
+    const headBefore = (await b.describeChannel(CH)).head;
+    await expect(
+      b.append(CH, finding("a1", `before${ESC}[2Jafter`)),
+    ).rejects.toBeInstanceOf(InvalidMessageError);
+    expect((await b.describeChannel(CH)).head).toBe(headBefore);
+  });
+
+  it("rejects a claim with a dirty target; ledger stays empty (clean re-claim wins)", async () => {
+    await expect(
+      b.claim(CH, claim("a1", `db-pool${ESC}`)),
+    ).rejects.toBeInstanceOf(InvalidMessageError);
+    expect((await b.describeChannel(CH)).head).toBe(0);
+    // The dirty claim never reached the ledger: a clean claim still wins.
+    const clean = await b.claim(CH, claim("a2", "db-pool"));
+    expect(clean.outcome).toBe("granted");
+  });
+
+  it("rejects createChannel with a dirty purpose", async () => {
+    await expect(
+      b.createChannel({
+        channel: "dirty-purpose",
+        purpose: `p${ESC}[2J`,
+        created_by: "alice",
+      }),
+    ).rejects.toBeInstanceOf(InvalidMessageError);
+    await expect(b.describeChannel("dirty-purpose")).rejects.toBeInstanceOf(
+      UnknownChannelError,
+    );
+  });
+
+  it("accepts a multi-line purpose (\\t/\\n are body-safe whitespace)", async () => {
+    const desc = await b.createChannel({
+      channel: "multi-line",
+      purpose: "line 1\nline 2\tend",
+      created_by: "alice",
+    });
+    expect(desc.purpose).toBe("line 1\nline 2\tend");
+  });
+
+  it("rejects createChannel with a dirty created_by (no whitespace exemption)", async () => {
+    await expect(
+      b.createChannel({
+        channel: "dirty-creator",
+        purpose: "p",
+        created_by: "mal\nlory",
+      }),
+    ).rejects.toBeInstanceOf(InvalidMessageError);
+  });
+});
+
 describe("seatbelts (ADR-C8) — rate limit + loop/dup at the append path", () => {
   /** Read the channel head (number of appended messages). */
   async function head(bb: InMemoryBackbone): Promise<number> {

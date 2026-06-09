@@ -17,6 +17,8 @@
  * never a read-then-write spanning an `await`. See `docs/BACKBONE_CONTRACT.md`.
  */
 import {
+  containsControlChars,
+  containsControlCharsExceptWhitespace,
   MalformedMessageError,
   type CaucusMessage,
   type MessageInput,
@@ -248,6 +250,27 @@ export class InMemoryBackbone implements Backbone {
     ) {
       throw new InvalidMessageError([
         `purpose exceeds ${MAX_FIELD_CHARS} characters`,
+      ]);
+    }
+    // Descriptor fields don't go through `validate`, so the write-time
+    // control-character rejection (CAU-71) is enforced here. `purpose` is
+    // multi-line free text (`\t`/`\n` allowed, like a message body);
+    // `created_by` is a single-token owner label (no whitespace controls).
+    // Error strings never echo the offending bytes (ADR-C12).
+    if (
+      typeof opts.purpose === "string" &&
+      containsControlCharsExceptWhitespace(opts.purpose)
+    ) {
+      throw new InvalidMessageError([
+        "purpose must not contain control characters (tab and newline are allowed)",
+      ]);
+    }
+    if (
+      typeof opts.created_by === "string" &&
+      containsControlChars(opts.created_by)
+    ) {
+      throw new InvalidMessageError([
+        "created_by must not contain control characters",
       ]);
     }
     const state: ChannelState = {

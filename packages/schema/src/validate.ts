@@ -5,9 +5,20 @@
  * Validation is strict (ADR ratification Q4, CAU-3): unknown top-level keys are
  * rejected, claim-only fields are rejected on non-claim types, and `target` is
  * required on `claim`. All problems are collected and thrown together.
+ *
+ * Control characters are rejected at this write boundary (CAU-71): the
+ * poster-controlled free-text fields must contain no C0/DEL/C1 byte (`body`
+ * tolerates `\t`/`\n`). The byte sets come from the shared predicates in
+ * `sanitize.ts`, the single authority for both this write layer and the
+ * read/render layer (CAU-69/73). Error strings NEVER echo payload bytes —
+ * these errors travel over the wire into TTYs (ADR-C12).
  */
 import { MAX_REPORTED_ISSUES, MESSAGE_TYPES, STATUS_VALUES } from "./constants.js";
 import { MalformedMessageError } from "./errors.js";
+import {
+  containsControlChars,
+  containsControlCharsExceptWhitespace,
+} from "./sanitize.js";
 import type { CaucusMessage } from "./types.js";
 import { isUlid } from "./ulid.js";
 import { SCHEMA_VERSION } from "./version.js";
@@ -39,7 +50,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** True iff `v` is a non-empty string. */
-function isNonEmptyString(v: unknown): boolean {
+function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.length > 0;
 }
 
@@ -88,21 +99,34 @@ export function validate(value: unknown): asserts value is CaucusMessage {
     issues.push(`type must be one of ${MESSAGE_TYPES.join(", ")}`);
   }
 
-  // Required string fields.
+  // Required string fields. Each control-char check (CAU-71) runs only when
+  // the base shape check passed, so a field never double-reports.
   if (!isNonEmptyString(value.agent_id)) {
     issues.push("agent_id must be a non-empty string");
+  } else if (containsControlChars(value.agent_id)) {
+    issues.push("agent_id must not contain control characters");
   }
   if (!isNonEmptyString(value.owner)) {
     issues.push("owner must be a non-empty string");
+  } else if (containsControlChars(value.owner)) {
+    issues.push("owner must not contain control characters");
   }
+  // msg_id needs no control-char check: the ULID regex already excludes them.
   if (!isUlid(value.msg_id)) {
     issues.push("msg_id must be a ULID");
   }
-  if (typeof value.body !== "string" || value.body.length === 0) {
+  if (!isNonEmptyString(value.body)) {
     issues.push("body must be a non-empty string");
+  } else if (containsControlCharsExceptWhitespace(value.body)) {
+    // `\t`/`\n` are legitimate multi-line body structure; every other
+    // C0/DEL/C1 byte (incl. `\r`) is rejected.
+    issues.push(
+      "body must not contain control characters (tab and newline are allowed)",
+    );
   }
 
-  // Optional ULID references.
+  // Optional ULID references — the ULID regex already excludes control bytes,
+  // so no control-char check is needed here either.
   if (value.thread !== undefined && !isUlid(value.thread)) {
     issues.push("thread must be a ULID");
   }
@@ -120,6 +144,12 @@ export function validate(value: unknown): asserts value is CaucusMessage {
       !value.to.every((entry) => isNonEmptyString(entry))
     ) {
       issues.push("to must be a non-empty array of non-empty strings");
+    } else if (
+      // ONE aggregate issue for the whole array (CAU-71): the entry count is
+      // poster-controlled, so per-entry issues would be unbounded.
+      value.to.some((entry) => containsControlChars(entry))
+    ) {
+      issues.push("to entries must not contain control characters");
     }
   }
 
@@ -132,11 +162,17 @@ export function validate(value: unknown): asserts value is CaucusMessage {
   }
 
   // Optional `artifact`.
-  if (value.artifact !== undefined && !isNonEmptyString(value.artifact)) {
-    issues.push("artifact must be a non-empty string");
+  if (value.artifact !== undefined) {
+    if (!isNonEmptyString(value.artifact)) {
+      issues.push("artifact must be a non-empty string");
+    } else if (containsControlChars(value.artifact)) {
+      issues.push("artifact must not contain control characters");
+    }
   }
 
-  // Optional server-stamped `ts`.
+  // Optional server-stamped `ts`. No control-char check: the backbone's
+  // `#appendSync` OVERWRITES any client-supplied `ts` with its own stamp, so a
+  // client value here never reaches the log — do not "fix" this by rejecting.
   if (value.ts !== undefined && !isNonEmptyString(value.ts)) {
     issues.push("ts must be a non-empty string");
   }
@@ -148,7 +184,11 @@ export function validate(value: unknown): asserts value is CaucusMessage {
       value.target.trim().length === 0
     ) {
       issues.push("claim requires a non-empty target");
+    } else if (containsControlChars(value.target)) {
+      issues.push("target must not contain control characters");
     }
+    // `type`/`status`/`v` are enum-checked and `lease_ttl`/`heartbeat` are
+    // number/boolean — none can carry a control byte.
     if (
       value.lease_ttl !== undefined &&
       !(Number.isInteger(value.lease_ttl) && (value.lease_ttl as number) > 0)

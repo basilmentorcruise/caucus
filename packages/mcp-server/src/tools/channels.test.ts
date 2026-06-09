@@ -128,19 +128,38 @@ describe("caucus_describe_channel", () => {
 // CAU-73: list/describe JSON.stringify channel descriptors straight into the
 // model context. `purpose` is caller-supplied free text (the same C1-injectable
 // class as a message body) and `created_by` is a resolved owner label; both are
-// poster-controlled and must be sanitized BEFORE serialization. The raw
-// serialized text is what reaches the other agent, so we assert against it.
+// poster-controlled and must be sanitized BEFORE serialization. Since CAU-71
+// the backbone REJECTS dirty descriptor fields at create, so the dirty cases
+// seed a stub backbone instead: the read layer must hold even if a dirty byte
+// is already stored (a pre-CAU-71 store, or a future write path that skips
+// validation). The raw serialized text is what reaches the other agent.
 describe("CAU-73: descriptor control-character sanitization", () => {
   const dirty = `${ESC}[2J before ${BEL} ${DEL} ${C1} ${ESC}]0;pwned${BEL} after`;
 
-  it("strips C0/DEL/C1 from purpose + created_by via caucus_describe_channel", async () => {
-    const backbone = new InMemoryBackbone();
-    await backbone.createChannel({
+  /** A hand-built descriptor as a store would return it — dirty bytes intact. */
+  function dirtyDescriptor(): ChannelDescriptor {
+    return {
       channel: "incident-1",
+      kind: "ephemeral",
       purpose: `triage ${dirty}`,
+      verbosity: "quiet",
       created_by: `mallory${dirty}`,
-    });
-    const session = createSession(config, backbone);
+      created_ts: "2026-06-09T00:00:00.000Z#000000000001",
+      head: 0,
+    };
+  }
+
+  /** A session over a stub backbone that already holds a dirty descriptor. */
+  function dirtyDescriptorSession(): ReturnType<typeof createSession> {
+    const backbone = {
+      describeChannel: () => Promise.resolve(dirtyDescriptor()),
+      listChannels: () => Promise.resolve([dirtyDescriptor()]),
+    } as unknown as Parameters<typeof createSession>[1];
+    return createSession(config, backbone);
+  }
+
+  it("strips C0/DEL/C1 from purpose + created_by via caucus_describe_channel", async () => {
+    const session = dirtyDescriptorSession();
 
     const result = await describeChannelTool.handle(session, {});
     const raw = (result.content[0] as { type: "text"; text: string }).text;
@@ -156,13 +175,7 @@ describe("CAU-73: descriptor control-character sanitization", () => {
   });
 
   it("strips C0/DEL/C1 from purpose + created_by via caucus_list_channels", async () => {
-    const backbone = new InMemoryBackbone();
-    await backbone.createChannel({
-      channel: "incident-1",
-      purpose: `dirty ${dirty}`,
-      created_by: `mallory${dirty}`,
-    });
-    const session = createSession(config, backbone);
+    const session = dirtyDescriptorSession();
 
     const result = await listChannelsTool.handle(session, {});
     const raw = (result.content[0] as { type: "text"; text: string }).text;
@@ -171,7 +184,7 @@ describe("CAU-73: descriptor control-character sanitization", () => {
     expect(raw).not.toContain(C1);
 
     const { channels } = JSON.parse(raw) as { channels: ChannelDescriptor[] };
-    expect(channels[0]?.purpose).toContain("dirty");
+    expect(channels[0]?.purpose).toContain("triage");
     expect(channels[0]?.created_by).toContain("mallory");
   });
 

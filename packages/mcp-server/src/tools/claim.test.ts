@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { InMemoryBackbone } from "@caucus/backbone";
+import { InMemoryBackbone, InvalidMessageError } from "@caucus/backbone";
 import type { AppendedMessage } from "@caucus/backbone";
 import {
   isUlid,
@@ -178,18 +178,22 @@ describe("caucus_claim — already_claimed", () => {
   });
 
   it("sanitizes the winner's identity in already_claimed.by (CAU-73)", async () => {
-    const backbone = await freshBackbone();
-    // Stage a dirty WINNER by claiming directly against the backbone with
-    // poster-controlled (dirty) identity — bypassing the session's
-    // server-side anchoring, the way the read-channel tests do.
-    await backbone.claim("incident-1", {
-      type: "claim",
-      agent_id: `evil${C1}${ESC}[2J`,
-      owner: `mallory${ESC}]0;pwned${BEL}`,
-      msg_id: newMsgId(),
-      body: "mine first",
-      target: "db-pool",
-    });
+    // Stage a dirty WINNER via a stub backbone whose ledger already holds
+    // dirty identity bytes. Since CAU-71 the write path REJECTS them, so the
+    // read-side layer is exercised against an already-dirty ledger instead —
+    // proving reads stay clean even if a dirty byte is in the store.
+    const backbone = {
+      claim: () =>
+        Promise.resolve({
+          outcome: "already_claimed" as const,
+          by: {
+            agent_id: `evil${C1}${ESC}[2J`,
+            owner: `mallory${ESC}]0;pwned${BEL}`,
+            ts: "2026-06-09T00:00:00.000Z#000000000001",
+            msg_id: newMsgId(),
+          },
+        }),
+    } as unknown as InMemoryBackbone;
 
     // A second claimant contends the same target and loses; the winner's
     // identity flows into its model context via `already_claimed.by`.
@@ -251,5 +255,30 @@ describe("caucus_claim — errors propagate (ADR-C12, value-free)", () => {
     await expect(
       claimTool.handle(session, { target: "db-pool" }),
     ).rejects.toThrow();
+  });
+
+  it("rejects a control-character target at write (CAU-71): invalid_message surfaces, ledger empty", async () => {
+    const backbone = await freshBackbone();
+    const session = createSession(config, backbone);
+
+    let thrown: unknown;
+    await claimTool
+      .handle(session, { target: `repro${ESC}[2J` })
+      .catch((e) => {
+        thrown = e;
+      });
+    // The backbone's typed invalid_message error surfaces to the tool caller.
+    expect(thrown).toBeInstanceOf(InvalidMessageError);
+    expect((thrown as InvalidMessageError).code).toBe("invalid_message");
+    expect((thrown as InvalidMessageError).issues).toContain(
+      "target must not contain control characters",
+    );
+    // Nothing was appended, and the dirty claim never reached the ledger: a
+    // clean claim on the (sanitized-looking) target still wins.
+    expect((await readAll(backbone)).length).toBe(0);
+    const clean = envelope<GrantedEnvelope>(
+      await claimTool.handle(session, { target: "repro" }),
+    );
+    expect(clean.outcome).toBe("granted");
   });
 });

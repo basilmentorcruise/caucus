@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DuplicatePostError,
   InMemoryBackbone,
+  InvalidMessageError,
   MAX_BODY_CHARS,
   RateLimitedError,
 } from "@caucus/backbone";
@@ -110,6 +111,27 @@ describe("caucus_post", () => {
     expect("to" in stored).toBe(false);
     expect("artifact" in stored).toBe(false);
     expect("status" in stored).toBe(false);
+  });
+
+  it("rejects a control-character body at write (CAU-71): invalid_message surfaces, log unchanged", async () => {
+    const { backbone, session } = await freshSession();
+
+    let thrown: unknown;
+    await postTool
+      .handle(session, { type: "note", body: "before\x1b[2Jafter" })
+      .catch((e) => {
+        thrown = e;
+      });
+    // The backbone's typed invalid_message error surfaces to the tool caller,
+    // naming the rule but never the offending bytes (ADR-C12).
+    expect(thrown).toBeInstanceOf(InvalidMessageError);
+    expect((thrown as InvalidMessageError).code).toBe("invalid_message");
+    expect((thrown as InvalidMessageError).issues).toContain(
+      "body must not contain control characters (tab and newline are allowed)",
+    );
+    expect((thrown as Error).message).not.toContain("\x1b");
+    // The dirty post never landed.
+    expect((await readAll(backbone)).length).toBe(0);
   });
 
   it("rejects an over-cap body WITHOUT echoing the body (ADR-C12)", async () => {
