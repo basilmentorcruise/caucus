@@ -12,7 +12,13 @@ const COVERAGE_THRESHOLD = 90;
 
 export default defineConfig({
   test: {
-    include: ["packages/**/*.{test,spec}.ts"],
+    // Package unit tests, plus the demo-script helpers in examples/ (CAU-67):
+    // their pure arg/channel resolution is gated too, though examples stay out
+    // of the coverage `include` below (they're demo-land, not product code).
+    include: [
+      "packages/**/*.{test,spec}.ts",
+      "examples/**/*.{test,spec}.mjs",
+    ],
     coverage: {
       provider: "v8",
       reporter: ["text", "html", "lcov"],

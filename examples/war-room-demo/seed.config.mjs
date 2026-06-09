@@ -59,7 +59,15 @@ export const LOOP_BODY =
 export const DEFAULT_URL = "http://127.0.0.1:4317";
 
 /** The make-style `VAR=value` overrides the demo scripts accept as args. */
-const ARG_OVERRIDES = ["PORT", "CAUCUS_URL"];
+const ARG_OVERRIDES = ["PORT", "CAUCUS_URL", "CHANNEL"];
+
+/**
+ * Watch-all sentinel + flag (CAU-67). `--all` (CLI) or `CHANNEL=*` (make-style,
+ * survives `make watch CHANNEL='*'`) makes the watcher multiplex every channel
+ * instead of tailing one.
+ */
+export const WATCH_ALL_FLAG = "--all";
+export const WATCH_ALL_CHANNEL = "*";
 
 /**
  * Parse make-style `VAR=value` positional args (`pnpm demo:run PORT=4747` —
@@ -107,6 +115,28 @@ export function resolveUrl(env = process.env, overrides = {}) {
   const port = overrides.PORT ?? env.PORT;
   if (port && port.trim() !== "") return `http://127.0.0.1:${port.trim()}`;
   return DEFAULT_URL;
+}
+
+/**
+ * Resolve which channel to watch (CAU-67), mirroring `resolveUrl`'s precedence:
+ * make-style `CHANNEL=` arg override wins, then `CAUCUS_CHANNEL` env, then the
+ * demo channel (so the demo and its tests are unchanged when nothing is set).
+ * A blank value (e.g. `make watch CHANNEL=`) counts as unset.
+ */
+export function resolveChannel(env = process.env, overrides = {}) {
+  const ch = overrides.CHANNEL ?? env.CAUCUS_CHANNEL;
+  if (ch && ch.trim() !== "") return ch.trim();
+  return CHANNEL;
+}
+
+/**
+ * Whether the watcher should multiplex ALL channels (CAU-67): the `--all` flag
+ * on the command line, or the resolved channel being the `*` sentinel
+ * (`make watch CHANNEL='*'`, since make can't pass a bare `--all`).
+ */
+export function isWatchAll(argv = [], env = process.env, overrides = {}) {
+  if (argv.includes(WATCH_ALL_FLAG)) return true;
+  return resolveChannel(env, overrides) === WATCH_ALL_CHANNEL;
 }
 
 /**
