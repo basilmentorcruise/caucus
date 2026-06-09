@@ -101,7 +101,10 @@ everything — designed-in for the intra-team model, and what keeps the read-onl
 The **`HOST` env var is the single knob that widens exposure**: setting it to a non-loopback
 address makes the backbone (incl. open reads) reachable by anyone on that interface. **Do not bind
 a non-loopback host off-host** — keep it on `127.0.0.1` and reach remote sessions through a tunnel
-you control, not by exposing the port.
+you control, not by exposing the port. The startup log always surfaces this: the bin logs the
+dialable URL, plus an explicit `WARNING: bound to …` line naming the real bind whenever it is
+non-loopback (a wildcard bind's URL substitutes a loopback literal for dialability, so the warning
+is what keeps the exposure visible).
 
 ### The secret-leak vector (why this document exists)
 

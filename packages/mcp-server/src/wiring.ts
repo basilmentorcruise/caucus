@@ -52,16 +52,20 @@ import { ConfigError } from "./config.js";
  * set ⇒ an {@link HttpBackbone} against that URL carrying `CAUCUS_TOKEN` as its
  * bearer (CAU-13); unset ⇒ a process-local {@link InMemoryBackbone} (offline
  * fallback). A set `CAUCUS_URL` is validated up front (CAU-75): it must parse
- * as a URL with an `http:` or `https:` scheme, so a bad value fails fast at
- * config time with a {@link ConfigError} instead of surfacing as a confusing
- * fetch failure later. The error message NEVER echoes the URL value — a URL can
- * carry userinfo credentials, and `String(err)` goes to stderr (ADR-C12). The
+ * as a URL with an `http:` or `https:` scheme and carry NO userinfo
+ * credentials, so a bad value fails fast at config time with a
+ * {@link ConfigError} instead of surfacing as a confusing fetch failure later
+ * (undici rejects userinfo URLs at request time with a TypeError that echoes
+ * the full URL). The error message NEVER echoes the URL value or any part of
+ * it — a URL can carry credentials, and `String(err)` goes to stderr
+ * (ADR-C12). The
  * token is read here only to forward it as the bearer — it is never logged or
  * echoed (ADR-C12); identity parsing for display lives in `loadConfig`.
  *
  * @returns the selected {@link Backbone}. Pure w.r.t. its `env` argument so it
  *   is unit-testable without a process or a live server.
- * @throws ConfigError if `CAUCUS_URL` is set but unparsable or non-http(s).
+ * @throws ConfigError if `CAUCUS_URL` is set but unparsable, non-http(s), or
+ *   carries userinfo credentials.
  */
 export function selectBackbone(
   env: Record<string, string | undefined>,
@@ -81,7 +85,16 @@ export function selectBackbone(
     throw new ConfigError("CAUCUS_URL is not a valid URL");
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new ConfigError(`CAUCUS_URL must use http: or https:, got "${parsed.protocol}"`);
+    // Deliberately does NOT name the offending scheme: `new URL("tok-x:4747")`
+    // parses with protocol "tok-x:", so echoing it would leak a token pasted
+    // into CAUCUS_URL verbatim to stderr (ADR-C12).
+    throw new ConfigError("CAUCUS_URL must use http: or https:");
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    // Reject userinfo here rather than letting undici reject it at request
+    // time — undici's TypeError echoes the FULL URL (password included) and
+    // that message would escape into the MCP tool-call context (ADR-C12).
+    throw new ConfigError("CAUCUS_URL must not contain credentials (userinfo)");
   }
   // Shared mode: every MCP server + the hook point at the one HTTP backbone.
   // The ORIGINAL trimmed string is passed through (not parsed.toString(), which

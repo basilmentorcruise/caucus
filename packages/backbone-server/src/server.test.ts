@@ -14,6 +14,7 @@ import { newMsgId } from "@caucus/schema";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  bindExposureWarning,
   createServer,
   dispatch,
   startServer,
@@ -748,11 +749,11 @@ describe("server lifecycle (sockets)", () => {
     expect(server.headersTimeout).toBe(HEADERS_TIMEOUT_MS);
     expect(server.requestTimeout).toBe(REQUEST_TIMEOUT_MS);
     expect(server.keepAliveTimeout).toBe(KEEP_ALIVE_TIMEOUT_MS);
-    // Runtime property; @types/node only types it as a creation option.
-    expect(
-      (server as typeof server & { connectionsCheckingInterval: number })
-        .connectionsCheckingInterval,
-    ).toBe(CONNECTIONS_CHECK_INTERVAL_MS);
+    // Passed as a creation option; Node stores it as a runtime instance
+    // property that @types/node does not declare, hence Reflect.get.
+    expect(Reflect.get(server, "connectionsCheckingInterval")).toBe(
+      CONNECTIONS_CHECK_INTERVAL_MS,
+    );
     // The header window must close before the whole-request window.
     expect(HEADERS_TIMEOUT_MS).toBeLessThan(REQUEST_TIMEOUT_MS);
     server.close();
@@ -761,6 +762,10 @@ describe("server lifecycle (sockets)", () => {
   it("HOST=0.0.0.0 (wildcard) → a dialable 127.0.0.1 URL (CAU-75)", async () => {
     running = await startServer({ port: 0, host: "0.0.0.0" });
     expect(running.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    // The URL substitution must never MASK exposure: the real bind stays
+    // visible as boundHost, and it maps to the startup warning the bin prints.
+    expect(running.boundHost).toBe("0.0.0.0");
+    expect(bindExposureWarning(running.boundHost)).toContain("bound to 0.0.0.0");
     // Empirical dialability: the substituted loopback URL actually answers.
     const res = await fetch(`${running.url}/healthz`);
     expect(res.status).toBe(200);
@@ -774,6 +779,7 @@ describe("server lifecycle (sockets)", () => {
       return;
     }
     expect(running.url).toMatch(/^http:\/\/\[::1\]:\d+$/);
+    expect(running.boundHost).toBe("::");
     const res = await fetch(`${running.url}/healthz`);
     expect(res.status).toBe(200);
   });
@@ -790,6 +796,28 @@ describe("server lifecycle (sockets)", () => {
   it("default host yields the unchanged 127.0.0.1 URL", async () => {
     running = await startServer({ port: 0 });
     expect(running.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(running.boundHost).toBe("127.0.0.1");
+  });
+});
+
+describe("bindExposureWarning (CAU-75 — the startup log never masks a wide bind)", () => {
+  it("loopback binds → no warning", () => {
+    expect(bindExposureWarning("127.0.0.1")).toBeUndefined();
+    expect(bindExposureWarning("::1")).toBeUndefined();
+  });
+
+  it("wildcard binds → a warning naming the real bind and SECURITY.md", () => {
+    const v4 = bindExposureWarning("0.0.0.0");
+    expect(v4).toBe(
+      "WARNING: bound to 0.0.0.0 — reads are open to anyone who can reach this port (see SECURITY.md)",
+    );
+    const v6 = bindExposureWarning("::");
+    expect(v6).toContain("bound to ::");
+    expect(v6).toContain("SECURITY.md");
+  });
+
+  it("a specific non-loopback interface → a warning too", () => {
+    expect(bindExposureWarning("192.168.1.5")).toContain("bound to 192.168.1.5");
   });
 });
 

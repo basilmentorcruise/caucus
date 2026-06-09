@@ -22,6 +22,7 @@ export type {
   ServerOptions,
 } from "./server.js";
 export {
+  bindExposureWarning,
   createServer,
   dispatch,
   startServer,
