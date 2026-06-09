@@ -16,7 +16,7 @@
  *
  * `teardown()` closes the server and frees the port.
  */
-import { InMemoryBackbone, type SeatbeltOptions } from "@caucus/backbone";
+import { InMemoryBackbone, type InMemoryBackboneOptions } from "@caucus/backbone";
 import {
   HttpBackbone,
   startServer,
@@ -63,15 +63,16 @@ function buildTokenMap(ids: readonly string[]): TokenMap {
  * {@link HttpBackbone} carrying its bearer token; all share the one server's
  * state and the server anchors each write to the token's identity (CAU-13).
  *
- * @param opts optional seatbelt tunables (ADR-C8). The server runs over an
- * {@link InMemoryBackbone} built from them, so a low `maxPostsPerMinute` trips
- * the cap over the wire too. Omitted ⇒ production defaults (existing scenarios
- * unchanged).
+ * @param opts optional backbone tunables — seatbelt knobs (ADR-C8) plus the
+ * CAU-74 resource caps. The server runs over an {@link InMemoryBackbone} built
+ * from them, so a low `maxPostsPerMinute` (or `maxChannelCreatesPerMinute`, …)
+ * trips the cap over the wire too. Omitted ⇒ production defaults (existing
+ * scenarios unchanged).
  * @param ids the client ids to provision tokens for; defaults to
  * `["alice", "bob", "carol"]` (the ids every existing scenario uses).
  */
 export function httpConnector(
-  opts: SeatbeltOptions = {},
+  opts: InMemoryBackboneOptions = {},
   ids: readonly string[] = DEFAULT_IDS,
 ): Connector {
   let server: RunningServer | undefined;

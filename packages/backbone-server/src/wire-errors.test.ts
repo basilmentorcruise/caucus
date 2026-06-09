@@ -8,6 +8,8 @@
 import {
   BackboneError,
   ChannelExistsError,
+  ChannelFullError,
+  ChannelLimitError,
   DuplicatePostError,
   InvalidChannelNameError,
   InvalidCursorError,
@@ -50,6 +52,30 @@ describe("mapError — status mapping", () => {
     expect(m.body.error.code).toBe("rate_limited");
     expect(m.body.error.message).toContain("at most 30 posts/min");
     expect(m.body.error.message).toContain("Wait ~12s");
+  });
+
+  it("channel_full → 409 (capacity is a state conflict, not pacing) (CAU-74)", () => {
+    const m = mapError(new ChannelFullError("incident-1", 10_000));
+    expect(m.status).toBe(409);
+    expect(m.body.error.code).toBe("channel_full");
+    expect(m.body.error.message).toContain('"incident-1"');
+    expect(m.body.error.message).toContain("at most 10000 messages");
+  });
+
+  it("channel_limit → 409 (CAU-74)", () => {
+    const m = mapError(new ChannelLimitError(1_000));
+    expect(m.status).toBe(409);
+    expect(m.body.error.code).toBe("channel_limit");
+    expect(m.body.error.message).toContain("at most 1000 channels");
+  });
+
+  it("rate_limited (global + create scopes) → 429 (CAU-74)", () => {
+    const global = mapError(new RateLimitedError(120, 5_000, "global"));
+    expect(global.status).toBe(429);
+    expect(global.body.error.message).toContain("across all channels");
+    const create = mapError(new RateLimitedError(10, 5_000, "create"));
+    expect(create.status).toBe(429);
+    expect(create.body.error.message).toContain("channel creates/min per owner");
   });
 
   it("duplicate_post → 409 with its value-free message", () => {
@@ -157,6 +183,55 @@ describe("backboneErrorFromWire — reconstruction registry", () => {
     expect(err.message).toBe(original.message);
     expect((err as RateLimitedError).limit).toBe(30);
     expect((err as RateLimitedError).retryAfterMs).toBe(12_000);
+  });
+
+  it("round-trips RateLimitedError for ALL THREE scopes (regex regression, CAU-74)", () => {
+    // The create-scope message says "channel creates/min", not "posts/min" — a
+    // posts-only limit regex would silently reconstruct (limit 0, 0ms).
+    for (const scope of ["channel", "global", "create"] as const) {
+      const original = new RateLimitedError(7, 13_000, scope);
+      const wire = mapError(original).body;
+      const err = backboneErrorFromWire(wire) as RateLimitedError;
+      expect(err).toBeInstanceOf(RateLimitedError);
+      expect(err.limit).toBe(7);
+      expect(err.retryAfterMs).toBe(13_000);
+      expect(err.scope).toBe(scope);
+      expect(err.message).toBe(original.message);
+    }
+  });
+
+  it("round-trips ChannelFullError (instanceof + code + channel + limit) (CAU-74)", () => {
+    const original = new ChannelFullError("incident-1", 3);
+    const wire = mapError(original).body;
+    const err = backboneErrorFromWire(wire) as ChannelFullError;
+    expect(err).toBeInstanceOf(ChannelFullError);
+    expect(err.code).toBe("channel_full");
+    expect(err.channel).toBe("incident-1");
+    expect(err.limit).toBe(3);
+    expect(err.message).toBe(original.message);
+  });
+
+  it("round-trips ChannelLimitError (instanceof + code + limit) (CAU-74)", () => {
+    const original = new ChannelLimitError(2);
+    const wire = mapError(original).body;
+    const err = backboneErrorFromWire(wire) as ChannelLimitError;
+    expect(err).toBeInstanceOf(ChannelLimitError);
+    expect(err.code).toBe("channel_limit");
+    expect(err.limit).toBe(2);
+    expect(err.message).toBe(original.message);
+  });
+
+  it("capacity errors fall back to limit 0 on an unparseable message (best-effort)", () => {
+    const full = backboneErrorFromWire({
+      error: { code: "channel_full", message: "mystery" },
+    }) as ChannelFullError;
+    expect(full).toBeInstanceOf(ChannelFullError);
+    expect(full.limit).toBe(0);
+    const limit = backboneErrorFromWire({
+      error: { code: "channel_limit", message: "mystery" },
+    }) as ChannelLimitError;
+    expect(limit).toBeInstanceOf(ChannelLimitError);
+    expect(limit.limit).toBe(0);
   });
 
   it("round-trips DuplicatePostError (instanceof + code + exact message)", () => {

@@ -178,6 +178,19 @@ defend against any of the following:
   rejected via the same module's `containsControlChars` / `containsControlCharsExceptWhitespace`
   predicates (CAU-71), which are derived from the strip functions so the two layers cannot drift.
 
+- **Resource exhaustion by a hostile token-holder — only cooperative caps (CAU-74).** The backbone
+  now enforces resource caps: per-channel and agent-global posting rates plus a per-owner
+  channel-create throttle (all ADR-C8 seatbelts), count caps on each channel's log and on the
+  number of channels, and eviction of idle seatbelt bookkeeping with an LRU backstop. The
+  arithmetic: with the defaults (30 posts/min/channel, 120/min global per agent, 10 creates/min
+  per owner, 10 000 messages/channel, 1 000 channels, 4 096 tracked seatbelt entries per map) a
+  channel tops out around ~330 MB theoretical worst case (10k messages × 16k-char bodies), and at
+  the capped rates filling one channel takes ~83 minutes of sustained max-rate posting per token.
+  The residual posture, stated honestly: the seatbelt and caps are cooperative-abuse /
+  accidental-loop controls within the ADR-C9 trust boundary; they are not a defense against a
+  hostile valid-token holder — the remedy for a hostile or compromised token is revocation, not
+  the rate limiter.
+
 This is the same posture as
 [VISION.md](docs/VISION.md)'s non-goal **"Not a safe place for secrets."** Caucus is a trusted-team
 coordination layer; it is not a vault, not a DLP system, and not a confidentiality boundary
@@ -275,6 +288,7 @@ is **not** message-content confidentiality and is **not** end-to-end encryption.
 | Server operator can read the log | **Yes** — single shared server, plaintext (ADR-C9) |
 | Server-side secret scanning / redaction | **Not provided** — keeping secrets out is the operator's job |
 | Owner identity anchoring (no forged owner) | **SHIPPED** (CAU-13: bearer-token resolve-and-overwrite at the HTTP write boundary, ADR-C7) — does not defend a stolen token |
+| Resource caps (rates, log/channel counts, seatbelt-state eviction) | **SHIPPED** (CAU-74) — cooperative-abuse / accidental-loop controls (ADR-C8/C9), **not** a defense against a hostile token-holder; revoke the token instead |
 | AEAD `{agent_id,owner,to,ts,channel}` routing binding | **NOT YET IMPLEMENTED** — backbone design intent (ADR-C11/C12) |
 
 The honest one-liner: **Caucus coordinates a trusted team; it does not keep secrets from that

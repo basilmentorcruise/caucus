@@ -40,6 +40,8 @@ import type {
 } from "./contract.js";
 import {
   ChannelExistsError,
+  ChannelFullError,
+  ChannelLimitError,
   InvalidChannelNameError,
   InvalidCursorError,
   InvalidMessageError,
@@ -49,6 +51,29 @@ import { dupKeyFor, Seatbelt, type SeatbeltOptions } from "./seatbelt.js";
 
 /** Maximum number of characters allowed in a message `body` at the boundary. */
 export const MAX_BODY_CHARS = 16_000;
+
+/** Default backbone-wide channel-count cap (CAU-74). */
+export const DEFAULT_MAX_CHANNELS = 1_000;
+
+/** Default per-channel message (log-length) cap (CAU-74). */
+export const DEFAULT_MAX_MESSAGES_PER_CHANNEL = 10_000;
+
+/**
+ * Constructor options for {@link InMemoryBackbone}: every seatbelt tunable
+ * (rate caps, create throttle, eviction knobs, clock — see
+ * {@link SeatbeltOptions}) plus the CAU-74 COUNT caps the backbone enforces
+ * itself. A plain widening of `SeatbeltOptions`, so every existing
+ * `new InMemoryBackbone(seatbeltOpts)` call site stays source-compatible.
+ */
+export type InMemoryBackboneOptions = SeatbeltOptions & {
+  /** Backbone-wide channel-count cap. Default {@link DEFAULT_MAX_CHANNELS}. */
+  readonly maxChannels?: number;
+  /**
+   * Per-channel message cap (log length). Default
+   * {@link DEFAULT_MAX_MESSAGES_PER_CHANNEL}.
+   */
+  readonly maxMessagesPerChannel?: number;
+};
 
 /**
  * Maximum number of characters allowed in each short free-text identifier
@@ -115,13 +140,23 @@ export class InMemoryBackbone implements Backbone {
    */
   readonly #seatbelt: Seatbelt;
 
+  /** Backbone-wide channel-count cap (CAU-74). */
+  readonly #maxChannels: number;
+
+  /** Per-channel message (log-length) cap (CAU-74). */
+  readonly #maxMessagesPerChannel: number;
+
   /**
-   * @param opts seatbelt tunables (cap / window / clock). Defaults are
-   * production-safe: a generous per-agent posts/min cap and `Date.now` as the
-   * clock. Tests inject a low cap and/or a deterministic clock.
+   * @param opts seatbelt tunables (caps / window / clock) plus the CAU-74
+   * count caps. Defaults are production-safe: generous rate caps, bounded
+   * channel/log counts, and `Date.now` as the clock. Tests inject low caps
+   * and/or a deterministic clock.
    */
-  constructor(opts: SeatbeltOptions = {}) {
+  constructor(opts: InMemoryBackboneOptions = {}) {
     this.#seatbelt = new Seatbelt(opts);
+    this.#maxChannels = opts.maxChannels ?? DEFAULT_MAX_CHANNELS;
+    this.#maxMessagesPerChannel =
+      opts.maxMessagesPerChannel ?? DEFAULT_MAX_MESSAGES_PER_CHANNEL;
   }
 
   /**
@@ -279,6 +314,24 @@ export class InMemoryBackbone implements Backbone {
         ]);
       }
     }
+    // CAU-74 resource gates, deliberately LAST — after the slug check, the
+    // ChannelExistsError check (a warm demo rerun must never touch the create
+    // budget), and the field validation above, so a rejected create consumes
+    // no budget. Count cap first (capacity), then the per-creator create
+    // throttle (pacing): `admitChannelCreate` is check-AND-record in one call,
+    // which is safe ONLY because the `Map.set` below is infallible.
+    if (this.#channels.size >= this.#maxChannels) {
+      throw new ChannelLimitError(this.#maxChannels);
+    }
+    // The throttle keys on the creator/owner identity: the HTTP server anchors
+    // `created_by: identity.owner` before calling us (CAU-13), so over the
+    // wire this is a per-owner budget. In-process callers that omit
+    // `created_by` all share the "" budget — acceptable for trusted
+    // in-process use (tests, demos).
+    this.#seatbelt.admitChannelCreate(
+      opts.created_by ?? "",
+      this.#seatbelt.now(),
+    );
     const state: ChannelState = {
       descriptor: {
         channel: opts.channel,
@@ -312,6 +365,12 @@ export class InMemoryBackbone implements Backbone {
       ]);
     }
     const validated = this.#validateMessage(msg);
+    // Per-channel message cap (CAU-74), checked BEFORE the seatbelt admits:
+    // a doomed post on a full channel must not burn rate budget or become the
+    // agent's dup baseline.
+    if (state.log.length >= this.#maxMessagesPerChannel) {
+      throw new ChannelFullError(channel, this.#maxMessagesPerChannel);
+    }
     // Seatbelt (ADR-C8): rate + loop/dup gate. `admit` throws (rate_limited /
     // duplicate_post) BEFORE recording anything, so a rejected post is never
     // appended and consumes no budget. Synchronous — no `await` is introduced.
@@ -386,7 +445,10 @@ export class InMemoryBackbone implements Backbone {
     // ---- constraint, never a read-then-write across an `await`.
     const existing = state.claimLedger.get(key);
     if (existing !== undefined) {
-      // Loser: consumes NO rate budget (we never called recordRate).
+      // Loser: consumes NO rate budget (we never called recordRate). This path
+      // stays available even when the channel is FULL (CAU-74): answering an
+      // already-claimed target needs no append, and the ledger is the dedup
+      // authority regardless of log capacity.
       return {
         outcome: "already_claimed",
         by: {
@@ -396,6 +458,15 @@ export class InMemoryBackbone implements Backbone {
           msg_id: existing.msg_id,
         },
       };
+    }
+    // Per-channel message cap (CAU-74): only the WOULD-APPEND path is blocked
+    // on a full channel, before anything is written. Synchronous — the no-await
+    // CAS invariant between the ledger read above and the write below holds.
+    // The ledger itself needs NO separate cap and is never evicted: every
+    // ledger entry is created only alongside a granted-claim append, so
+    // `claimLedger.size <= log.length <= maxMessagesPerChannel`.
+    if (state.log.length >= this.#maxMessagesPerChannel) {
+      throw new ChannelFullError(channel, this.#maxMessagesPerChannel);
     }
     const message = this.#appendSync(state, validated);
     state.claimLedger.set(key, {

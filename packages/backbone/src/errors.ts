@@ -101,14 +101,27 @@ export class InvalidMessageError extends BackboneError {
 }
 
 /**
- * Thrown by the seatbelt (ADR-C8) when an agent exceeds the per-agent
- * posts/minute cap on a channel. The message is **actionable** — it states the
- * cap and roughly how long to wait — so a model that hits it can self-correct
- * (batch / back off) rather than retry-spin. It carries no caller content, so it
- * is safe to surface verbatim (ADR-C12).
+ * Which seatbelt budget a {@link RateLimitedError} bound on (CAU-74):
+ * - `"channel"` — the per-`(channel, agent)` posts/minute cap (the original
+ *   ADR-C8 limit);
+ * - `"global"` — the agent's cross-channel posts/minute cap;
+ * - `"create"` — the per-creator channel-creates/minute throttle.
+ */
+export type RateLimitScope = "channel" | "global" | "create";
+
+/**
+ * Thrown by the seatbelt (ADR-C8 / CAU-74) when an agent exceeds a rate
+ * budget: the per-agent posts/minute cap on a channel (`scope: "channel"`),
+ * the agent's cross-channel global cap (`"global"`), or the per-creator
+ * channel-create throttle (`"create"`). All three scopes share the
+ * `rate_limited` code (HTTP 429); the message distinguishes them. The message
+ * is **actionable** — it states the cap and roughly how long to wait — so a
+ * model that hits it can self-correct (batch / back off) rather than
+ * retry-spin. It carries no caller content, so it is safe to surface verbatim
+ * (ADR-C12).
  */
 export class RateLimitedError extends BackboneError {
-  /** The per-agent posts/minute cap that was exceeded. */
+  /** The posts/min (or creates/min) cap that was exceeded. */
   readonly limit: number;
 
   /**
@@ -117,16 +130,37 @@ export class RateLimitedError extends BackboneError {
    */
   readonly retryAfterMs: number;
 
-  constructor(limit: number, retryAfterMs: number) {
-    super(
-      `Rate limit exceeded: at most ${limit} posts/min per agent. Wait ~${Math.ceil(
-        retryAfterMs / 1000,
-      )}s before posting again, or batch your updates.`,
-      "rate_limited",
-    );
+  /** Which budget bound: per-channel, agent-global, or channel-create. */
+  readonly scope: RateLimitScope;
+
+  constructor(
+    limit: number,
+    retryAfterMs: number,
+    scope: RateLimitScope = "channel",
+  ) {
+    const wait = Math.ceil(retryAfterMs / 1000);
+    let message: string;
+    switch (scope) {
+      case "global":
+        message =
+          `Rate limit exceeded: at most ${limit} posts/min per agent across all channels. ` +
+          `Wait ~${wait}s before posting again, or batch your updates.`;
+        break;
+      case "create":
+        message =
+          `Rate limit exceeded: at most ${limit} channel creates/min per owner. ` +
+          `Wait ~${wait}s before creating another channel.`;
+        break;
+      default:
+        message =
+          `Rate limit exceeded: at most ${limit} posts/min per agent. ` +
+          `Wait ~${wait}s before posting again, or batch your updates.`;
+    }
+    super(message, "rate_limited");
     this.name = "RateLimitedError";
     this.limit = limit;
     this.retryAfterMs = retryAfterMs;
+    this.scope = scope;
   }
 }
 
@@ -144,5 +178,48 @@ export class DuplicatePostError extends BackboneError {
       "duplicate_post",
     );
     this.name = "DuplicatePostError";
+  }
+}
+
+/**
+ * Thrown when an append (or a would-be granted claim) targets a channel whose
+ * log has reached the per-channel message cap (CAU-74). Capacity, not pacing —
+ * waiting does not help, so this is NOT a `rate_limited` (HTTP 429): it maps to
+ * 409, alongside the other state conflicts. The message names the channel and
+ * the cap and never echoes any content (ADR-C12). A claim against an
+ * already-claimed target on a full channel still returns `already_claimed`
+ * (the ledger answer needs no append).
+ */
+export class ChannelFullError extends BackboneError {
+  /** The full channel's name. */
+  readonly channel: string;
+
+  /** The per-channel message cap that was reached. */
+  readonly limit: number;
+
+  constructor(channel: string, limit: number) {
+    super(
+      `Channel is full: ${JSON.stringify(channel)} holds at most ${limit} messages. Start a fresh channel to continue.`,
+      "channel_full",
+    );
+    this.name = "ChannelFullError";
+    this.channel = channel;
+    this.limit = limit;
+  }
+}
+
+/**
+ * Thrown by `createChannel` when the backbone already holds the maximum number
+ * of channels (CAU-74). Like {@link ChannelFullError} this is a capacity state
+ * (HTTP 409), not pacing. The message states only the cap — no caller content.
+ */
+export class ChannelLimitError extends BackboneError {
+  /** The backbone-wide channel-count cap that was reached. */
+  readonly limit: number;
+
+  constructor(limit: number) {
+    super(`channel limit reached: at most ${limit} channels`, "channel_limit");
+    this.name = "ChannelLimitError";
+    this.limit = limit;
   }
 }

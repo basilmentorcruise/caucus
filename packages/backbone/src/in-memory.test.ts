@@ -9,6 +9,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   ChannelExistsError,
+  ChannelFullError,
+  ChannelLimitError,
+  DEFAULT_MAX_CHANNELS,
+  DEFAULT_MAX_MESSAGES_PER_CHANNEL,
   DuplicatePostError,
   InMemoryBackbone,
   InvalidChannelNameError,
@@ -698,5 +702,218 @@ describe("seatbelts (ADR-C8) — rate limit + loop/dup at the append path", () =
     );
     // a2 is unaffected.
     await expect(bb.append(CH, finding("a2", "z"))).resolves.toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CAU-74 — resource caps at the backbone: the channel-create throttle, the
+// backbone-wide channel-count cap, and the per-channel message cap (append +
+// claim paths), including the load-bearing ordering (cap checks before any
+// seatbelt budget is charged).
+// ---------------------------------------------------------------------------
+
+describe("channel-create throttle (CAU-74)", () => {
+  /** A controllable clock for deterministic windows. */
+  function fakeClock(start = 0): { now: () => number; set: (t: number) => void } {
+    let t = start;
+    return { now: () => t, set: (v) => { t = v; } };
+  }
+
+  it("rejects the N+1th create with rate_limited (scope create); the window slides", async () => {
+    const clock = fakeClock();
+    const bb = new InMemoryBackbone({
+      maxChannelCreatesPerMinute: 2,
+      clock: clock.now,
+    });
+    await bb.createChannel({ channel: "c1", purpose: "p", created_by: "alice" });
+    await bb.createChannel({ channel: "c2", purpose: "p", created_by: "alice" });
+
+    let thrown: RateLimitedError | undefined;
+    await bb
+      .createChannel({ channel: "c3", purpose: "p", created_by: "alice" })
+      .catch((e) => {
+        thrown = e as RateLimitedError;
+      });
+    expect(thrown).toBeInstanceOf(RateLimitedError);
+    expect(thrown!.code).toBe("rate_limited");
+    expect(thrown!.scope).toBe("create");
+    expect(thrown!.message).toContain("at most 2 channel creates/min per owner");
+    // The rejected channel was never created.
+    await expect(bb.describeChannel("c3")).rejects.toBeInstanceOf(UnknownChannelError);
+
+    // A minute later the budget is free again.
+    clock.set(60_001);
+    await expect(
+      bb.createChannel({ channel: "c3", purpose: "p", created_by: "alice" }),
+    ).resolves.toMatchObject({ channel: "c3" });
+  });
+
+  it("is keyed per creator — bob is unaffected by alice's spent budget", async () => {
+    const bb = new InMemoryBackbone({ maxChannelCreatesPerMinute: 1 });
+    await bb.createChannel({ channel: "a1", purpose: "p", created_by: "alice" });
+    await expect(
+      bb.createChannel({ channel: "a2", purpose: "p", created_by: "alice" }),
+    ).rejects.toBeInstanceOf(RateLimitedError);
+    await expect(
+      bb.createChannel({ channel: "b1", purpose: "p", created_by: "bob" }),
+    ).resolves.toMatchObject({ channel: "b1" });
+  });
+
+  it("rejected creates consume NO budget (bad slug, channel_exists rerun, over-cap purpose)", async () => {
+    const bb = new InMemoryBackbone({ maxChannelCreatesPerMinute: 2 });
+    await bb.createChannel({ channel: "ok-1", purpose: "p", created_by: "alice" });
+
+    // Each of these rejects BEFORE the throttle, so none is charged:
+    await expect(
+      bb.createChannel({ channel: "BAD NAME", purpose: "p", created_by: "alice" }),
+    ).rejects.toBeInstanceOf(InvalidChannelNameError);
+    // …the warm-rerun path (channel already exists) in particular:
+    await expect(
+      bb.createChannel({ channel: "ok-1", purpose: "p", created_by: "alice" }),
+    ).rejects.toBeInstanceOf(ChannelExistsError);
+    await expect(
+      bb.createChannel({
+        channel: "big-purpose",
+        purpose: "p".repeat(MAX_FIELD_CHARS + 1),
+        created_by: "alice",
+      }),
+    ).rejects.toBeInstanceOf(InvalidMessageError);
+
+    // Only ONE create was charged, so a second clean create still succeeds…
+    await expect(
+      bb.createChannel({ channel: "ok-2", purpose: "p", created_by: "alice" }),
+    ).resolves.toMatchObject({ channel: "ok-2" });
+    // …and the THIRD is the one the cap (2/min) rejects.
+    await expect(
+      bb.createChannel({ channel: "ok-3", purpose: "p", created_by: "alice" }),
+    ).rejects.toBeInstanceOf(RateLimitedError);
+  });
+});
+
+describe("channel-count cap (CAU-74)", () => {
+  it("exposes the documented defaults", () => {
+    expect(DEFAULT_MAX_CHANNELS).toBe(1_000);
+    expect(DEFAULT_MAX_MESSAGES_PER_CHANNEL).toBe(10_000);
+  });
+
+  it("rejects the create that would exceed maxChannels with ChannelLimitError", async () => {
+    const bb = new InMemoryBackbone({ maxChannels: 2 });
+    await bb.createChannel({ channel: "c1", purpose: "p", created_by: "alice" });
+    await bb.createChannel({ channel: "c2", purpose: "p", created_by: "alice" });
+
+    let thrown: ChannelLimitError | undefined;
+    await bb
+      .createChannel({ channel: "c3", purpose: "p", created_by: "alice" })
+      .catch((e) => {
+        thrown = e as ChannelLimitError;
+      });
+    expect(thrown).toBeInstanceOf(ChannelLimitError);
+    expect(thrown!.code).toBe("channel_limit");
+    expect(thrown!.limit).toBe(2);
+    expect(thrown!.message).toContain("at most 2 channels");
+    // Existing channels are untouched.
+    expect((await bb.listChannels()).map((c) => c.channel).sort()).toEqual(["c1", "c2"]);
+  });
+});
+
+describe("per-channel message cap (CAU-74)", () => {
+  it("rejects the over-cap append with ChannelFullError; head + log unchanged; cursors intact", async () => {
+    const bb = new InMemoryBackbone({ maxMessagesPerChannel: 3 });
+    await bb.createChannel({ channel: CH, purpose: "p", created_by: "alice" });
+
+    // A reader takes a cursor mid-stream, before the channel fills.
+    await bb.append(CH, finding("a1", "m0"));
+    await bb.append(CH, finding("a1", "m1"));
+    const midCursor = (await bb.readSince(CH, 0)).cursor; // 2
+    await bb.append(CH, finding("a1", "m2"));
+
+    let thrown: ChannelFullError | undefined;
+    await bb.append(CH, finding("a1", "m3")).catch((e) => {
+      thrown = e as ChannelFullError;
+    });
+    expect(thrown).toBeInstanceOf(ChannelFullError);
+    expect(thrown!.code).toBe("channel_full");
+    expect(thrown!.channel).toBe(CH);
+    expect(thrown!.limit).toBe(3);
+    // The cap, the channel name — and never the rejected content (ADR-C12).
+    expect(thrown!.message).toContain("at most 3 messages");
+    expect(thrown!.message).toContain(`"${CH}"`);
+    expect(thrown!.message).not.toContain("m3");
+
+    // Head unchanged; the capped log reads back exactly, from 0 and from the
+    // reader's pre-cap cursor; subscribe mints at head == cap.
+    expect((await bb.describeChannel(CH)).head).toBe(3);
+    const full = await bb.readSince(CH, 0);
+    expect(full.messages.map((m) => m.body)).toEqual(["m0", "m1", "m2"]);
+    expect(full.cursor).toBe(3);
+    const tail = await bb.readSince(CH, midCursor);
+    expect(tail.messages.map((m) => m.body)).toEqual(["m2"]);
+    expect(tail.cursor).toBe(3);
+    expect(await bb.subscribe(CH)).toBe(3);
+  });
+
+  it("a claim on a NEW target against a full channel throws channel_full and never writes the ledger", async () => {
+    const bb = new InMemoryBackbone({ maxMessagesPerChannel: 1 });
+    await bb.createChannel({ channel: CH, purpose: "p", created_by: "alice" });
+    await bb.append(CH, finding("a1", "filler")); // channel is now full
+
+    await expect(bb.claim(CH, claim("a2", "fresh-target"))).rejects.toBeInstanceOf(
+      ChannelFullError,
+    );
+    expect((await bb.describeChannel(CH)).head).toBe(1);
+    // The ledger was never written: the SAME target still yields channel_full
+    // (an already_claimed answer would prove a phantom ledger entry).
+    await expect(bb.claim(CH, claim("a3", "fresh-target"))).rejects.toBeInstanceOf(
+      ChannelFullError,
+    );
+  });
+
+  it("a claim on an ALREADY-CLAIMED target still answers already_claimed on a full channel", async () => {
+    const bb = new InMemoryBackbone({ maxMessagesPerChannel: 1 });
+    await bb.createChannel({ channel: CH, purpose: "p", created_by: "alice" });
+
+    const won = await bb.claim(CH, claim("a1", "hot"));
+    expect(won.outcome).toBe("granted"); // this append filled the channel
+
+    const lost = await bb.claim(CH, claim("a2", "hot"));
+    expect(lost.outcome).toBe("already_claimed");
+    if (lost.outcome === "already_claimed") {
+      expect(lost.by.agent_id).toBe("a1");
+    }
+  });
+
+  it("a channel_full rejection consumes NO seatbelt budget", async () => {
+    // Global budget of 1 is the observable: if the cap check ran AFTER the
+    // seatbelt admit, the doomed post would burn a1's only global slot and the
+    // follow-up append on ch-2 would throw rate_limited instead of succeeding.
+    const bb = new InMemoryBackbone({
+      maxMessagesPerChannel: 1,
+      globalMaxPostsPerMinute: 1,
+    });
+    await bb.createChannel({ channel: CH, purpose: "p", created_by: "alice" });
+    await bb.createChannel({ channel: "ch-2", purpose: "p", created_by: "alice" });
+    await bb.append(CH, finding("a2", "filler")); // a2 fills the channel
+
+    await expect(bb.append(CH, finding("a1", "doomed"))).rejects.toBeInstanceOf(
+      ChannelFullError,
+    );
+    await expect(bb.append("ch-2", finding("a1", "doomed"))).resolves.toBeDefined();
+  });
+
+  it("channel_full takes precedence over rate_limited AND duplicate_post (cap precedes admit)", async () => {
+    const bb = new InMemoryBackbone({
+      maxPostsPerMinute: 2,
+      maxMessagesPerChannel: 2,
+    });
+    await bb.createChannel({ channel: CH, purpose: "p", created_by: "alice" });
+    await bb.append(CH, finding("a1", "first"));
+    await bb.append(CH, finding("a1", "same"));
+
+    // This post is simultaneously a dup of the previous post, over the rate
+    // cap, AND on a full channel — the capacity error wins, proving the cap
+    // check runs before the seatbelt (and the dup baseline is untouched).
+    await expect(bb.append(CH, finding("a1", "same"))).rejects.toBeInstanceOf(
+      ChannelFullError,
+    );
   });
 });

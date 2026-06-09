@@ -21,17 +21,30 @@ export type {
 export {
   BackboneError,
   ChannelExistsError,
+  ChannelFullError,
+  ChannelLimitError,
   DuplicatePostError,
   InvalidChannelNameError,
   InvalidCursorError,
   InvalidMessageError,
   RateLimitedError,
+  type RateLimitScope,
   UnknownChannelError,
 } from "./errors.js";
-export { InMemoryBackbone, MAX_BODY_CHARS, MAX_FIELD_CHARS } from "./in-memory.js";
+export {
+  DEFAULT_MAX_CHANNELS,
+  DEFAULT_MAX_MESSAGES_PER_CHANNEL,
+  InMemoryBackbone,
+  type InMemoryBackboneOptions,
+  MAX_BODY_CHARS,
+  MAX_FIELD_CHARS,
+} from "./in-memory.js";
 export {
   DEFAULT_DUP_WINDOW,
+  DEFAULT_GLOBAL_RATE_MULTIPLIER,
+  DEFAULT_MAX_CHANNEL_CREATES_PER_MINUTE,
   DEFAULT_MAX_POSTS_PER_MINUTE,
+  DEFAULT_MAX_TRACKED_AGENTS,
   SEATBELT_WINDOW_MS,
   type SeatbeltOptions,
 } from "./seatbelt.js";

@@ -18,11 +18,14 @@
 import {
   BackboneError,
   ChannelExistsError,
+  ChannelFullError,
+  ChannelLimitError,
   DuplicatePostError,
   InvalidChannelNameError,
   InvalidCursorError,
   InvalidMessageError,
   RateLimitedError,
+  type RateLimitScope,
   UnknownChannelError,
 } from "@caucus/backbone";
 
@@ -85,8 +88,14 @@ function statusForCode(code: string): number {
       return 401;
     case "unknown_channel":
       return 404;
+    // channel_full / channel_limit (CAU-74) are capacity STATE conflicts
+    // ("this resource is full"), not pacing — waiting does not free a slot —
+    // so they are deliberately 409 alongside channel_exists/duplicate_post,
+    // NOT 429.
     case "channel_exists":
     case "duplicate_post":
+    case "channel_full":
+    case "channel_limit":
       return 409;
     case "rate_limited":
       return 429;
@@ -156,6 +165,17 @@ export function backboneErrorFromWire(body: WireErrorBody): BackboneError {
       return rateLimitedFromMessage(message);
     case "duplicate_post":
       return new DuplicatePostError();
+    case "channel_full":
+      // Channel + limit are best-effort recoveries from the message (like the
+      // other reconstructions); instanceof + .code are exact.
+      return new ChannelFullError(
+        extractChannel(message),
+        extractLimit(message, /holds at most (\d+) messages/),
+      );
+    case "channel_limit":
+      return new ChannelLimitError(
+        extractLimit(message, /at most (\d+) channels/),
+      );
     case "unauthorized":
       // Fixed-message, value-free: reconstructed identically regardless of why
       // the token was rejected (missing vs unknown — no oracle).
@@ -170,19 +190,40 @@ export function backboneErrorFromWire(body: WireErrorBody): BackboneError {
 
 /**
  * Reconstruct a {@link RateLimitedError} from its wire message. The wire carries
- * only the message, so we recover `limit` and the (seconds-rounded) wait from it
- * and rebuild the error message-faithfully: because the original message rounds
- * `retryAfterMs` up to whole seconds, feeding `seconds * 1000` back through the
- * constructor reproduces the exact same string. `instanceof` + `.code` (what
- * callers branch on) are exact; the numeric `retryAfterMs` is best-effort to the
- * second. Falls back to `(limit 0, 0ms)` if the message is unparseable.
+ * only the message, so we recover `limit`, the (seconds-rounded) wait, and the
+ * CAU-74 `scope` from it and rebuild the error message-faithfully: because the
+ * original message rounds `retryAfterMs` up to whole seconds, feeding
+ * `seconds * 1000` (and the recovered scope) back through the constructor
+ * reproduces the exact same string. `instanceof` + `.code` (what callers branch
+ * on) are exact; the numeric `retryAfterMs` and the scope are best-effort.
+ * Falls back to `(limit 0, 0ms, "channel")` if the message is unparseable.
+ *
+ * The limit regex deliberately matches the unit loosely (`[a-z ]+/min`): the
+ * three scopes phrase it differently (`posts/min` for channel/global,
+ * `channel creates/min` for the create throttle), and a `posts`-only regex
+ * would silently reconstruct a create-throttle 429 as `(limit 0, 0ms)`.
  */
 function rateLimitedFromMessage(message: string): RateLimitedError {
-  const limit = /at most (\d+) posts\/min/.exec(message);
+  const limit = /at most (\d+) [a-z ]+\/min/.exec(message);
   const wait = /Wait ~(\d+)s/.exec(message);
   const limitN = limit?.[1] !== undefined ? Number(limit[1]) : 0;
   const waitS = wait?.[1] !== undefined ? Number(wait[1]) : 0;
-  return new RateLimitedError(limitN, waitS * 1000);
+  const scope: RateLimitScope = message.includes("across all channels")
+    ? "global"
+    : message.includes("channel creates/min")
+      ? "create"
+      : "channel";
+  return new RateLimitedError(limitN, waitS * 1000, scope);
+}
+
+/**
+ * Best-effort numeric recovery for the CAU-74 capacity errors (the wire carries
+ * only the message). Falls back to `0` when the message doesn't match —
+ * `instanceof` + `.code` stay exact either way.
+ */
+function extractLimit(message: string, re: RegExp): number {
+  const match = re.exec(message);
+  return match?.[1] !== undefined ? Number(match[1]) : 0;
 }
 
 /**

@@ -6,8 +6,11 @@
  * non-2xx response with an unexpected body.
  */
 import {
+  ChannelFullError,
+  ChannelLimitError,
   InMemoryBackbone,
   InvalidMessageError,
+  RateLimitedError,
   UnknownChannelError,
   type ClaimResult,
 } from "@caucus/backbone";
@@ -310,6 +313,80 @@ describe("HttpBackbone — auth (CAU-13)", () => {
     const c = new HttpBackbone("http://stub", { token: "tok-a", fetch: spyFetch });
     await c.listChannels();
     expect(seenAuth).toBe("Bearer tok-a");
+  });
+});
+
+describe("HttpBackbone — CAU-74 resource-cap errors reconstruct as the real classes", () => {
+  it("channel_full / channel_limit / create-throttle 429 round-trip over a live server", async () => {
+    const bb = new InMemoryBackbone({
+      maxMessagesPerChannel: 1,
+      maxChannels: 2,
+      maxChannelCreatesPerMinute: 2,
+    });
+    const srv = await startServer({ port: 0, backbone: bb, tokens: TOKENS });
+    try {
+      const c = new HttpBackbone(srv.url, { token: TOKEN });
+      await c.createChannel({ channel: "caps", purpose: "p", created_by: "a" });
+
+      // Fill the channel (cap 1), then the next append → ChannelFullError.
+      await c.append("caps", {
+        type: "finding",
+        agent_id: "a",
+        owner: "alice",
+        msg_id: newMsgId(),
+        body: "filler",
+      });
+      let full: unknown;
+      await c
+        .append("caps", {
+          type: "finding",
+          agent_id: "a",
+          owner: "alice",
+          msg_id: newMsgId(),
+          body: "rejected",
+        })
+        .catch((e) => {
+          full = e;
+        });
+      expect(full).toBeInstanceOf(ChannelFullError);
+      expect((full as ChannelFullError).code).toBe("channel_full");
+      expect((full as ChannelFullError).channel).toBe("caps");
+      expect((full as ChannelFullError).limit).toBe(1);
+
+      // Second channel hits maxChannels on the third create → ChannelLimitError.
+      await c.createChannel({ channel: "caps-2", purpose: "p", created_by: "a" });
+      let limit: unknown;
+      await c
+        .createChannel({ channel: "caps-3", purpose: "p", created_by: "a" })
+        .catch((e) => {
+          limit = e;
+        });
+      expect(limit).toBeInstanceOf(ChannelLimitError);
+      expect((limit as ChannelLimitError).limit).toBe(2);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it("a throttled create reconstructs RateLimitedError with the real limit (regex regression)", async () => {
+    const bb = new InMemoryBackbone({ maxChannelCreatesPerMinute: 1 });
+    const srv = await startServer({ port: 0, backbone: bb, tokens: TOKENS });
+    try {
+      const c = new HttpBackbone(srv.url, { token: TOKEN });
+      await c.createChannel({ channel: "t1", purpose: "p", created_by: "a" });
+      let thrown: unknown;
+      await c
+        .createChannel({ channel: "t2", purpose: "p", created_by: "a" })
+        .catch((e) => {
+          thrown = e;
+        });
+      expect(thrown).toBeInstanceOf(RateLimitedError);
+      // Without the generalized limit regex this would reconstruct as limit 0.
+      expect((thrown as RateLimitedError).limit).toBe(1);
+      expect((thrown as RateLimitedError).scope).toBe("create");
+    } finally {
+      await srv.close();
+    }
   });
 });
 
