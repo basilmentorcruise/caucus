@@ -151,14 +151,24 @@ defend against any of the following:
   retention is explicitly out of MVP, but for the lifetime of a channel the log *is* persisted —
   do not treat "ephemeral" as "not recorded."
 - **Terminal control characters are neutralized at read, not at write.** C0/DEL/C1 control bytes
-  are stripped from untrusted poster-controlled fields (`body`, `owner`, claim `target`, `to[]`)
-  before content leaves the log for another principal: the hook's `renderMessage` and the demo
-  `watch` strip them before displaying (CAU-69), and the `caucus_read_channel` MCP tool strips them
-  before serializing a page into another agent's model context (CAU-73 — important because
-  `JSON.stringify` does NOT escape C1 bytes). Both paths share a single `stripControlChars` exported
-  from `@caucus/schema`, so any consumer that reads the log must run untrusted fields through it (or
-  `renderMessage`) rather than printing/forwarding raw. The append-only log still *stores* the raw
-  bytes; schema-level rejection at write time is a tracked defense-in-depth follow-up (#71).
+  are stripped from untrusted poster-controlled fields before content leaves the log for another
+  principal. The covered read consumers are:
+  - the hook's `renderMessage` and the demo `watch`, which strip `body`/`owner`/claim
+    `target`/`to[]` before displaying on a TTY (CAU-69);
+  - the `caucus_read_channel` MCP tool, which strips `body`/`owner`/claim `target`/`to[]`/`artifact`
+    before serializing a page into another agent's model context (CAU-73);
+  - the `caucus_list_channels` / `caucus_describe_channel` descriptor tools, which strip
+    `purpose`/`created_by` before serializing a descriptor into another agent's model context
+    (CAU-73).
+
+  This matters specifically for the serialization consumers because `JSON.stringify` does **not**
+  escape C1 bytes (`\x80–\x9f`). All paths share a single `stripControlChars` exported from
+  `@caucus/schema` (structured-JSON reads use its whitespace-preserving sibling
+  `stripControlCharsKeepWhitespace` for multi-line `body`/`purpose`, since `\n`/`\t` are
+  JSON-escaped and terminal-inert), so any **new** consumer that reads the log must likewise run
+  untrusted fields through it (or `renderMessage`) rather than printing/forwarding raw. The
+  append-only log still *stores* the raw bytes; schema-level rejection at **write** time is a
+  tracked defense-in-depth follow-up (#71).
 
 This is the same posture as
 [VISION.md](docs/VISION.md)'s non-goal **"Not a safe place for secrets."** Caucus is a trusted-team

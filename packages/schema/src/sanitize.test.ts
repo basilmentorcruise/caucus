@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { stripControlChars } from "./sanitize.js";
+import {
+  stripControlChars,
+  stripControlCharsKeepWhitespace,
+} from "./sanitize.js";
 
 // Control bytes used across the sanitization tests. Spelled with \x escapes so
 // this source file itself stays plain printable ASCII.
@@ -48,5 +51,52 @@ describe("stripControlChars", () => {
 
   it("returns an empty string unchanged", () => {
     expect(stripControlChars("")).toBe("");
+  });
+});
+
+describe("stripControlCharsKeepWhitespace", () => {
+  it("PRESERVES \\n (0x0a) and \\t (0x09) — does NOT glue words", () => {
+    expect(stripControlCharsKeepWhitespace("step 1\nstep 2")).toBe(
+      "step 1\nstep 2",
+    );
+    expect(stripControlCharsKeepWhitespace("col1\tcol2")).toBe("col1\tcol2");
+  });
+
+  it("still removes every OTHER C0 control byte (incl. \\r 0x0d)", () => {
+    for (let c = 0x00; c <= 0x1f; c++) {
+      if (c === 0x09 || c === 0x0a) continue; // TAB/LF are kept
+      const ch = String.fromCharCode(c);
+      expect(stripControlCharsKeepWhitespace(`a${ch}b`)).toBe("ab");
+    }
+  });
+
+  it("removes DEL 0x7f", () => {
+    expect(stripControlCharsKeepWhitespace(`a${DEL}b`)).toBe("ab");
+  });
+
+  it("removes every C1 control byte 0x80–0x9f", () => {
+    for (let c = 0x80; c <= 0x9f; c++) {
+      const ch = String.fromCharCode(c);
+      expect(stripControlCharsKeepWhitespace(`a${ch}b`)).toBe("ab");
+    }
+  });
+
+  it("strips ESC/BEL/OSC but keeps surrounding newlines", () => {
+    const dirty = `a\n${ESC}[2J${BEL}\nb`;
+    const clean = stripControlCharsKeepWhitespace(dirty);
+    // Only \n and \t may remain among controls.
+    // eslint-disable-next-line no-control-regex -- intentionally matching control bytes
+    expect(clean).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/);
+    expect(clean).toBe("a\n[2J\nb");
+  });
+
+  it("leaves multibyte UTF-8 intact", () => {
+    expect(stripControlCharsKeepWhitespace("↗ é · café — naïve")).toBe(
+      "↗ é · café — naïve",
+    );
+  });
+
+  it("returns an empty string unchanged", () => {
+    expect(stripControlCharsKeepWhitespace("")).toBe("");
   });
 });

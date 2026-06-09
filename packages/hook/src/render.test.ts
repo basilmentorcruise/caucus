@@ -8,7 +8,6 @@ import {
   DELTA_HEADER,
   renderDelta,
   renderMessage,
-  stripControlChars,
 } from "./render.js";
 
 // Control bytes used across the sanitization tests (CAU-69). Spelled with \x
@@ -144,48 +143,10 @@ describe("renderMessage", () => {
   });
 });
 
-describe("stripControlChars", () => {
-  it("keeps printable ASCII 0x20–0x7e (space through ~) unchanged", () => {
-    let printable = "";
-    for (let c = 0x20; c <= 0x7e; c++) printable += String.fromCharCode(c);
-    expect(stripControlChars(printable)).toBe(printable);
-  });
-
-  it("removes every C0 control byte 0x00–0x1f", () => {
-    for (let c = 0x00; c <= 0x1f; c++) {
-      const ch = String.fromCharCode(c);
-      expect(stripControlChars(`a${ch}b`)).toBe("ab");
-    }
-  });
-
-  it("removes DEL 0x7f", () => {
-    expect(stripControlChars(`a${DEL}b`)).toBe("ab");
-  });
-
-  it("removes every C1 control byte 0x80–0x9f", () => {
-    for (let c = 0x80; c <= 0x9f; c++) {
-      const ch = String.fromCharCode(c);
-      expect(stripControlChars(`a${ch}b`)).toBe("ab");
-    }
-  });
-
-  it("leaves multibyte UTF-8 (↗, é, ·, accented) intact", () => {
-    expect(stripControlChars("↗ é · café — naïve")).toBe("↗ é · café — naïve");
-  });
-
-  it("strips ESC, BEL and a full OSC sequence from mixed content", () => {
-    const dirty = `${ESC}[2Jclear${BEL}bell${ESC}]0;pwned${BEL}osc`;
-    const clean = stripControlChars(dirty);
-    expectInert(clean);
-    // The printable remnants survive (only the control bytes are removed).
-    expect(clean).toBe("[2Jclearbell]0;pwnedosc");
-  });
-
-  it("returns an empty string unchanged", () => {
-    expect(stripControlChars("")).toBe("");
-  });
-});
-
+// The byte-level `stripControlChars` boundary suite lives in
+// `packages/schema/src/sanitize.test.ts` (the schema package owns the shared
+// sanitizer now — CAU-73). This file keeps only the `renderMessage`-level
+// sanitization tests, which verify the hook render path applies it (CAU-69).
 describe("renderMessage — control-character sanitization (CAU-69)", () => {
   it("neutralizes ESC/BEL/DEL and an OSC sequence embedded in the body", () => {
     // \x1b[2J clears the screen; \x1b]0;pwned\x07 is a title/clipboard OSC.

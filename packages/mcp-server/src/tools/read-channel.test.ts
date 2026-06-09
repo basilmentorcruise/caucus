@@ -192,6 +192,46 @@ describe("caucus_read_channel", () => {
       ).toContain("repro");
     });
 
+    it("strips control chars from the artifact URL in the serialized output", async () => {
+      const { backbone, session } = await createdSession();
+      // `artifact` is a poster-controlled field of caucus_post. read_channel
+      // returns the URL (unlike the hook, which hides it behind a ↗artifact
+      // marker), so it MUST be sanitized: JSON.stringify leaks C1 bytes raw.
+      await backbone.append("incident-1", {
+        type: "finding",
+        agent_id: "evil-agent",
+        owner: "mallory",
+        msg_id: newMsgId(),
+        body: "see artifact",
+        artifact: `http://h/${C1}X${ESC}[2J`,
+      });
+
+      const result = await readChannelTool.handle(session, {});
+      const raw = (result.content[0] as { type: "text"; text: string }).text;
+
+      // No control byte survives anywhere in the serialized page.
+      expect(raw).not.toMatch(CONTROL_CHARS);
+      expect(raw).not.toContain(C1);
+      // The URL is still returned (just sanitized) — read_channel does not hide it.
+      const env = JSON.parse(raw) as ReadEnvelope;
+      const m = env.messages[0] as AppendedMessage & { artifact?: string };
+      expect(m.artifact).toBe("http://h/X[2J");
+    });
+
+    it("preserves multi-line body structure (does NOT glue words across \\n)", async () => {
+      const { session } = await createdSession();
+      await session.post({ type: "note", body: "step 1\nstep 2\tcol" });
+
+      const result = await readChannelTool.handle(session, {});
+      const raw = (result.content[0] as { type: "text"; text: string }).text;
+      const env = JSON.parse(raw) as ReadEnvelope;
+      // \n/\t survive: words are not glued; the model keeps the line structure.
+      expect(env.messages[0]?.body).toBe("step 1\nstep 2\tcol");
+      // JSON-escaped, so they are terminal-inert on the wire.
+      expect(raw).toContain("step 1\\nstep 2\\tcol");
+      expect(raw).not.toMatch(CONTROL_CHARS);
+    });
+
     it("does not over-strip clean unicode", async () => {
       const { session } = await createdSession();
       await session.post({ type: "note", body: "↗ é café · naïve" });

@@ -19,7 +19,10 @@
 import { z } from "zod";
 import { UnknownChannelError } from "@caucus/backbone";
 import type { AppendedMessage } from "@caucus/backbone";
-import { stripControlChars } from "@caucus/schema";
+import {
+  stripControlChars,
+  stripControlCharsKeepWhitespace,
+} from "@caucus/schema";
 import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import type { CaucusSession } from "../session.js";
 import type { CaucusTool, ToolResult } from "./registry.js";
@@ -32,22 +35,31 @@ import type { CaucusTool, ToolResult } from "./registry.js";
  * `caucus_read_channel` `JSON.stringify`s messages straight into the model
  * context. `JSON.stringify` escapes C0/ANSI-ESC bytes but passes C1 bytes
  * (`\x80–\x9f`) through verbatim, so a poster could otherwise smuggle a C1
- * control sequence cross-principal. We strip the SAME fields `renderMessage`
- * sanitizes — `body`, `owner`, claim `target`, and each `to[]` entry — using
- * the shared {@link stripControlChars}. Structural/validated fields
+ * control sequence cross-principal. We strip the SAME poster-controlled fields
+ * `renderMessage` sanitizes — `body`, `owner`, claim `target`, each `to[]`
+ * entry — PLUS the `artifact` URL, which the hook suppresses entirely (ADR-C12
+ * `↗artifact` marker) but this tool intentionally returns: a structured read
+ * gives back the URL, so it must be sanitized in place rather than hidden.
+ *
+ * `body` uses {@link stripControlCharsKeepWhitespace} so a multi-line body keeps
+ * its `\n`/`\t` (JSON-escaped, terminal-inert, and useful line structure for the
+ * receiving model) instead of gluing words across lines; the single-token
+ * identity/target/addressee fields and the URL have no legitimate whitespace, so
+ * they use the plain {@link stripControlChars}. Structural/validated fields
  * (`msg_id`/`agent_id`/`ts`/`v`/`thread`/`reply_to`) and the enum-safe
- * `status`/`type` are left untouched; the artifact URL is never rendered by the
- * hook but IS returned here as-is (read_channel is a structured read, not a TTY
- * surface — ADR-C12's URL-hiding is the hook's render concern, not this tool's).
+ * `status`/`type` are left untouched.
  */
 function sanitizeMessage(m: AppendedMessage): AppendedMessage {
   const sanitized = {
     ...m,
-    body: stripControlChars(m.body),
+    body: stripControlCharsKeepWhitespace(m.body),
     owner: stripControlChars(m.owner),
-  } as AppendedMessage & { target?: string };
+  } as AppendedMessage & { target?: string; artifact?: string };
   if (typeof sanitized.target === "string") {
     sanitized.target = stripControlChars(sanitized.target);
+  }
+  if (typeof m.artifact === "string") {
+    sanitized.artifact = stripControlChars(m.artifact);
   }
   if (m.to !== undefined) {
     sanitized.to = m.to.map(stripControlChars);

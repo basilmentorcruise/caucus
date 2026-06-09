@@ -15,6 +15,17 @@ const config: ServerConfig = {
   channel: "incident-1",
 };
 
+// Control bytes used by the CAU-73 descriptor-sanitization tests. Spelled with
+// \x escapes so this source file itself stays plain printable ASCII.
+const ESC = "\x1b"; // ANSI escape introducer
+const BEL = "\x07"; // bell / OSC string terminator
+const DEL = "\x7f"; // delete
+const C1 = "\x9b"; // a C1 control byte (CSI); JSON.stringify does NOT escape it
+
+/** Matches any C0 (\x00–\x1f), DEL (\x7f), or C1 (\x80–\x9f) control byte. */
+// eslint-disable-next-line no-control-regex -- intentionally matching control bytes
+const CONTROL_CHARS = /[\x00-\x1f\x7f-\x9f]/;
+
 async function freshBackbone(): Promise<InMemoryBackbone> {
   const backbone = new InMemoryBackbone();
   await backbone.createChannel({
@@ -111,6 +122,89 @@ describe("caucus_describe_channel", () => {
     await expect(
       describeChannelTool.handle(session, { channel: "nope" }),
     ).rejects.toThrow();
+  });
+});
+
+// CAU-73: list/describe JSON.stringify channel descriptors straight into the
+// model context. `purpose` is caller-supplied free text (the same C1-injectable
+// class as a message body) and `created_by` is a resolved owner label; both are
+// poster-controlled and must be sanitized BEFORE serialization. The raw
+// serialized text is what reaches the other agent, so we assert against it.
+describe("CAU-73: descriptor control-character sanitization", () => {
+  const dirty = `${ESC}[2J before ${BEL} ${DEL} ${C1} ${ESC}]0;pwned${BEL} after`;
+
+  it("strips C0/DEL/C1 from purpose + created_by via caucus_describe_channel", async () => {
+    const backbone = new InMemoryBackbone();
+    await backbone.createChannel({
+      channel: "incident-1",
+      purpose: `triage ${dirty}`,
+      created_by: `mallory${dirty}`,
+    });
+    const session = createSession(config, backbone);
+
+    const result = await describeChannelTool.handle(session, {});
+    const raw = (result.content[0] as { type: "text"; text: string }).text;
+
+    // The serialized text the other agent receives contains NO control byte.
+    expect(raw).not.toMatch(CONTROL_CHARS);
+    expect(raw).not.toContain(C1);
+
+    const d = JSON.parse(raw) as ChannelDescriptor;
+    expect(d.purpose).toContain("triage");
+    expect(d.purpose).toContain("after");
+    expect(d.created_by).toContain("mallory");
+  });
+
+  it("strips C0/DEL/C1 from purpose + created_by via caucus_list_channels", async () => {
+    const backbone = new InMemoryBackbone();
+    await backbone.createChannel({
+      channel: "incident-1",
+      purpose: `dirty ${dirty}`,
+      created_by: `mallory${dirty}`,
+    });
+    const session = createSession(config, backbone);
+
+    const result = await listChannelsTool.handle(session, {});
+    const raw = (result.content[0] as { type: "text"; text: string }).text;
+
+    expect(raw).not.toMatch(CONTROL_CHARS);
+    expect(raw).not.toContain(C1);
+
+    const { channels } = JSON.parse(raw) as { channels: ChannelDescriptor[] };
+    expect(channels[0]?.purpose).toContain("dirty");
+    expect(channels[0]?.created_by).toContain("mallory");
+  });
+
+  it("preserves multi-line purpose structure (does NOT glue words across \\n)", async () => {
+    const backbone = new InMemoryBackbone();
+    await backbone.createChannel({
+      channel: "incident-1",
+      purpose: "line 1\nline 2",
+      created_by: "alice",
+    });
+    const session = createSession(config, backbone);
+
+    const result = await describeChannelTool.handle(session, {});
+    const raw = (result.content[0] as { type: "text"; text: string }).text;
+    const d = JSON.parse(raw) as ChannelDescriptor;
+    expect(d.purpose).toBe("line 1\nline 2");
+    expect(raw).not.toMatch(CONTROL_CHARS); // \n is JSON-escaped on the wire
+  });
+
+  it("does not over-strip clean unicode in purpose", async () => {
+    const backbone = new InMemoryBackbone();
+    await backbone.createChannel({
+      channel: "incident-1",
+      purpose: "↗ é café · naïve",
+      created_by: "alice",
+    });
+    const session = createSession(config, backbone);
+
+    const result = await describeChannelTool.handle(session, {});
+    const d = JSON.parse(
+      (result.content[0] as { type: "text"; text: string }).text,
+    ) as ChannelDescriptor;
+    expect(d.purpose).toBe("↗ é café · naïve");
   });
 });
 
