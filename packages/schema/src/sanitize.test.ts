@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  containsControlChars,
+  containsControlCharsExceptWhitespace,
   stripControlChars,
   stripControlCharsKeepWhitespace,
 } from "./sanitize.js";
@@ -98,5 +100,90 @@ describe("stripControlCharsKeepWhitespace", () => {
 
   it("returns an empty string unchanged", () => {
     expect(stripControlCharsKeepWhitespace("")).toBe("");
+  });
+});
+
+// CAU-71: the write-layer predicates, derived from the strip functions.
+describe("containsControlChars", () => {
+  it.each(["\x00", "\x08", "\x1f", "\x7f", "\x80", "\x9f", "\x1b"])(
+    "is true for control byte %j",
+    (ch) => {
+      expect(containsControlChars(`a${ch}b`)).toBe(true);
+    },
+  );
+
+  it("is true for \\t and \\n (NO whitespace exemption)", () => {
+    expect(containsControlChars("a\tb")).toBe(true);
+    expect(containsControlChars("a\nb")).toBe(true);
+  });
+
+  it("is false for printable ASCII boundaries 0x20 and 0x7e", () => {
+    expect(containsControlChars("\x20")).toBe(false);
+    expect(containsControlChars("\x7e")).toBe(false);
+  });
+
+  it("is false for 0xa0 (NBSP — just past the C1 range)", () => {
+    expect(containsControlChars("\xa0")).toBe(false);
+  });
+
+  it("is false for multibyte UTF-8 (é, ↗)", () => {
+    expect(containsControlChars("é")).toBe(false);
+    expect(containsControlChars("↗")).toBe(false);
+    expect(containsControlChars("↗ é café — naïve")).toBe(false);
+  });
+
+  it("is false for an empty string", () => {
+    expect(containsControlChars("")).toBe(false);
+  });
+});
+
+describe("containsControlCharsExceptWhitespace", () => {
+  it("is false for \\t and \\n (the body-safe whitespace)", () => {
+    expect(containsControlCharsExceptWhitespace("step 1\nstep 2")).toBe(false);
+    expect(containsControlCharsExceptWhitespace("col1\tcol2")).toBe(false);
+  });
+
+  it.each(["\r", "\x0b", "\x1b", "\x7f", "\x9b"])(
+    "is true for control byte %j",
+    (ch) => {
+      expect(containsControlCharsExceptWhitespace(`a${ch}b`)).toBe(true);
+    },
+  );
+
+  it("is true for the other sampled controls (\\x00, \\x08, \\x1f, \\x80, \\x9f)", () => {
+    for (const ch of ["\x00", "\x08", "\x1f", "\x80", "\x9f"]) {
+      expect(containsControlCharsExceptWhitespace(`a${ch}b`)).toBe(true);
+    }
+  });
+
+  it("is false for printables, NBSP, multibyte, and the empty string", () => {
+    expect(containsControlCharsExceptWhitespace("\x20")).toBe(false);
+    expect(containsControlCharsExceptWhitespace("\x7e")).toBe(false);
+    expect(containsControlCharsExceptWhitespace("\xa0")).toBe(false);
+    expect(containsControlCharsExceptWhitespace("é ↗")).toBe(false);
+    expect(containsControlCharsExceptWhitespace("")).toBe(false);
+  });
+});
+
+describe("predicate/strip drift lock (CAU-71)", () => {
+  it("0x00–0xFF sweep: each predicate agrees byte-for-byte with its strip function", () => {
+    for (let c = 0x00; c <= 0xff; c++) {
+      const s = `a${String.fromCharCode(c)}b`;
+      expect(containsControlChars(s)).toBe(stripControlChars(s) !== s);
+      expect(containsControlCharsExceptWhitespace(s)).toBe(
+        stripControlCharsKeepWhitespace(s) !== s,
+      );
+    }
+  });
+
+  it("the two predicates differ EXACTLY on \\x09 (TAB) and \\x0a (LF)", () => {
+    const differing: number[] = [];
+    for (let c = 0x00; c <= 0xff; c++) {
+      const s = String.fromCharCode(c);
+      if (containsControlChars(s) !== containsControlCharsExceptWhitespace(s)) {
+        differing.push(c);
+      }
+    }
+    expect(differing).toEqual([0x09, 0x0a]);
   });
 });

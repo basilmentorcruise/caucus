@@ -17,6 +17,8 @@
  * never a read-then-write spanning an `await`. See `docs/BACKBONE_CONTRACT.md`.
  */
 import {
+  containsControlChars,
+  containsControlCharsExceptWhitespace,
   MalformedMessageError,
   type CaucusMessage,
   type MessageInput,
@@ -240,15 +242,42 @@ export class InMemoryBackbone implements Backbone {
     if (this.#channels.has(opts.channel)) {
       throw new ChannelExistsError(opts.channel);
     }
-    // `purpose` is a short free-text description stored on the descriptor; cap
-    // it like the other identifier fields so a 2MB purpose can't be stored.
-    if (
-      typeof opts.purpose === "string" &&
-      opts.purpose.length > MAX_FIELD_CHARS
-    ) {
-      throw new InvalidMessageError([
-        `purpose exceeds ${MAX_FIELD_CHARS} characters`,
-      ]);
+    // Descriptor fields don't go through `validate`, so the contract's
+    // `string | undefined` typing and the write-time control-character
+    // rejection (CAU-71) are both enforced here. A present-but-non-string
+    // value (reachable via an untyped HTTP body) is rejected OUTRIGHT — if it
+    // were stored, the read-side sanitizers would throw on it and poison
+    // every list/describe until restart. `undefined` (absent) stays allowed.
+    // Error strings never echo the offending payload (ADR-C12).
+    if (opts.purpose !== undefined) {
+      if (typeof opts.purpose !== "string") {
+        throw new InvalidMessageError(["purpose must be a string"]);
+      }
+      // `purpose` is a short free-text description stored on the descriptor;
+      // cap it like the other identifier fields so a 2MB purpose can't be
+      // stored.
+      if (opts.purpose.length > MAX_FIELD_CHARS) {
+        throw new InvalidMessageError([
+          `purpose exceeds ${MAX_FIELD_CHARS} characters`,
+        ]);
+      }
+      // `purpose` is multi-line free text (`\t`/`\n` allowed, like a body).
+      if (containsControlCharsExceptWhitespace(opts.purpose)) {
+        throw new InvalidMessageError([
+          "purpose must not contain control characters (tab and newline are allowed)",
+        ]);
+      }
+    }
+    if (opts.created_by !== undefined) {
+      if (typeof opts.created_by !== "string") {
+        throw new InvalidMessageError(["created_by must be a string"]);
+      }
+      // `created_by` is a single-token owner label (no whitespace controls).
+      if (containsControlChars(opts.created_by)) {
+        throw new InvalidMessageError([
+          "created_by must not contain control characters",
+        ]);
+      }
     }
     const state: ChannelState = {
       descriptor: {

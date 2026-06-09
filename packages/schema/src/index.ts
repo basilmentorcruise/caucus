@@ -29,6 +29,8 @@ export {
 export {
   stripControlChars,
   stripControlCharsKeepWhitespace,
+  containsControlChars,
+  containsControlCharsExceptWhitespace,
 } from "./sanitize.js";
 export { isUlid, newMsgId } from "./ulid.js";
 export { normalizeTarget } from "./target.js";

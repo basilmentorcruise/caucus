@@ -296,6 +296,138 @@ describe("validate — claim rules", () => {
   });
 });
 
+// CAU-71: write-time rejection of control characters. Bytes are spelled with
+// \x escapes so this source file stays plain printable ASCII.
+describe("validate — control characters (CAU-71)", () => {
+  const ESC = "\x1b"; // ANSI escape introducer
+  const BEL = "\x07"; // bell / OSC string terminator
+  const DEL = "\x7f"; // delete
+  const CSI = "\x9b"; // a C1 control byte
+
+  const BODY_ISSUE =
+    "body must not contain control characters (tab and newline are allowed)";
+
+  it.each([
+    ["ANSI clear", `a${ESC}[2Jb`],
+    ["BEL", `a${BEL}b`],
+    ["DEL", `a${DEL}b`],
+    ["C1 CSI", `a${CSI}b`],
+    ["carriage return", "a\rb"],
+  ])("rejects a body carrying %s", (_name, body) => {
+    expectIssue({ ...validNote(), body }, BODY_ISSUE);
+  });
+
+  it("ACCEPTS a multi-line body (\\n) and tabs (\\t)", () => {
+    expect(() =>
+      validate({ ...validNote(), body: "step 1\nstep 2" }),
+    ).not.toThrow();
+    expect(() =>
+      validate({ ...validNote(), body: "col1\tcol2" }),
+    ).not.toThrow();
+  });
+
+  it.each([
+    ["ESC", ESC],
+    ["newline", "\n"],
+    ["C1 CSI", CSI],
+  ])("rejects owner and agent_id carrying %s (no whitespace exemption)", (_name, ch) => {
+    expectIssue(
+      { ...validNote(), owner: `alice${ch}` },
+      "owner must not contain control characters",
+    );
+    expectIssue(
+      { ...validNote(), agent_id: `sess${ch}` },
+      "agent_id must not contain control characters",
+    );
+  });
+
+  it("rejects a to array with one dirty entry — a SINGLE aggregate issue", () => {
+    try {
+      validate({ ...validNote(), to: ["ok", `bad${ESC}`] });
+      expect.unreachable("validate should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(MalformedMessageError);
+      const issues = (err as MalformedMessageError).issues;
+      expect(issues).toEqual(["to entries must not contain control characters"]);
+    }
+  });
+
+  it("rejects a claim target carrying ESC; a clean claim is accepted", () => {
+    expectIssue(
+      { ...validClaim(), target: `repro${ESC}[2J` },
+      "target must not contain control characters",
+    );
+    expect(() => validate(validClaim())).not.toThrow();
+  });
+
+  it("rejects an artifact carrying BEL", () => {
+    expectIssue(
+      { ...validNote(), artifact: `https://x/y${BEL}` },
+      "artifact must not contain control characters",
+    );
+  });
+
+  it("collects every dirty field's issue in ONE throw", () => {
+    try {
+      validate({
+        ...validClaim(),
+        agent_id: `sess${CSI}`,
+        owner: `alice${ESC}`,
+        body: `b${BEL}`,
+        target: `t${DEL}`,
+        to: [`x${ESC}`],
+      });
+      expect.unreachable("validate should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(MalformedMessageError);
+      const issues = (err as MalformedMessageError).issues;
+      expect(issues).toContain("agent_id must not contain control characters");
+      expect(issues).toContain("owner must not contain control characters");
+      expect(issues).toContain(BODY_ISSUE);
+      expect(issues).toContain("target must not contain control characters");
+      expect(issues).toContain("to entries must not contain control characters");
+    }
+  });
+
+  it("never echoes the offending bytes in the error (ADR-C12)", () => {
+    try {
+      validate({ ...validNote(), body: `secret${ESC}[2J${CSI}` });
+      expect.unreachable("validate should have thrown");
+    } catch (err) {
+      const message = (err as Error).message;
+      expect(message).not.toContain(ESC);
+      expect(message).not.toContain(CSI);
+      expect(message).not.toContain("secret");
+    }
+  });
+
+  it("accepts a clean kitchen-sink message (every optional field populated)", () => {
+    expect(() =>
+      validate({
+        ...validNote(),
+        body: "line 1\nline 2\tend — é ↗",
+        thread: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        reply_to: "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+        to: ["sess-B", "sess-C"],
+        status: "resolved",
+        artifact: "https://example.com/log",
+        ts: "2026-06-09T00:00:00Z",
+      }),
+    ).not.toThrow();
+  });
+
+  it("a non-string body reports only the base issue (no double-report)", () => {
+    try {
+      validate({ ...validNote(), body: 42 });
+      expect.unreachable("validate should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(MalformedMessageError);
+      const issues = (err as MalformedMessageError).issues;
+      expect(issues).toEqual(["body must be a non-empty string"]);
+    }
+  });
+});
+
 describe("schema errors share the SchemaError base class", () => {
   it("MalformedMessageError is a SchemaError (consumers branch on the base)", () => {
     try {

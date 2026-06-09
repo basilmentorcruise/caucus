@@ -348,6 +348,26 @@ describe("dispatch — backbone errors map cleanly", () => {
     expect(res.json).toMatchObject({ error: { code: "channel_exists" } });
   });
 
+  it("createChannel with a NON-STRING purpose → 400 invalid_message; list stays healthy", async () => {
+    // The transport's body guard only checks the envelope is an object, so an
+    // array `purpose` reaches the backbone. It must be rejected at the write —
+    // a stored non-string would make GET /channels throw in the read-side
+    // sanitizer for every principal until restart.
+    const bb = await seeded();
+    const res = await dispatch(bb, "POST", "/channels", {
+      channel: "c2",
+      purpose: ["\x1b[2J boom"],
+      created_by: "alice",
+    }, AUTH);
+    expect(res.status).toBe(400);
+    expect(res.json).toMatchObject({ error: { code: "invalid_message" } });
+
+    // No poisoning: the listing route still serves, and c2 was never created.
+    const list = await dispatch(bb, "GET", "/channels", undefined);
+    expect(list.status).toBe(200);
+    expect(list.json).toMatchObject({ channels: [{ channel: "c1" }] });
+  });
+
   it("describe unknown channel → 404 unknown_channel", async () => {
     const bb = new InMemoryBackbone();
     const res = await dispatch(bb, "GET", "/channels/ghost", undefined);

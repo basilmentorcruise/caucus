@@ -463,6 +463,102 @@ describe("validation & errors", () => {
   });
 });
 
+describe("control characters rejected at write (CAU-71)", () => {
+  const ESC = "\x1b"; // ANSI escape introducer
+
+  it("rejects an append whose body carries ESC; head unchanged", async () => {
+    const headBefore = (await b.describeChannel(CH)).head;
+    await expect(
+      b.append(CH, finding("a1", `before${ESC}[2Jafter`)),
+    ).rejects.toBeInstanceOf(InvalidMessageError);
+    expect((await b.describeChannel(CH)).head).toBe(headBefore);
+  });
+
+  it("rejects a claim with a dirty target; ledger stays empty (clean re-claim wins)", async () => {
+    await expect(
+      b.claim(CH, claim("a1", `db-pool${ESC}`)),
+    ).rejects.toBeInstanceOf(InvalidMessageError);
+    expect((await b.describeChannel(CH)).head).toBe(0);
+    // The dirty claim never reached the ledger: a clean claim still wins.
+    const clean = await b.claim(CH, claim("a2", "db-pool"));
+    expect(clean.outcome).toBe("granted");
+  });
+
+  it("rejects createChannel with a dirty purpose", async () => {
+    await expect(
+      b.createChannel({
+        channel: "dirty-purpose",
+        purpose: `p${ESC}[2J`,
+        created_by: "alice",
+      }),
+    ).rejects.toBeInstanceOf(InvalidMessageError);
+    await expect(b.describeChannel("dirty-purpose")).rejects.toBeInstanceOf(
+      UnknownChannelError,
+    );
+  });
+
+  it("accepts a multi-line purpose (\\t/\\n are body-safe whitespace)", async () => {
+    const desc = await b.createChannel({
+      channel: "multi-line",
+      purpose: "line 1\nline 2\tend",
+      created_by: "alice",
+    });
+    expect(desc.purpose).toBe("line 1\nline 2\tend");
+  });
+
+  it("rejects createChannel with a dirty created_by (no whitespace exemption)", async () => {
+    await expect(
+      b.createChannel({
+        channel: "dirty-creator",
+        purpose: "p",
+        created_by: "mal\nlory",
+      }),
+    ).rejects.toBeInstanceOf(InvalidMessageError);
+  });
+
+  it("rejects createChannel with a NON-STRING purpose; channel not created", async () => {
+    // The contract types `purpose` as a string, but an untyped HTTP body can
+    // carry anything — a stored non-string would make every later
+    // list/describe throw in the read-side sanitizer. Enforce at the boundary.
+    for (const purpose of [[`${ESC}[2J`], 42] as const) {
+      await expect(
+        b.createChannel({
+          channel: "nonstring-purpose",
+          purpose: purpose as unknown as string,
+          created_by: "alice",
+        }),
+      ).rejects.toBeInstanceOf(InvalidMessageError);
+      await expect(
+        b.describeChannel("nonstring-purpose"),
+      ).rejects.toBeInstanceOf(UnknownChannelError);
+    }
+  });
+
+  it("still allows ABSENT purpose/created_by (undefined skips the guards)", async () => {
+    // The non-string rejection must not tighten the absent case: an untyped
+    // HTTP body may simply omit these fields, exactly as before.
+    const desc = await b.createChannel({
+      channel: "no-optional-fields",
+    } as unknown as Parameters<InMemoryBackbone["createChannel"]>[0]);
+    expect(desc.channel).toBe("no-optional-fields");
+  });
+
+  it("rejects createChannel with a NON-STRING created_by; channel not created", async () => {
+    for (const created_by of [["alice"], 42] as const) {
+      await expect(
+        b.createChannel({
+          channel: "nonstring-creator",
+          purpose: "p",
+          created_by: created_by as unknown as string,
+        }),
+      ).rejects.toBeInstanceOf(InvalidMessageError);
+      await expect(
+        b.describeChannel("nonstring-creator"),
+      ).rejects.toBeInstanceOf(UnknownChannelError);
+    }
+  });
+});
+
 describe("seatbelts (ADR-C8) — rate limit + loop/dup at the append path", () => {
   /** Read the channel head (number of appended messages). */
   async function head(bb: InMemoryBackbone): Promise<number> {

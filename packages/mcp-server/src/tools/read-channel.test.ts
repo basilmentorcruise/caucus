@@ -49,6 +49,43 @@ async function createdSession(): Promise<{
   return { backbone, session: createSession(config, backbone) };
 }
 
+/**
+ * A hand-built (already-appended) message, defaulting to a malicious poster's
+ * identity. Used to seed a dirty log WITHOUT the write path: since CAU-71 the
+ * backbone REJECTS control-character-bearing writes, so the read-side
+ * sanitization layer is exercised against a stub log instead — proving that
+ * even if a dirty byte is in the log (a pre-CAU-71 log, or a future write path
+ * that skips validation), reads stay clean.
+ */
+function appended(
+  overrides: Partial<AppendedMessage> & Record<string, unknown> = {},
+): AppendedMessage {
+  return {
+    v: 0,
+    type: "finding",
+    agent_id: "evil-agent",
+    owner: "mallory",
+    msg_id: newMsgId(),
+    body: "hi",
+    ts: "2026-06-09T00:00:00.000Z#000000000001",
+    ...overrides,
+  } as AppendedMessage;
+}
+
+/** A session over a stub backbone whose log already contains `messages`. */
+function dirtyLogSession(
+  messages: readonly AppendedMessage[],
+): ReturnType<typeof createSession> {
+  const backbone = {
+    readSince: (_channel: string, cursor: number) =>
+      Promise.resolve({
+        messages: messages.slice(cursor),
+        cursor: messages.length,
+      }),
+  } as unknown as Backbone;
+  return createSession(config, backbone);
+}
+
 describe("caucus_read_channel", () => {
   it("a cursor past head propagates as an error (not a silent empty page)", async () => {
     const { session } = await createdSession();
@@ -132,27 +169,26 @@ describe("caucus_read_channel", () => {
   });
 
   // CAU-73: read_channel JSON.stringifies messages straight into another
-  // agent's model context. A malicious poster controls every field of their own
-  // message (they append with their own identity), so the untrusted string
-  // fields must be sanitized BEFORE serialization. The raw serialized text is
-  // what reaches the other agent, so we assert against it directly.
+  // agent's model context, so the untrusted string fields must be sanitized
+  // BEFORE serialization. Since CAU-71 the write path REJECTS dirty bytes, so
+  // these tests seed the log via a stub backbone (see `dirtyLogSession`): the
+  // read layer must hold even if a dirty byte is already in the log. The raw
+  // serialized text is what reaches the other agent, so we assert against it.
   describe("CAU-73: control-character sanitization", () => {
     // A dirty payload combining ANSI-ESC (\x1b[2J screen clear), BEL (\x07),
     // DEL (\x7f), a C1 byte (\x9b CSI), and an OSC sequence.
     const dirty = `${ESC}[2J before ${BEL} ${DEL} ${C1} ${ESC}]0;pwned${BEL} after`;
 
     it("strips C0/DEL/C1 from body, owner, and to[] in the serialized output", async () => {
-      const { backbone, session } = await createdSession();
-      // A malicious poster appends directly with its own (poster-controlled)
-      // identity and addressing — bypassing this session's server-anchoring.
-      await backbone.append("incident-1", {
-        type: "finding",
-        agent_id: "evil-agent",
-        owner: `mallory${dirty}`,
-        msg_id: newMsgId(),
-        body: `finding ${dirty}`,
-        to: [`bob-agent${dirty}`],
-      });
+      // A dirty message already in the log, with poster-controlled identity
+      // and addressing.
+      const session = dirtyLogSession([
+        appended({
+          owner: `mallory${dirty}`,
+          body: `finding ${dirty}`,
+          to: [`bob-agent${dirty}`],
+        }),
+      ]);
 
       const result = await readChannelTool.handle(session, {});
       const raw = (result.content[0] as { type: "text"; text: string }).text;
@@ -171,17 +207,12 @@ describe("caucus_read_channel", () => {
     });
 
     it("strips C1/ESC from agent_id in the serialized output", async () => {
-      const { backbone, session } = await createdSession();
       // agent_id is a non-empty free-form identity string a malicious poster
-      // controls (they append with their own identity). It is serialized
-      // straight into another agent's context, so it must come back inert.
-      await backbone.append("incident-1", {
-        type: "finding",
-        agent_id: `evil${C1}${ESC}[2J`,
-        owner: "mallory",
-        msg_id: newMsgId(),
-        body: "hi",
-      });
+      // controls. It is serialized straight into another agent's context, so
+      // it must come back inert.
+      const session = dirtyLogSession([
+        appended({ agent_id: `evil${C1}${ESC}[2J` }),
+      ]);
 
       const result = await readChannelTool.handle(session, {});
       const raw = (result.content[0] as { type: "text"; text: string }).text;
@@ -194,15 +225,9 @@ describe("caucus_read_channel", () => {
     });
 
     it("strips control chars from a claim target (the ledger key) in output", async () => {
-      const { backbone, session } = await createdSession();
-      await backbone.claim("incident-1", {
-        type: "claim",
-        agent_id: "evil-agent",
-        owner: "mallory",
-        msg_id: newMsgId(),
-        body: "on it",
-        target: `repro${dirty}`,
-      });
+      const session = dirtyLogSession([
+        appended({ type: "claim", body: "on it", target: `repro${dirty}` }),
+      ]);
 
       const result = await readChannelTool.handle(session, {});
       const raw = (result.content[0] as { type: "text"; text: string }).text;
@@ -216,18 +241,15 @@ describe("caucus_read_channel", () => {
     });
 
     it("strips control chars from the artifact URL in the serialized output", async () => {
-      const { backbone, session } = await createdSession();
       // `artifact` is a poster-controlled field of caucus_post. read_channel
       // returns the URL (unlike the hook, which hides it behind a ↗artifact
       // marker), so it MUST be sanitized: JSON.stringify leaks C1 bytes raw.
-      await backbone.append("incident-1", {
-        type: "finding",
-        agent_id: "evil-agent",
-        owner: "mallory",
-        msg_id: newMsgId(),
-        body: "see artifact",
-        artifact: `http://h/${C1}X${ESC}[2J`,
-      });
+      const session = dirtyLogSession([
+        appended({
+          body: "see artifact",
+          artifact: `http://h/${C1}X${ESC}[2J`,
+        }),
+      ]);
 
       const result = await readChannelTool.handle(session, {});
       const raw = (result.content[0] as { type: "text"; text: string }).text;
@@ -266,15 +288,15 @@ describe("caucus_read_channel", () => {
     });
 
     it("keeps the {cursor,count} shape unchanged after sanitization", async () => {
-      const { backbone, session } = await createdSession();
-      await backbone.append("incident-1", {
-        type: "finding",
-        agent_id: "evil-agent",
-        owner: "mallory",
-        msg_id: newMsgId(),
-        body: `dirty ${dirty}`,
-      });
-      await session.post({ type: "note", body: "clean" });
+      const session = dirtyLogSession([
+        appended({ body: `dirty ${dirty}` }),
+        appended({
+          type: "note",
+          agent_id: "agent-1",
+          owner: "alice",
+          body: "clean",
+        }),
+      ]);
 
       const env = envelope(await readChannelTool.handle(session, {}));
       expect(env.cursor).toBe(2);
