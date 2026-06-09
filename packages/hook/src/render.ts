@@ -29,12 +29,45 @@ export const DELTA_HEADER = "=== CAUCUS CHANNEL (new since last turn) ===";
 export const DELTA_FOOTER = "=== END CAUCUS ===";
 
 /**
+ * Remove terminal control characters from an untrusted, poster-controlled
+ * string before it is rendered onto a single line (CAU-69).
+ *
+ * `renderMessage` interpolates poster-controlled fields (`owner`, claim
+ * `target`, `to[]`, `body`) into a string that is (a) injected into the agent's
+ * context each turn (CAU-14 hook) and (b) printed to a human TTY by the demo
+ * watcher. ANSI/OSC escapes (ESC `\x1b`, BEL `\x07`, DEL `\x7f`, …) embedded by
+ * a token-holding poster would otherwise execute on those surfaces — cursor
+ * manipulation, screen clears, terminal-title/clipboard OSC, and so on.
+ *
+ * We **strip** rather than replace with a placeholder: every rendered message
+ * is already a single line, so there is no legitimate control character to
+ * preserve, and removal keeps the output clean (a placeholder would only add
+ * noise to the injected context and the TTY). The ranges neutralized are the C0
+ * controls `\x00–\x1f` (this includes `\n`/`\t`, whose removal also helps
+ * {@link renderBody} keep one message on one line), DEL `\x7f`, and the C1
+ * controls `\x80–\x9f`. Printable ASCII `\x20–\x7e` and all multibyte UTF-8
+ * (e.g. `↗`, `é`, `·`) pass through untouched. This is a deliberate byte
+ * neutralization, NOT an ANSI-aware parser.
+ */
+export function stripControlChars(s: string): string {
+  // C0 (\x00–\x1f) + DEL (\x7f) + C1 (\x80–\x9f). Written with \x escapes so the
+  // source stays plain ASCII and the intent is auditable at a glance.
+  // eslint-disable-next-line no-control-regex -- intentionally matching control bytes
+  return s.replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+}
+
+/**
  * Truncate `body` to {@link BODY_TRUNCATE_CHARS}, appending `…` when it was
- * actually shortened. Newlines are collapsed to spaces so one message stays one
- * line in the rendered block.
+ * actually shortened. Whitespace (incl. `\n`/`\t`) is collapsed to single
+ * spaces FIRST so word boundaries survive, THEN control characters are stripped
+ * (CAU-69): `\n`/`\t` are both whitespace and C0 controls, so collapsing before
+ * stripping turns them into the spaces a reader expects rather than deleting the
+ * boundary; the non-whitespace control bytes (ESC/BEL/DEL/C1) are not affected
+ * by the collapse and are removed by the strip. A final trim drops any edge
+ * space left once a leading/trailing control byte is removed.
  */
 function renderBody(body: string): string {
-  const oneLine = body.replace(/\s+/g, " ").trim();
+  const oneLine = stripControlChars(body.replace(/\s+/g, " ")).trim();
   if (oneLine.length <= BODY_TRUNCATE_CHARS) return oneLine;
   return `${oneLine.slice(0, BODY_TRUNCATE_CHARS)}…`;
 }
@@ -47,20 +80,26 @@ function renderBody(body: string): string {
  *
  * For a `claim`, the claimed target is quoted up front (it's the load-bearing
  * fact of a claim — "who took what"), followed by any body the author added.
+ *
+ * Every untrusted, poster-controlled field interpolated here (`owner`, claim
+ * `target`, `to[]`, `body`) is passed through {@link stripControlChars} so no
+ * terminal escape survives onto the hook-injection path or the TTY (CAU-69).
+ * `status` is enum-validated upstream and `artifact` renders only a marker
+ * (never its URL — ADR-C12), so neither needs sanitizing.
  */
 export function renderMessage(m: AppendedMessage): string {
   const type = m.type.padEnd(TYPE_WIDTH);
-  const who = `A·${m.owner}`;
+  const who = `A·${stripControlChars(m.owner)}`;
 
   const parts: string[] = [];
   if (m.type === "claim") {
-    parts.push(`"${m.target}"`);
+    parts.push(`"${stripControlChars(m.target)}"`);
   }
   const body = renderBody(m.body);
   if (body !== "") parts.push(body);
   if (m.status !== undefined) parts.push(`[${m.status}]`);
   if (m.to !== undefined && m.to.length > 0) {
-    parts.push(m.to.map((agent) => `@${agent}`).join(" "));
+    parts.push(m.to.map((agent) => `@${stripControlChars(agent)}`).join(" "));
   }
   if (m.artifact !== undefined && m.artifact !== "") {
     parts.push("↗artifact");

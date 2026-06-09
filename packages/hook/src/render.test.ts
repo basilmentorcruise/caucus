@@ -8,7 +8,26 @@ import {
   DELTA_HEADER,
   renderDelta,
   renderMessage,
+  stripControlChars,
 } from "./render.js";
+
+// Control bytes used across the sanitization tests (CAU-69). Spelled with \x
+// escapes so this source file itself stays plain printable ASCII.
+const ESC = "\x1b"; // ANSI escape introducer
+const BEL = "\x07"; // bell / OSC string terminator
+const DEL = "\x7f"; // delete
+
+/** Matches any C0 (\x00–\x1f), DEL (\x7f), or C1 (\x80–\x9f) control byte. */
+// eslint-disable-next-line no-control-regex -- intentionally matching control bytes
+const CONTROL_CHARS = /[\x00-\x1f\x7f-\x9f]/;
+
+/** Assert no terminal control byte survives in a rendered string. */
+function expectInert(s: string): void {
+  expect(s).not.toContain(ESC);
+  expect(s).not.toContain(BEL);
+  expect(s).not.toContain(DEL);
+  expect(s).not.toMatch(CONTROL_CHARS);
+}
 
 /** Build an appended message with sensible defaults; override per-test. */
 function msg(over: Partial<AppendedMessage> & { type?: AppendedMessage["type"] } = {}): AppendedMessage {
@@ -122,6 +141,87 @@ describe("renderMessage", () => {
     expect(line).toContain("on it");
     expect(line).toContain("[needs-response]");
     expect(line).toContain("@bob-agent");
+  });
+});
+
+describe("stripControlChars", () => {
+  it("keeps printable ASCII 0x20–0x7e (space through ~) unchanged", () => {
+    let printable = "";
+    for (let c = 0x20; c <= 0x7e; c++) printable += String.fromCharCode(c);
+    expect(stripControlChars(printable)).toBe(printable);
+  });
+
+  it("removes every C0 control byte 0x00–0x1f", () => {
+    for (let c = 0x00; c <= 0x1f; c++) {
+      const ch = String.fromCharCode(c);
+      expect(stripControlChars(`a${ch}b`)).toBe("ab");
+    }
+  });
+
+  it("removes DEL 0x7f", () => {
+    expect(stripControlChars(`a${DEL}b`)).toBe("ab");
+  });
+
+  it("removes every C1 control byte 0x80–0x9f", () => {
+    for (let c = 0x80; c <= 0x9f; c++) {
+      const ch = String.fromCharCode(c);
+      expect(stripControlChars(`a${ch}b`)).toBe("ab");
+    }
+  });
+
+  it("leaves multibyte UTF-8 (↗, é, ·, accented) intact", () => {
+    expect(stripControlChars("↗ é · café — naïve")).toBe("↗ é · café — naïve");
+  });
+
+  it("strips ESC, BEL and a full OSC sequence from mixed content", () => {
+    const dirty = `${ESC}[2Jclear${BEL}bell${ESC}]0;pwned${BEL}osc`;
+    const clean = stripControlChars(dirty);
+    expectInert(clean);
+    // The printable remnants survive (only the control bytes are removed).
+    expect(clean).toBe("[2Jclearbell]0;pwnedosc");
+  });
+
+  it("returns an empty string unchanged", () => {
+    expect(stripControlChars("")).toBe("");
+  });
+});
+
+describe("renderMessage — control-character sanitization (CAU-69)", () => {
+  it("neutralizes ESC/BEL/DEL and an OSC sequence embedded in the body", () => {
+    // \x1b[2J clears the screen; \x1b]0;pwned\x07 is a title/clipboard OSC.
+    const body = `before ${ESC}[2J ${BEL} ${DEL} ${ESC}]0;pwned${BEL} after`;
+    const line = renderMessage(msg({ body }));
+    expectInert(line);
+    // Legitimate words are preserved; only the control bytes are gone.
+    expect(line).toContain("before");
+    expect(line).toContain("after");
+  });
+
+  it("sanitizes a malicious owner field", () => {
+    const line = renderMessage(msg({ owner: `alice${ESC}[31m`, body: "hi" }));
+    expectInert(line);
+    expect(line).toContain("A·alice");
+    expect(line).toContain("[31m"); // the printable ESC remnant, ESC byte gone
+  });
+
+  it("sanitizes a malicious claim target", () => {
+    const line = renderMessage(
+      msg({ type: "claim", target: `repro${BEL}${ESC}[2J`, body: "on it" } as Partial<AppendedMessage>),
+    );
+    expectInert(line);
+    expect(line).toContain('"repro');
+  });
+
+  it("sanitizes a malicious to[] entry", () => {
+    const line = renderMessage(msg({ body: "look", to: [`bob${ESC}[1m`] }));
+    expectInert(line);
+    expect(line).toContain("@bob");
+  });
+
+  it("leaves clean input byte-for-byte unchanged (no format regression)", () => {
+    // The exact rendering example from the existing suite must be untouched.
+    const line = renderMessage(msg({ type: "finding", owner: "alice", body: "boom" }));
+    expect(line).toBe("[caucus] finding  A·alice  boom");
   });
 });
 
