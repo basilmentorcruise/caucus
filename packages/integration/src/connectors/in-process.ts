@@ -3,7 +3,7 @@
  * every `connectClient` returns a handle wrapping that same instance, so the
  * handles share a log and claim ledger. `teardown()` drops it.
  */
-import { InMemoryBackbone, type SeatbeltOptions } from "@caucus/backbone";
+import { InMemoryBackbone, type InMemoryBackboneOptions } from "@caucus/backbone";
 
 import type { ClientHandle, Connector } from "../connector.js";
 
@@ -15,11 +15,12 @@ import type { ClientHandle, Connector } from "../connector.js";
  * visibility (claims one client wins are seen by the other, cursors mint at the
  * shared head, …).
  *
- * @param opts optional seatbelt tunables (ADR-C8) for the shared backbone — a
- * low `maxPostsPerMinute` lets a scenario trip the cap deterministically.
+ * @param opts optional backbone tunables — seatbelt knobs (ADR-C8) plus the
+ * CAU-74 resource caps — for the shared backbone: a low `maxPostsPerMinute`
+ * (or `maxMessagesPerChannel`, …) lets a scenario trip a cap deterministically.
  * Omitted ⇒ production defaults, so existing scenarios are unchanged.
  */
-export function inProcessConnector(opts: SeatbeltOptions = {}): Connector {
+export function inProcessConnector(opts: InMemoryBackboneOptions = {}): Connector {
   let backbone: InMemoryBackbone | undefined;
 
   return {

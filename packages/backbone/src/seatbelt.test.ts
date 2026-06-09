@@ -8,7 +8,10 @@ import { describe, expect, it } from "vitest";
 import { DuplicatePostError, RateLimitedError } from "./errors.js";
 import {
   DEFAULT_DUP_WINDOW,
+  DEFAULT_GLOBAL_RATE_MULTIPLIER,
+  DEFAULT_MAX_CHANNEL_CREATES_PER_MINUTE,
   DEFAULT_MAX_POSTS_PER_MINUTE,
+  DEFAULT_MAX_TRACKED_AGENTS,
   Seatbelt,
   SEATBELT_WINDOW_MS,
   dupKeyFor,
@@ -132,6 +135,18 @@ describe("rate limit — per-(channel, agent) isolation", () => {
     expect(() => sb.checkRate(CH, A, clock.now())).toThrow(RateLimitedError);
     expect(() => sb.checkRate("incident-2", A, clock.now())).not.toThrow();
   });
+
+  it("pairs that would collide under a space-joined key stay distinct", () => {
+    // agent_id MAY contain spaces (only control chars are rejected), so a
+    // plain-space separator would fold ("war", "room agent") and
+    // ("war room", "agent") into one budget. The NUL separator keeps them
+    // apart. Regression test for the #key separator.
+    const clock = fakeClock();
+    const sb = new Seatbelt({ maxPostsPerMinute: 1, clock: clock.now });
+    sb.recordRate("war", "room agent", clock.now());
+    expect(() => sb.checkRate("war", "room agent", clock.now())).toThrow(RateLimitedError);
+    expect(() => sb.checkRate("war room", "agent", clock.now())).not.toThrow();
+  });
 });
 
 describe("checkRate records nothing (the claim-loser split)", () => {
@@ -243,5 +258,263 @@ describe("dupKeyFor", () => {
   it("composes type + trimmed body", () => {
     expect(dupKeyFor("note", "  hi  ")).toBe("note hi");
     expect(dupKeyFor("finding", "x")).toBe("finding x");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CAU-74 — resource caps & eviction: idle eviction (lazy sweep), the LRU
+// backstop, the cross-channel global rate counter, and the create throttle.
+// ---------------------------------------------------------------------------
+
+describe("CAU-74 constants", () => {
+  it("expose the documented defaults", () => {
+    expect(DEFAULT_GLOBAL_RATE_MULTIPLIER).toBe(4);
+    expect(DEFAULT_MAX_CHANNEL_CREATES_PER_MINUTE).toBe(10);
+    expect(DEFAULT_MAX_TRACKED_AGENTS).toBe(4096);
+  });
+});
+
+describe("idle eviction (CAU-74) — lazy sweep, once per window", () => {
+  it("evicts a fully-idle entry after a quiet window; the dup baseline is forgotten", () => {
+    const clock = fakeClock(0);
+    const sb = new Seatbelt({ windowMs: 60_000, clock: clock.now });
+
+    sb.admit(CH, A, dupKeyFor("note", "same"), clock.now());
+    // One (channel, agent) entry + one global entry.
+    expect(sb.trackedEntryCount).toBe(2);
+    // The dup baseline is live: an immediate identical repeat is blocked.
+    expect(() => sb.admit(CH, A, dupKeyFor("note", "same"), clock.now())).toThrow(
+      DuplicatePostError,
+    );
+
+    // Within the window a mutator runs but the sweep does NOT (once per window):
+    // nothing is evicted yet.
+    clock.set(59_999);
+    sb.recordRate(CH, "agent-b", clock.now());
+    expect(sb.trackedEntryCount).toBe(4);
+
+    // Past a full quiet window for A: the next mutator's sweep prunes A's
+    // window empty and evicts the idle entries (A and agent-b both).
+    clock.set(120_001);
+    sb.recordRate(CH, "agent-probe", clock.now());
+    expect(sb.trackedEntryCount).toBe(2); // only agent-probe's two entries
+
+    // Dup-forgetting nuance (documented): A's identical re-post more than a
+    // window after the original is ADMITTED — ADR-C8 targets consecutive
+    // loops, not 60s-quiet repeats.
+    expect(() =>
+      sb.admit(CH, A, dupKeyFor("note", "same"), clock.now()),
+    ).not.toThrow();
+    expect(sb.trackedEntryCount).toBe(4);
+  });
+
+  it("does NOT evict an entry with in-window posts", () => {
+    const clock = fakeClock(0);
+    const sb = new Seatbelt({ windowMs: 60_000, clock: clock.now });
+
+    sb.admit(CH, A, dupKeyFor("note", "first"), clock.now());
+    clock.set(50_000);
+    sb.admit(CH, A, dupKeyFor("note", "second"), clock.now());
+
+    // At 100_000 the sweep runs: the post at 50_000 is still in-window, so the
+    // entry survives — and its dup baseline still blocks.
+    clock.set(100_000);
+    expect(() =>
+      sb.admit(CH, A, dupKeyFor("note", "second"), clock.now()),
+    ).toThrow(DuplicatePostError);
+  });
+
+  it("does NOT evict a rate-limited spammer's entry — lastActivity updates on every access", () => {
+    const clock = fakeClock(0);
+    const sb = new Seatbelt({ maxPostsPerMinute: 1, windowMs: 60_000, clock: clock.now });
+
+    sb.admit(CH, A, dupKeyFor("note", "spam"), clock.now());
+    // At 30_000 the spammer retries and is rate-limited; the rejected access
+    // still TOUCHES the entry (lastActivity = 30_000).
+    clock.set(30_000);
+    expect(() => sb.admit(CH, A, dupKeyFor("note", "spam"), clock.now())).toThrow(
+      RateLimitedError,
+    );
+
+    // At 70_000 the sweep prunes the window empty, but the entry was touched
+    // 40s ago (< window) so it is NOT evicted: the dup baseline still blocks
+    // even though the rate window has slid open.
+    clock.set(70_000);
+    expect(() => sb.admit(CH, A, dupKeyFor("note", "spam"), clock.now())).toThrow(
+      DuplicatePostError,
+    );
+  });
+});
+
+describe("LRU backstop (CAU-74) — maxTrackedAgents per internal map", () => {
+  it("evicts the least-recently-used entry once the cap is exceeded", () => {
+    const clock = fakeClock(0);
+    const sb = new Seatbelt({ maxTrackedAgents: 2, clock: clock.now });
+
+    sb.admit(CH, "agent-a", dupKeyFor("note", "ping"), clock.now());
+    sb.admit(CH, "agent-b", dupKeyFor("note", "ping"), clock.now());
+    sb.admit(CH, "agent-c", dupKeyFor("note", "ping"), clock.now());
+
+    // The cap applies to EACH map independently: 2 per-(channel, agent)
+    // entries + 2 global entries remain (agent-a's were evicted from both).
+    expect(sb.trackedEntryCount).toBe(4);
+
+    // agent-a's entry (the LRU) was evicted, so its dup baseline is gone: the
+    // identical re-post passes.
+    expect(() =>
+      sb.admit(CH, "agent-a", dupKeyFor("note", "ping"), clock.now()),
+    ).not.toThrow();
+    // agent-c's entry is still tracked: its identical re-post still blocks.
+    expect(() =>
+      sb.admit(CH, "agent-c", dupKeyFor("note", "ping"), clock.now()),
+    ).toThrow(DuplicatePostError);
+    expect(sb.trackedEntryCount).toBe(4);
+  });
+});
+
+describe("global cross-channel rate cap (CAU-74)", () => {
+  it("caps one agent's posts ACROSS channels even when each channel has budget left", () => {
+    const clock = fakeClock(0);
+    const sb = new Seatbelt({
+      maxPostsPerMinute: 5,
+      globalMaxPostsPerMinute: 8,
+      clock: clock.now,
+    });
+
+    // 5 posts on ch-A (per-channel cap reached there), then 3 on ch-B: all ok.
+    for (let i = 0; i < 5; i++) {
+      sb.admit("ch-a", A, dupKeyFor("note", `a${i}`), clock.now());
+    }
+    for (let i = 0; i < 3; i++) {
+      sb.admit("ch-b", A, dupKeyFor("note", `b${i}`), clock.now());
+    }
+
+    // The 4th on ch-B has per-channel room (3 < 5) but the GLOBAL budget (8)
+    // is spent: rate_limited with the distinct cross-channel message.
+    let thrown: RateLimitedError | undefined;
+    try {
+      sb.admit("ch-b", A, dupKeyFor("note", "b3"), clock.now());
+    } catch (e) {
+      thrown = e as RateLimitedError;
+    }
+    expect(thrown).toBeInstanceOf(RateLimitedError);
+    expect(thrown!.code).toBe("rate_limited");
+    expect(thrown!.scope).toBe("global");
+    expect(thrown!.limit).toBe(8);
+    expect(thrown!.message).toContain("at most 8 posts/min per agent across all channels");
+
+    // Another agent is unaffected (global budget is per-agent).
+    expect(() =>
+      sb.admit("ch-b", "agent-b", dupKeyFor("note", "hi"), clock.now()),
+    ).not.toThrow();
+
+    // The window slides: a minute later BOTH budgets are free again.
+    clock.advance(60_001);
+    expect(() =>
+      sb.admit("ch-b", A, dupKeyFor("note", "fresh"), clock.now()),
+    ).not.toThrow();
+  });
+
+  it("defaults the global cap to 4× the effective per-channel cap", () => {
+    const clock = fakeClock(0);
+    const sb = new Seatbelt({ maxPostsPerMinute: 2, clock: clock.now });
+
+    // Derived global cap = 2 × 4 = 8: two posts on each of four channels fit…
+    for (let ch = 0; ch < 4; ch++) {
+      for (let i = 0; i < 2; i++) {
+        sb.admit(`ch-${ch}`, A, dupKeyFor("note", `m${ch}-${i}`), clock.now());
+      }
+    }
+    // …and the 9th post (on a FIFTH channel, per-channel budget untouched)
+    // trips the derived global cap.
+    let thrown: RateLimitedError | undefined;
+    try {
+      sb.admit("ch-4", A, dupKeyFor("note", "over"), clock.now());
+    } catch (e) {
+      thrown = e as RateLimitedError;
+    }
+    expect(thrown).toBeInstanceOf(RateLimitedError);
+    expect(thrown!.scope).toBe("global");
+    expect(thrown!.limit).toBe(2 * DEFAULT_GLOBAL_RATE_MULTIPLIER);
+  });
+
+  it("an explicitly supplied global cap wins as-given (no multiplier)", () => {
+    const clock = fakeClock(0);
+    const sb = new Seatbelt({
+      maxPostsPerMinute: 2,
+      globalMaxPostsPerMinute: 3,
+      clock: clock.now,
+    });
+    sb.admit("ch-a", A, dupKeyFor("note", "1"), clock.now());
+    sb.admit("ch-a", A, dupKeyFor("note", "2"), clock.now());
+    sb.admit("ch-b", A, dupKeyFor("note", "3"), clock.now());
+    let thrown: RateLimitedError | undefined;
+    try {
+      sb.checkRate("ch-b", A, clock.now());
+    } catch (e) {
+      thrown = e as RateLimitedError;
+    }
+    expect(thrown).toBeInstanceOf(RateLimitedError);
+    expect(thrown!.scope).toBe("global");
+    expect(thrown!.limit).toBe(3);
+  });
+
+  it("checkRate records nothing against the global budget either (claim-loser split)", () => {
+    const clock = fakeClock(0);
+    const sb = new Seatbelt({ globalMaxPostsPerMinute: 1, clock: clock.now });
+    for (let i = 0; i < 5; i++) {
+      expect(() => sb.checkRate(CH, A, clock.now())).not.toThrow();
+    }
+  });
+});
+
+describe("admitChannelCreate (CAU-74) — per-creator create throttle", () => {
+  it("admits exactly the cap, then throws rate_limited (scope create) with retryAfterMs", () => {
+    const clock = fakeClock(0);
+    const sb = new Seatbelt({
+      maxChannelCreatesPerMinute: 2,
+      windowMs: 60_000,
+      clock: clock.now,
+    });
+
+    sb.admitChannelCreate("alice", 0);
+    clock.set(10_000);
+    sb.admitChannelCreate("alice", 10_000);
+
+    clock.set(20_000);
+    let thrown: RateLimitedError | undefined;
+    try {
+      sb.admitChannelCreate("alice", 20_000);
+    } catch (e) {
+      thrown = e as RateLimitedError;
+    }
+    expect(thrown).toBeInstanceOf(RateLimitedError);
+    expect(thrown!.code).toBe("rate_limited");
+    expect(thrown!.scope).toBe("create");
+    expect(thrown!.limit).toBe(2);
+    // oldest(0) + window(60000) - now(20000) = 40000.
+    expect(thrown!.retryAfterMs).toBe(40_000);
+    expect(thrown!.message).toContain("at most 2 channel creates/min per owner");
+  });
+
+  it("is isolated per creator", () => {
+    const clock = fakeClock(0);
+    const sb = new Seatbelt({ maxChannelCreatesPerMinute: 1, clock: clock.now });
+    sb.admitChannelCreate("alice", clock.now());
+    expect(() => sb.admitChannelCreate("alice", clock.now())).toThrow(RateLimitedError);
+    expect(() => sb.admitChannelCreate("bob", clock.now())).not.toThrow();
+  });
+
+  it("the window slides — a create ages out and frees a slot", () => {
+    const clock = fakeClock(0);
+    const sb = new Seatbelt({
+      maxChannelCreatesPerMinute: 1,
+      windowMs: 60_000,
+      clock: clock.now,
+    });
+    sb.admitChannelCreate("alice", clock.now());
+    expect(() => sb.admitChannelCreate("alice", clock.now())).toThrow(RateLimitedError);
+    clock.set(60_001);
+    expect(() => sb.admitChannelCreate("alice", clock.now())).not.toThrow();
   });
 });

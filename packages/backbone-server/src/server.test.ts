@@ -737,3 +737,60 @@ describe("server lifecycle (sockets)", () => {
     server.close();
   });
 });
+
+describe("dispatch — CAU-74 resource caps over the wire", () => {
+  it("an append on a full channel → 409 channel_full envelope", async () => {
+    const bb = new InMemoryBackbone({ maxMessagesPerChannel: 1 });
+    await bb.createChannel({ channel: "c1", purpose: "p", created_by: "alice" });
+    await bb.append("c1", {
+      type: "finding",
+      agent_id: "a",
+      owner: "alice",
+      msg_id: newMsgId(),
+      body: "filler",
+    });
+    const res = await dispatch(bb, "POST", "/channels/c1/append", {
+      type: "finding",
+      agent_id: "a",
+      owner: "alice",
+      msg_id: newMsgId(),
+      body: "over the cap",
+    }, AUTH);
+    expect(res.status).toBe(409);
+    expect(res.json).toMatchObject({ error: { code: "channel_full" } });
+    // The envelope names the channel and the cap — never the rejected body.
+    const message = (res.json as { error: { message: string } }).error.message;
+    expect(message).toContain('"c1"');
+    expect(message).toContain("at most 1 message.");
+    expect(message).not.toContain("over the cap");
+  });
+
+  it("a create past maxChannels → 409 channel_limit envelope", async () => {
+    const bb = new InMemoryBackbone({ maxChannels: 1 });
+    await bb.createChannel({ channel: "c1", purpose: "p", created_by: "alice" });
+    const res = await dispatch(bb, "POST", "/channels", {
+      channel: "c2",
+      purpose: "p",
+    }, AUTH);
+    expect(res.status).toBe(409);
+    expect(res.json).toMatchObject({ error: { code: "channel_limit" } });
+  });
+
+  it("a throttled create → 429 rate_limited envelope (create scope message)", async () => {
+    const bb = new InMemoryBackbone({ maxChannelCreatesPerMinute: 1 });
+    const first = await dispatch(bb, "POST", "/channels", {
+      channel: "c1",
+      purpose: "p",
+    }, AUTH);
+    expect(first.status).toBe(201);
+    const second = await dispatch(bb, "POST", "/channels", {
+      channel: "c2",
+      purpose: "p",
+    }, AUTH);
+    expect(second.status).toBe(429);
+    expect(second.json).toMatchObject({ error: { code: "rate_limited" } });
+    expect((second.json as { error: { message: string } }).error.message).toContain(
+      "channel creates/min per owner",
+    );
+  });
+});
