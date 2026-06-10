@@ -13,6 +13,7 @@ import {
   ChannelLimitError,
   DEFAULT_MAX_CHANNELS,
   DEFAULT_MAX_MESSAGES_PER_CHANNEL,
+  DEFAULT_MAX_READ_LIMIT,
   DuplicatePostError,
   InMemoryBackbone,
   InvalidChannelNameError,
@@ -929,5 +930,88 @@ describe("per-channel message cap (CAU-74)", () => {
     await expect(bb.append(CH, finding("a1", "same"))).rejects.toBeInstanceOf(
       ChannelFullError,
     );
+  });
+});
+
+describe("readSince max page size (CAU-83)", () => {
+  /** Small injected cap so paging trips well under the 30/min rate budget. */
+  const READ_CAP = 3;
+
+  /** A backbone with the small read cap and `count` messages appended. */
+  async function backboneWith(count: number): Promise<InMemoryBackbone> {
+    const bb = new InMemoryBackbone({ maxReadLimit: READ_CAP });
+    await bb.createChannel({ channel: CH, purpose: "p", created_by: "alice" });
+    for (let i = 0; i < count; i++) {
+      await bb.append(CH, finding("a1", `m${i}`));
+    }
+    return bb;
+  }
+
+  it("pins the documented default", () => {
+    expect(DEFAULT_MAX_READ_LIMIT).toBe(500);
+  });
+
+  it("clamps an OMITTED limit to maxReadLimit; cursor advances by the page length", async () => {
+    const bb = await backboneWith(5);
+    const page = await bb.readSince(CH, 0); // no limit ⇒ at most the cap
+    expect(page.messages.map((m) => m.body)).toEqual(["m0", "m1", "m2"]);
+    expect(page.cursor).toBe(page.messages.length); // advanced by exactly the page
+  });
+
+  it("clamps an over-cap limit SILENTLY; an under-cap limit is honored exactly", async () => {
+    const bb = await backboneWith(5);
+    // limit > max ⇒ clamped to the cap, no error.
+    const clamped = await bb.readSince(CH, 0, 999);
+    expect(clamped.messages).toHaveLength(READ_CAP);
+    expect(clamped.cursor).toBe(READ_CAP);
+    // limit <= max ⇒ honored exactly.
+    const exact = await bb.readSince(CH, 0, 2);
+    expect(exact.messages.map((m) => m.body)).toEqual(["m0", "m1"]);
+    expect(exact.cursor).toBe(2);
+  });
+
+  it("drains 7 messages as pages of 3/3/1 — exact order, no dups, then an empty page at head", async () => {
+    const bb = await backboneWith(7);
+    const head = (await bb.describeChannel(CH)).head;
+
+    const bodies: string[] = [];
+    let cursor = 0;
+    const pageSizes: number[] = [];
+    for (;;) {
+      const page = await bb.readSince(CH, cursor);
+      if (page.messages.length === 0) {
+        // Empty page ⇔ caught up: the cursor must be unchanged.
+        expect(page.cursor).toBe(cursor);
+        break;
+      }
+      pageSizes.push(page.messages.length);
+      bodies.push(...page.messages.map((m) => m.body));
+      cursor = page.cursor;
+    }
+
+    expect(pageSizes).toEqual([3, 3, 1]);
+    expect(bodies).toEqual(["m0", "m1", "m2", "m3", "m4", "m5", "m6"]);
+    expect(new Set(bodies).size).toBe(7); // no duplicates
+    expect(cursor).toBe(head); // converged on head
+  });
+
+  it("returns a short final page when the cursor is near head", async () => {
+    const bb = await backboneWith(5);
+    const page = await bb.readSince(CH, 4); // 1 message left, cap is 3
+    expect(page.messages.map((m) => m.body)).toEqual(["m4"]);
+    expect(page.cursor).toBe(5);
+  });
+
+  it("regression: a non-positive or non-integer limit is still invalid_cursor; pages stay immutable", async () => {
+    const bb = await backboneWith(2);
+    await expect(bb.readSince(CH, 0, 0)).rejects.toBeInstanceOf(InvalidCursorError);
+    await expect(bb.readSince(CH, 0, -2)).rejects.toBeInstanceOf(InvalidCursorError);
+    await expect(bb.readSince(CH, 0, 1.5)).rejects.toBeInstanceOf(InvalidCursorError);
+    // The clamp does not change what is returned: still the frozen log records.
+    const page = await bb.readSince(CH, 0);
+    expect(Object.isFrozen(page.messages[0])).toBe(true);
+    expect(() => {
+      (page.messages[0] as { body: string }).body = "tampered";
+    }).toThrow(TypeError);
   });
 });

@@ -91,8 +91,10 @@ const READ_CHANNEL_INPUT = {
     .positive()
     .optional()
     .describe(
-      "Maximum messages to return. Absent ⇒ all new messages. Use it to stay " +
-        "within context budget.",
+      "Maximum messages to return. The server also caps every page (default " +
+        "500), so one read may not drain the channel — keep passing the " +
+        "returned `cursor` back as `since` until `count` is 0. Use it to " +
+        "stay within context budget.",
     ),
   channel: z
     .string()
@@ -121,9 +123,11 @@ export const readChannelTool: CaucusTool = {
     "a teammate's claim or re-report a known finding (ADR-C5). Returns " +
     "messages in append order with identity (agent_id/owner) and type, so " +
     "you can see who is on what. Omit `since` to read from the beginning; " +
-    "pass back the returned `cursor` as `since` to get only what's new. Use " +
-    "`limit` to cap volume; use `channel` to read a room you joined " +
-    "(default: your session channel).",
+    "pass back the returned `cursor` as `since` to get only what's new. The " +
+    "server caps each page's size, so a long backlog arrives in pages: keep " +
+    "passing the returned `cursor` back until `count` is 0. Use `limit` to " +
+    "cap volume further; use `channel` to read a room you joined (default: " +
+    "your session channel).",
   inputSchema: READ_CHANNEL_INPUT,
   async handle(
     session: CaucusSession,

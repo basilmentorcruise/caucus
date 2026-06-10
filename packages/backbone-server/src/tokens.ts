@@ -66,6 +66,10 @@ export class TokenMapParseError extends Error {
  * An absent / empty / all-whitespace value yields an EMPTY map (fail-closed:
  * see the module doc — an empty map authorizes nobody, so all writes 401).
  *
+ * Operator note: give each session its own `agent_id` — two tokens configured
+ * with the same `agent_id` share the per-agent rate budgets and the loop/dup
+ * baseline (the seatbelt keys on `agent_id`, not on the token).
+ *
  * @throws TokenMapParseError positional only — the message names the entry
  *   index, never the token text.
  */

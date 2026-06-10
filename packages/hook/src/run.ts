@@ -208,6 +208,13 @@ export async function runHook(deps: RunHookDeps): Promise<string> {
       return "";
     }
 
+    // One page per turn (CAU-83): the backbone clamps every readSince page to
+    // its max page size, so after a long gap this read may return only the
+    // first page of the backlog. DELIBERATELY no drain loop here — the hook
+    // runs under a hard turn-time budget and injects into a finite context, so
+    // one bounded page per turn is the right shape; persisting the RETURNED
+    // cursor each turn means successive turns page through the backlog and
+    // converge on head without ever duplicating a message.
     const result = await withTimeout(
       backbone.readSince(channel, checkpoint),
       timeoutMs,

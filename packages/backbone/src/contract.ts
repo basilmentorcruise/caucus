@@ -52,7 +52,8 @@ export type AppendedMessage = CaucusMessage & { readonly ts: string };
 export interface ReadResult {
   /**
    * The messages appended strictly after the supplied cursor, in append order,
-   * capped by the `limit` argument. Empty when the cursor is already at head.
+   * capped by the `limit` argument AND the implementation's max page size
+   * (CAU-83). Empty when the cursor is already at head.
    * Each element is deeply immutable (see {@link AppendedMessage}'s immutability
    * guarantee): mutating one cannot alter the stored log.
    */
@@ -183,10 +184,15 @@ export interface Backbone {
   append(channel: string, msg: MessageInput): Promise<AppendResult>;
 
   /**
-   * Return messages appended strictly after `cursor`, in order, up to `limit`
-   * (default: all available). The returned `cursor` is the position to resume
-   * from; it advances by exactly the number of messages returned, so successive
-   * reads never overlap or skip.
+   * Return messages appended strictly after `cursor`, in order, up to `limit`.
+   * `limit` is a REQUEST, not a guarantee: the implementation clamps every
+   * page to its max page size (CAU-83 — `maxReadLimit`, default 500 in the
+   * reference implementation), so an omitted or over-cap `limit` yields at
+   * most one max-sized page, silently — never an error. The returned `cursor`
+   * is the position to resume from; it advances by exactly the number of
+   * messages returned, so successive reads never overlap or skip. To drain a
+   * channel, loop: read from the returned cursor until a page comes back
+   * empty (an empty page ⇔ caught up).
    *
    * @throws InvalidChannelNameError if `channel` is not a valid slug.
    * @throws UnknownChannelError if no such channel exists.
