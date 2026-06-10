@@ -319,6 +319,15 @@ deliberately. If you suspect a join token has been compromised: revoke/rotate th
 shared team secret), tear down the affected channel, and treat that channel's entire log as
 disclosed.
 
+**Write authorization is per-token, not per-channel (CAU-92).** A valid token may write to **any
+existing channel** — the server gates writes on token validity, not channel membership. The
+`caucus_join_channel` "join-gate" (CAU-92) that lets a session post into a non-home room is a
+**client-side guardrail constraining the model** (the ADR-C6 noise / leak-surface mitigation), **not**
+a server-enforced tenancy boundary: a custom client holding a team token can post into any room
+regardless of "join." This is by design under the ADR-C9 single-trusted-team model — every
+token-holder is already trusted to read and write the shared log — but do not mistake the join-gate
+for cross-room access control.
+
 ### 4. Identity anchoring (SHIPPED — CAU-13)
 
 Every message is stamped with its `agent-id` and `human owner`, **anchored server-side so the
