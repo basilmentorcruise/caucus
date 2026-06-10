@@ -35,11 +35,7 @@
  * (AC1 — `selectBackbone` switches on `CAUCUS_URL` — is unit-tested in
  * `packages/mcp-server/src/wiring.test.ts`.)
  */
-import {
-  execFileSync,
-  spawn,
-  type ChildProcessWithoutNullStreams,
-} from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -50,6 +46,8 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { startServerProcess } from "../harness.js";
+
 const REPO_ROOT = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "..",
@@ -57,7 +55,6 @@ const REPO_ROOT = resolve(
   "..",
   "..",
 );
-const SERVER_BIN = join(REPO_ROOT, "packages", "backbone-server", "dist", "bin.js");
 const MCP_BIN = join(REPO_ROOT, "packages", "mcp-server", "dist", "index.js");
 const HOOK_BIN = join(REPO_ROOT, "packages", "hook", "dist", "bin.js");
 
@@ -84,36 +81,6 @@ function childEnv(overrides: Record<string, string>): Record<string, string> {
     if (v !== undefined) base[k] = v;
   }
   return { ...base, ...overrides };
-}
-
-/** Start the backbone server as its own process; resolve with its base URL + stop. */
-function startServerProcess(): Promise<{ url: string; stop: () => void }> {
-  const child: ChildProcessWithoutNullStreams = spawn("node", [SERVER_BIN], {
-    cwd: REPO_ROOT,
-    env: childEnv({ PORT: "0", HOST: "127.0.0.1", CAUCUS_TOKENS: SERVER_TOKENS }),
-  }) as ChildProcessWithoutNullStreams;
-
-  return new Promise((resolveUrl, reject) => {
-    const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error("backbone server did not start within 10s"));
-    }, 10_000);
-
-    let buf = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      buf += chunk;
-      const m = buf.match(/listening on (\S+)/);
-      if (m) {
-        clearTimeout(timer);
-        resolveUrl({ url: m[1]!, stop: () => child.kill() });
-      }
-    });
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-  });
 }
 
 /**
@@ -173,14 +140,14 @@ function additionalContext(stdout: string): string {
 
 describe("shared HTTP backbone — two MCP processes + the hook (CAU-50)", () => {
   let url: string;
-  let stopServer: () => void;
+  let stopServer: () => Promise<void>;
   let clientA: Client;
   let clientB: Client;
   let home: string;
   const hookSession = "sess-shared-hook";
 
   beforeAll(async () => {
-    const started = await startServerProcess();
+    const started = await startServerProcess({ CAUCUS_TOKENS: SERVER_TOKENS });
     url = started.url;
     stopServer = started.stop;
     home = await mkdtemp(join(tmpdir(), "caucus-shared-itest-"));
@@ -209,7 +176,7 @@ describe("shared HTTP backbone — two MCP processes + the hook (CAU-50)", () =>
     // (StdioClientTransport owns it), so no MCP processes leak past the suite.
     await clientA?.close();
     await clientB?.close();
-    stopServer?.();
+    await stopServer?.();
     if (home !== undefined) await rm(home, { recursive: true, force: true });
   });
 

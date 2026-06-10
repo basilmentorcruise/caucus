@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
 
 // Coverage gate (ADR / docs/GITHUB_PROJECTS.md → "Testing & validation gate").
@@ -11,6 +12,19 @@ import { defineConfig } from "vitest/config";
 const COVERAGE_THRESHOLD = 90;
 
 export default defineConfig({
+  // Resolve workspace packages to SOURCE, not dist (CAU-76): the package
+  // entrypoints (`main`/`exports`) point at built `dist`, so a cold
+  // `pnpm install && pnpm test` on a fresh clone failed to resolve `@caucus/*`
+  // until something ran `pnpm build` first. Aliasing to source — the same
+  // convention vitest.integration.config.ts already uses — makes the unit run
+  // build-independent AND guarantees tests never exercise stale build output.
+  resolve: {
+    alias: {
+      "@caucus/backbone": resolve(import.meta.dirname, "packages/backbone/src/index.ts"),
+      "@caucus/backbone-server": resolve(import.meta.dirname, "packages/backbone-server/src/index.ts"),
+      "@caucus/schema": resolve(import.meta.dirname, "packages/schema/src/index.ts"),
+    },
+  },
   test: {
     // Package unit tests, plus the demo-script helpers in examples/ (CAU-67):
     // their pure arg/channel resolution is gated too, though examples stay out

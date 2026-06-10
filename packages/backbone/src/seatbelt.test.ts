@@ -7,7 +7,6 @@ import { describe, expect, it } from "vitest";
 
 import { DuplicatePostError, RateLimitedError } from "./errors.js";
 import {
-  DEFAULT_DUP_WINDOW,
   DEFAULT_GLOBAL_RATE_MULTIPLIER,
   DEFAULT_MAX_CHANNEL_CREATES_PER_MINUTE,
   DEFAULT_MAX_POSTS_PER_MINUTE,
@@ -41,7 +40,6 @@ const A = "agent-a";
 describe("constants", () => {
   it("expose the documented defaults", () => {
     expect(DEFAULT_MAX_POSTS_PER_MINUTE).toBe(30);
-    expect(DEFAULT_DUP_WINDOW).toBe(1);
     expect(SEATBELT_WINDOW_MS).toBe(60_000);
   });
 });

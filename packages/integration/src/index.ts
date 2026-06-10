@@ -9,6 +9,9 @@
  *   (`connectors/http.ts`, CAU-5) — one shared backbone, ≥2 client handles;
  * - the {@link Scenario} type + {@link runScenarios} runner (`scenario.ts`,
  *   `harness.ts`), which always tears down in a `finally`;
+ * - the shared {@link startServerProcess} subprocess spawn helper
+ *   (`harness.ts`, CAU-76): buffered stderr surfaced on failure, awaited
+ *   child exit on `stop()`;
  * - message {@link finding}/{@link claimMsg} builders (`fixtures.ts`).
  *
  * The actual scenarios live in `src/scenarios/*.itest.ts` and run via
@@ -17,6 +20,6 @@
 export type { ClientHandle, Connector } from "./connector.js";
 export { inProcessConnector } from "./connectors/in-process.js";
 export { httpConnector, identityForId, tokenFor } from "./connectors/http.js";
-export { runScenarios } from "./harness.js";
+export { runScenarios, startServerProcess, type ServerProcess } from "./harness.js";
 export type { Scenario } from "./scenario.js";
 export { claimMsg, finding, type MessageOpts } from "./fixtures.js";
