@@ -58,8 +58,16 @@ export const LOOP_BODY =
 /** Default backbone URL the seed talks to (localhost-only; see ADR-C9). */
 export const DEFAULT_URL = "http://127.0.0.1:4317";
 
-/** The make-style `VAR=value` overrides the demo scripts accept as args. */
-const ARG_OVERRIDES = ["PORT", "CAUCUS_URL", "CHANNEL"];
+/**
+ * The make-style `VAR=value` keys EVERY demo script honors (URL resolution).
+ * Scripts pass the keys they actually apply to {@link parseArgs} — a key a
+ * script accepts but never reads is the exact silent-swallow CAU-61 killed
+ * (reintroduced for `CHANNEL` and re-killed in CAU-76).
+ */
+export const URL_ARG_KEYS = ["PORT", "CAUCUS_URL"];
+
+/** The keys the watcher honors: URL resolution + channel selection (CAU-67). */
+export const WATCH_ARG_KEYS = [...URL_ARG_KEYS, "CHANNEL"];
 
 /**
  * Watch-all sentinel + flag (CAU-67). `--all` (CLI) or `CHANNEL=*` (make-style,
@@ -75,8 +83,13 @@ export const WATCH_ALL_CHANNEL = "*";
  * `VAR=value` anywhere). Returns the overrides; rejects genuinely unknown
  * args LOUDLY (silently ignoring one once sent the demo at the wrong port
  * with an opaque `fetch failed`).
+ *
+ * `keys` scopes which `VAR=` overrides THIS script honors (CAU-76): a key the
+ * script would parse but never apply (e.g. `CHANNEL=` to `seed.mjs`, whose
+ * channel is fixed by the seed config) is rejected loudly like any unknown
+ * arg, never silently swallowed.
  */
-export function parseArgs(argv, allowed = []) {
+export function parseArgs(argv, allowed = [], keys = URL_ARG_KEYS) {
   const overrides = {};
   const unknown = [];
   for (const a of argv) {
@@ -85,7 +98,7 @@ export function parseArgs(argv, allowed = []) {
     if (a === "--" || allowed.includes(a)) continue;
     const eq = a.indexOf("=");
     const key = eq > 0 ? a.slice(0, eq) : undefined;
-    if (key !== undefined && ARG_OVERRIDES.includes(key)) {
+    if (key !== undefined && keys.includes(key)) {
       overrides[key] = a.slice(eq + 1);
     } else {
       unknown.push(a);
@@ -93,9 +106,9 @@ export function parseArgs(argv, allowed = []) {
   }
   if (unknown.length > 0) {
     console.error(
-      `unknown argument(s): ${unknown.join(" ")}\n` +
-        `Supported: ${allowed.join(" ") || "(none)"} and make-style ` +
-        `${ARG_OVERRIDES.map((k) => `${k}=…`).join(" / ")}, e.g.:\n` +
+      `unknown/unsupported argument(s): ${unknown.join(" ")}\n` +
+        `This script supports: ${allowed.join(" ") || "(no flags)"} and make-style ` +
+        `${keys.map((k) => `${k}=…`).join(" / ")}, e.g.:\n` +
         `  pnpm demo:run PORT=4747\n` +
         `  make demo PORT=4747`,
     );

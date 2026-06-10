@@ -26,17 +26,15 @@
  *  - a SECOND `seed.mjs` run exits 0 (repeatable / idempotent);
  *  - `--loop` prints the actionable duplicate rejection and exits 0.
  */
-import {
-  execFileSync,
-  spawn,
-  type ChildProcessWithoutNullStreams,
-} from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { HttpBackbone } from "@caucus/backbone-server";
 import { newMsgId } from "@caucus/schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import { startServerProcess } from "../harness.js";
 
 // The seed config is the single source of truth (a plain `.mjs` outside the TS
 // build); import it so the test asserts on the SAME values the seed posts. The
@@ -58,53 +56,12 @@ const REPO_ROOT = resolve(
   "..",
   "..",
 );
-const SERVER_BIN = join(REPO_ROOT, "packages", "backbone-server", "dist", "bin.js");
 const SEED_SCRIPT = join(REPO_ROOT, "examples", "war-room-demo", "seed.mjs");
 
 const channel = CHANNEL;
 const purpose = PURPOSE;
 const openingScene = OPENING_SCENE;
 const serverTokens = tokensEnv();
-
-/**
- * Build the example + its workspace dep closure so the spawned `seed.mjs` can
- * import the packages from `dist` and the server bin exists. `...` includes the
- * dependency closure (schema → backbone → backbone-server).
- */
-/** Start the backbone as its own process with the demo tokens; resolve its URL. */
-function startServerProcess(): Promise<{ url: string; stop: () => void }> {
-  const child: ChildProcessWithoutNullStreams = spawn("node", [SERVER_BIN], {
-    cwd: REPO_ROOT,
-    env: {
-      ...process.env,
-      PORT: "0",
-      HOST: "127.0.0.1",
-      CAUCUS_TOKENS: serverTokens,
-    },
-  }) as ChildProcessWithoutNullStreams;
-
-  return new Promise((resolveUrl, reject) => {
-    const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error("backbone server did not start within 10s"));
-    }, 10_000);
-
-    let buf = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      buf += chunk;
-      const m = buf.match(/listening on (\S+)/);
-      if (m) {
-        clearTimeout(timer);
-        resolveUrl({ url: m[1]!, stop: () => child.kill() });
-      }
-    });
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-  });
-}
 
 /** Run `seed.mjs` as `pnpm demo:seed` does: `CAUCUS_URL` + optional `--loop`. */
 function runSeed(url: string, args: readonly string[] = []): string {
@@ -117,20 +74,20 @@ function runSeed(url: string, args: readonly string[] = []): string {
 
 describe("war-room demo seed (over HTTP, real subprocess)", () => {
   let url: string;
-  let stopServer: () => void;
+  let stopServer: () => Promise<void>;
   // A read client needs no token (reads are open); writes go through seed.mjs.
   let reader: HttpBackbone;
 
   beforeAll(async () => {
     // Builds are hoisted to the integration globalSetup (global-setup.ts).
-    const started = await startServerProcess();
+    const started = await startServerProcess({ CAUCUS_TOKENS: serverTokens });
     url = started.url;
     stopServer = started.stop;
     reader = new HttpBackbone(url);
   });
 
-  afterAll(() => {
-    stopServer?.();
+  afterAll(async () => {
+    await stopServer?.();
   });
 
   it("seeds the channel + opening scene, is idempotent, and demos the seatbelt loop", async () => {
@@ -210,7 +167,7 @@ describe("war-room demo seed (over HTTP, real subprocess)", () => {
     // An MCP server's startup bootstrap (ensureChannel) may auto-create the
     // demo channel EMPTY before the seed ever runs. The seed must still post
     // the opening scene — it gates on emptiness, not on create-freshness.
-    const started = await startServerProcess();
+    const started = await startServerProcess({ CAUCUS_TOKENS: serverTokens });
     try {
       const alice = new HttpBackbone(started.url, { token: "tok-alice" });
       await alice.createChannel({
@@ -229,7 +186,7 @@ describe("war-room demo seed (over HTTP, real subprocess)", () => {
       expect(after.messages.length).toBe(openingScene.length);
       expect(after.messages.every((m) => m.owner === "alice")).toBe(true);
     } finally {
-      started.stop();
+      await started.stop();
     }
   });
 });

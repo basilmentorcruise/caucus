@@ -22,6 +22,8 @@ import { HttpBackbone } from "@caucus/backbone-server";
 import { newMsgId } from "@caucus/schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { startServerProcess } from "../harness.js";
+
 // @ts-expect-error — no type declarations for the example's runtime `.mjs`.
 import * as seedConfig from "../../../../examples/war-room-demo/seed.config.mjs";
 
@@ -37,53 +39,12 @@ const REPO_ROOT = resolve(
   "..",
   "..",
 );
-const SERVER_BIN = join(
-  REPO_ROOT,
-  "packages",
-  "backbone-server",
-  "dist",
-  "bin.js",
-);
 const WATCH_SCRIPT = join(REPO_ROOT, "examples", "war-room-demo", "watch.mjs");
-
-function startServerProcess(): Promise<{ url: string; stop: () => void }> {
-  const child: ChildProcessWithoutNullStreams = spawn("node", [SERVER_BIN], {
-    cwd: REPO_ROOT,
-    env: {
-      ...process.env,
-      PORT: "0",
-      HOST: "127.0.0.1",
-      CAUCUS_TOKENS: tokensEnv(),
-    },
-  }) as ChildProcessWithoutNullStreams;
-
-  return new Promise((resolveUrl, reject) => {
-    const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error("backbone server did not start within 10s"));
-    }, 10_000);
-
-    let buf = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      buf += chunk;
-      const m = buf.match(/listening on (\S+)/);
-      if (m) {
-        clearTimeout(timer);
-        resolveUrl({ url: m[1]!, stop: () => child.kill() });
-      }
-    });
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-  });
-}
 
 /** Spawn watch.mjs (read-only — deliberately NO token in its env). */
 function startWatcher(url: string): {
   output: () => string;
-  stop: () => void;
+  stop: () => Promise<void>;
 } {
   const child: ChildProcessWithoutNullStreams = spawn(
     "node",
@@ -98,7 +59,18 @@ function startWatcher(url: string): {
   child.stdout.on("data", (chunk: string) => {
     buf += chunk;
   });
-  return { output: () => buf, stop: () => child.kill() };
+  const exited = new Promise<void>((res) => {
+    child.on("exit", () => res());
+  });
+  return {
+    output: () => buf,
+    // Await the watcher's actual exit so the suite cannot leak the process
+    // (CAU-76 — same teardown contract as the harness's startServerProcess).
+    stop: () => {
+      child.kill();
+      return exited;
+    },
+  };
 }
 
 /** Poll the watcher's captured stdout until `needle` appears (or time out). */
@@ -119,11 +91,11 @@ async function waitFor(
 
 describe("war-room live tail (watch.mjs, real subprocess)", () => {
   let url: string;
-  let stopServer: () => void;
-  let watcher: { output: () => string; stop: () => void } | undefined;
+  let stopServer: () => Promise<void>;
+  let watcher: { output: () => string; stop: () => Promise<void> } | undefined;
 
   beforeAll(async () => {
-    const started = await startServerProcess();
+    const started = await startServerProcess({ CAUCUS_TOKENS: tokensEnv() });
     url = started.url;
     stopServer = started.stop;
     const alice = new HttpBackbone(url, { token: "tok-alice" });
@@ -141,9 +113,9 @@ describe("war-room live tail (watch.mjs, real subprocess)", () => {
     });
   });
 
-  afterAll(() => {
-    watcher?.stop();
-    stopServer?.();
+  afterAll(async () => {
+    await watcher?.stop();
+    await stopServer?.();
   });
 
   it("replays history, then shows live posts with the anchored identity", async () => {

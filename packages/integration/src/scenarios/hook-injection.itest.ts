@@ -32,7 +32,7 @@
  * checkpoint by running the hook once before any messages, so the next run sees
  * a genuine delta — the same code path, end to end.)
  */
-import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -42,9 +42,10 @@ import { HttpBackbone } from "@caucus/backbone-server";
 import { newMsgId, type MessageInput } from "@caucus/schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { startServerProcess } from "../harness.js";
+
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 const HOOK_BIN = join(REPO_ROOT, "packages", "hook", "dist", "bin.js");
-const SERVER_BIN = join(REPO_ROOT, "packages", "backbone-server", "dist", "bin.js");
 const CHANNEL = "incident-hook";
 
 /**
@@ -56,41 +57,6 @@ const CHANNEL = "incident-hook";
 const TOK_ALICE = "tok-alice";
 const TOK_BOB = "tok-bob";
 const SERVER_TOKENS = `${TOK_ALICE}:alice-agent:alice,${TOK_BOB}:bob-agent:bob`;
-
-/** Start the backbone server as its own process; resolve with its base URL. */
-function startServerProcess(): Promise<{ url: string; stop: () => void }> {
-  const child: ChildProcessWithoutNullStreams = spawn(
-    "node",
-    [SERVER_BIN],
-    {
-      cwd: REPO_ROOT,
-      env: { ...process.env, PORT: "0", HOST: "127.0.0.1", CAUCUS_TOKENS: SERVER_TOKENS },
-    },
-  ) as ChildProcessWithoutNullStreams;
-
-  return new Promise((resolveUrl, reject) => {
-    const timer = setTimeout(() => {
-      child.kill();
-      reject(new Error("backbone server did not start within 10s"));
-    }, 10_000);
-
-    let buf = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      buf += chunk;
-      // bin.ts logs: `caucus-backbone listening on http://127.0.0.1:<port>`
-      const m = buf.match(/listening on (\S+)/);
-      if (m) {
-        clearTimeout(timer);
-        resolveUrl({ url: m[1]!, stop: () => child.kill() });
-      }
-    });
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-  });
-}
 
 /** Run the hook bin as Claude Code would: env + `UserPromptSubmit` JSON stdin. */
 function runHookBin(home: string, url: string, sessionId: string): string {
@@ -135,7 +101,7 @@ function status(agent: string, owner: string, body: string): MessageInput {
 
 describe("turn-start hook injection (over HTTP, real subprocess)", () => {
   let url: string;
-  let stopServer: () => void;
+  let stopServer: () => Promise<void>;
   // Two clients: writes are token-gated and anchored, and the scenario posts as
   // two principals, so each carries its own bearer (CAU-13).
   let backbone: HttpBackbone;
@@ -144,7 +110,7 @@ describe("turn-start hook injection (over HTTP, real subprocess)", () => {
   const sessionId = "sess-hook-itest";
 
   beforeAll(async () => {
-    const started = await startServerProcess();
+    const started = await startServerProcess({ CAUCUS_TOKENS: SERVER_TOKENS });
     url = started.url;
     stopServer = started.stop;
     backbone = new HttpBackbone(url, { token: TOK_ALICE });
@@ -158,7 +124,7 @@ describe("turn-start hook injection (over HTTP, real subprocess)", () => {
   });
 
   afterAll(async () => {
-    stopServer?.();
+    await stopServer?.();
     await rm(home, { recursive: true, force: true });
   });
 
@@ -236,8 +202,8 @@ describe("turn-start hook self-heals after an ephemeral-backbone restart (CAU-72
   /** Spawn a server, create the channel, append `bodies`, return its lifecycle. */
   async function bootWithMessages(
     bodies: string[],
-  ): Promise<{ url: string; stop: () => void }> {
-    const started = await startServerProcess();
+  ): Promise<{ url: string; stop: () => Promise<void> }> {
+    const started = await startServerProcess({ CAUCUS_TOKENS: SERVER_TOKENS });
     const client = new HttpBackbone(started.url, { token: TOK_ALICE });
     await client.createChannel({
       channel: CHANNEL_R,
@@ -248,14 +214,6 @@ describe("turn-start hook self-heals after an ephemeral-backbone restart (CAU-72
       await client.append(CHANNEL_R, finding("alice-agent", "alice", body));
     }
     return started;
-  }
-
-  /** Wait until the server process has actually exited (port freed). */
-  function waitExit(stop: () => void): Promise<void> {
-    return new Promise((res) => {
-      stop();
-      setTimeout(res, 300);
-    });
   }
 
   it("re-syncs the stale checkpoint and resumes injecting fresh messages", async () => {
@@ -272,8 +230,9 @@ describe("turn-start hook self-heals after an ephemeral-backbone restart (CAU-72
     // Nothing new since the mint (mint was at head=3) ⇒ quiet, checkpoint=3.
     expect(runHookBin(home, gen1.url, sessionId).trim()).toBe("");
 
-    // --- KILL the ephemeral backbone. The checkpoint (3) survives on disk. ---
-    await waitExit(gen1.stop);
+    // --- KILL the ephemeral backbone (awaiting its real exit, so the port is
+    // freed). The checkpoint (3) survives on disk. ---
+    await gen1.stop();
 
     // --- Incarnation 2: a FRESH backbone, head reset to 0, channel recreated
     // with brand-new messages. The on-disk checkpoint (3) now points past the
@@ -303,7 +262,7 @@ describe("turn-start hook self-heals after an ephemeral-backbone restart (CAU-72
       expect(ctx).not.toContain("pre-restart finding");
       expect(ctx).not.toContain("post-restart finding X");
     } finally {
-      await waitExit(gen2.stop);
+      await gen2.stop();
     }
   });
 });

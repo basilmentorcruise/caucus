@@ -462,6 +462,9 @@ export class InMemoryBackbone implements Backbone {
     const now = this.#seatbelt.now();
     this.#seatbelt.checkRate(channel, msg.agent_id, now);
 
+    // ---- CLAIM-CRITICAL-SECTION-BEGIN (do not rename: the marker is the
+    // ---- anchor for the automated guard in claim-critical-section.test.ts,
+    // ---- which fails the build if an `await` ever appears inside) ----
     // ---- BEGIN critical section: NO `await` between the ledger read and the
     // ---- ledger write. This is the first-write-wins compare-and-set. When
     // ---- durability lands this MUST become a single transaction / unique
@@ -501,6 +504,7 @@ export class InMemoryBackbone implements Backbone {
     // Winner: record the post against the rate window now that it's committed.
     this.#seatbelt.recordRate(channel, msg.agent_id, now);
     // ---- END critical section ----
+    // ---- CLAIM-CRITICAL-SECTION-END ----
 
     return { outcome: "granted", message, cursor: state.descriptor.head };
   }

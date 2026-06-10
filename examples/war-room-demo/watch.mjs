@@ -32,11 +32,13 @@ import {
   resolveChannel,
   resolveUrl,
   WATCH_ALL_FLAG,
+  WATCH_ARG_KEYS,
 } from "./seed.config.mjs";
 
 const ARGV = process.argv.slice(2);
-// `--all` is a recognized flag, not an unknown arg (keeps CAU-61 loud rejection).
-const OVERRIDES = parseArgs(ARGV, [WATCH_ALL_FLAG]);
+// `--all` is a recognized flag, not an unknown arg (keeps CAU-61 loud
+// rejection). The watcher is the ONE script that honors `CHANNEL=` (CAU-76).
+const OVERRIDES = parseArgs(ARGV, [WATCH_ALL_FLAG], WATCH_ARG_KEYS);
 const URL = resolveUrl(process.env, OVERRIDES);
 const ALL = isWatchAll(ARGV, process.env, OVERRIDES);
 const SINGLE_CHANNEL = ALL ? null : resolveChannel(process.env, OVERRIDES);

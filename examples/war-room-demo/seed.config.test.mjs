@@ -5,7 +5,9 @@ import {
   parseArgs,
   resolveChannel,
   resolveUrl,
+  URL_ARG_KEYS,
   WATCH_ALL_FLAG,
+  WATCH_ARG_KEYS,
 } from "./seed.config.mjs";
 
 // CAU-67 — generic channel selection for the human watcher. Mirrors the
@@ -53,8 +55,10 @@ describe("isWatchAll", () => {
 });
 
 describe("parseArgs — watch additions", () => {
-  it("captures a CHANNEL= override", () => {
-    expect(parseArgs(["CHANNEL=dogfood"])).toEqual({ CHANNEL: "dogfood" });
+  it("captures a CHANNEL= override when the script honors it (watch keys)", () => {
+    expect(parseArgs(["CHANNEL=dogfood"], [], WATCH_ARG_KEYS)).toEqual({
+      CHANNEL: "dogfood",
+    });
   });
 
   it("accepts --all as a recognized flag, not an unknown arg", () => {
@@ -73,10 +77,41 @@ describe("parseArgs — watch additions", () => {
   });
 
   it("still resolves URL overrides alongside the new ones", () => {
-    expect(parseArgs(["PORT=4747", "CHANNEL=x"])).toEqual({
+    expect(parseArgs(["PORT=4747", "CHANNEL=x"], [], WATCH_ARG_KEYS)).toEqual({
       PORT: "4747",
       CHANNEL: "x",
     });
     expect(resolveUrl({}, { PORT: "4747" })).toBe("http://127.0.0.1:4747");
+  });
+});
+
+// CAU-76 — per-script key scoping: a `VAR=` override a script parses but never
+// applies must be rejected loudly, never silently swallowed (the CAU-61 class).
+describe("parseArgs — per-script key scoping (CAU-76)", () => {
+  it("defaults to the URL keys only (seed.mjs / demo.mjs scope)", () => {
+    expect(URL_ARG_KEYS).toEqual(["PORT", "CAUCUS_URL"]);
+    expect(parseArgs(["PORT=4747", "CAUCUS_URL=http://127.0.0.1:9"])).toEqual({
+      PORT: "4747",
+      CAUCUS_URL: "http://127.0.0.1:9",
+    });
+  });
+
+  it("rejects CHANNEL= loudly under the default (seed/demo) scope", () => {
+    const exit = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exit");
+    });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => parseArgs(["CHANNEL=dogfood"])).toThrow("exit");
+    expect(exit).toHaveBeenCalledWith(2);
+    // The rejection is actionable: it names the offender and what IS supported.
+    const message = err.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(message).toContain("CHANNEL=dogfood");
+    expect(message).toContain("PORT=");
+    exit.mockRestore();
+    err.mockRestore();
+  });
+
+  it("the watch scope is the URL scope plus CHANNEL", () => {
+    expect(WATCH_ARG_KEYS).toEqual([...URL_ARG_KEYS, "CHANNEL"]);
   });
 });

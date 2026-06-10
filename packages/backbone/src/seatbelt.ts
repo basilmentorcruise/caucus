@@ -28,7 +28,8 @@
  * - **Loop/dup** — an agent posting content identical to its own
  *   immediately-previous post (`type + " " + body.trim()`) throws
  *   {@link DuplicatePostError}. MVP compares the last post (N=1 consecutive);
- *   the {@link SeatbeltOptions.dupWindow} knob exists for a future widening.
+ *   widening to N>1 is a future change (it would grow a real option then —
+ *   the speculative `dupWindow` knob was removed as a dead knob in CAU-76).
  *
  * **Eviction (CAU-74).** Seatbelt state used to grow one entry per
  * `(channel, agent_id)` forever. Now a lazy sweep — run at the top of every
@@ -59,12 +60,6 @@ import { DuplicatePostError, RateLimitedError } from "./errors.js";
 
 /** Default per-agent posts/minute cap. Normal demo traffic stays well under it. */
 export const DEFAULT_MAX_POSTS_PER_MINUTE = 30;
-
-/**
- * Default consecutive-duplicate window (N). MVP behavior compares the agent's
- * single immediately-previous post; the knob exists for a future widening.
- */
-export const DEFAULT_DUP_WINDOW = 1;
 
 /** The rate-limit sliding-window span, in milliseconds (one minute). */
 export const SEATBELT_WINDOW_MS = 60_000;
@@ -107,8 +102,6 @@ export interface SeatbeltOptions {
    * {@link DEFAULT_MAX_TRACKED_AGENTS}.
    */
   readonly maxTrackedAgents?: number;
-  /** Consecutive-duplicate window N. Default {@link DEFAULT_DUP_WINDOW}. */
-  readonly dupWindow?: number;
   /** Sliding-window span in ms. Default {@link SEATBELT_WINDOW_MS}. */
   readonly windowMs?: number;
   /** Injectable clock (ms since epoch). Default `Date.now`, for determinism. */
@@ -186,9 +179,6 @@ export class Seatbelt {
     this.#maxTrackedAgents = opts.maxTrackedAgents ?? DEFAULT_MAX_TRACKED_AGENTS;
     this.#windowMs = opts.windowMs ?? SEATBELT_WINDOW_MS;
     this.#clock = opts.clock ?? Date.now;
-    // `dupWindow` is accepted for forward-compatibility; MVP behavior is N=1
-    // (compare the immediately-previous post) regardless of the supplied value.
-    void (opts.dupWindow ?? DEFAULT_DUP_WINDOW);
   }
 
   /**
