@@ -7,6 +7,7 @@ import {
   checkpointDir,
   checkpointPath,
   readCheckpoint,
+  readLastInjection,
   writeCheckpoint,
 } from "./checkpoint.js";
 
@@ -50,11 +51,12 @@ describe("writeCheckpoint / readCheckpoint round-trip", () => {
     expect(await readCheckpoint(p, "incident-42")).toBe(7);
   });
 
-  it("persists the documented {cursor,channel,v} format", async () => {
+  it("persists the documented {cursor,channel,v} format (v1, no injection)", async () => {
     const p = checkpointPath("s", "c", home);
     await writeCheckpoint(p, 3, "c");
     const raw = JSON.parse(await readFile(p, "utf8"));
-    expect(raw).toEqual({ cursor: 3, channel: "c", v: 0 });
+    // Omitting lastInjection writes only the cursor envelope at v1.
+    expect(raw).toEqual({ cursor: 3, channel: "c", v: 1 });
   });
 
   it("creates the checkpoints directory if absent (mkdir -p)", async () => {
@@ -129,5 +131,67 @@ describe("readCheckpoint → undefined on every unusable case", () => {
     const p = checkpointPath("s", "c", home);
     await writeCheckpoint(p, 0, "c");
     expect(await readCheckpoint(p, "c")).toBe(0);
+  });
+});
+
+describe("lastInjection v1 round-trip + v0 backward compat (CAU-93)", () => {
+  it("round-trips a lastInjection record at v1", async () => {
+    const p = checkpointPath("s", "c", home);
+    const li = { cursor: 9, block: "=== CAUCUS ===\nbody\n=== END ===", ts: "2026-06-10T00:00:00.000Z" };
+    await writeCheckpoint(p, 9, "c", li);
+    // The cursor still reads back…
+    expect(await readCheckpoint(p, "c")).toBe(9);
+    // …and the exact injection block is recovered byte-for-byte.
+    expect(await readLastInjection(p, "c")).toEqual(li);
+    const raw = JSON.parse(await readFile(p, "utf8"));
+    expect(raw.v).toBe(1);
+    expect(raw.lastInjection).toEqual(li);
+  });
+
+  it("a v0 file (no lastInjection) still yields a valid cursor, injection undefined", async () => {
+    const p = checkpointPath("s", "c", home);
+    await writeCheckpoint(p, 0, "c"); // ensure the checkpoints dir exists
+    // Simulate a checkpoint written by the previous (v0) hook.
+    await writeFile(p, JSON.stringify({ cursor: 11, channel: "c", v: 0 }), "utf8");
+    expect(await readCheckpoint(p, "c")).toBe(11);
+    expect(await readLastInjection(p, "c")).toBeUndefined();
+  });
+
+  it("readLastInjection → undefined on corrupt / missing files", async () => {
+    const missing = checkpointPath("nope", "c", home);
+    expect(await readLastInjection(missing, "c")).toBeUndefined();
+
+    const p = checkpointPath("s", "c", home);
+    await writeCheckpoint(p, 1, "c"); // ensure dir
+    await writeFile(p, "{not json", "utf8");
+    expect(await readLastInjection(p, "c")).toBeUndefined();
+  });
+
+  it("readLastInjection → undefined on channel mismatch", async () => {
+    const p = checkpointPath("s", "c", home);
+    await writeCheckpoint(p, 1, "c", { cursor: 1, block: "x", ts: "t" });
+    expect(await readLastInjection(p, "other")).toBeUndefined();
+  });
+
+  it("readLastInjection → undefined on a malformed lastInjection record", async () => {
+    const p = checkpointPath("s", "c", home);
+    await writeCheckpoint(p, 1, "c"); // ensure dir
+    // Non-string block, non-integer cursor, missing ts — each is rejected.
+    for (const bad of [
+      { cursor: 1.5, block: "x", ts: "t" },
+      { cursor: 1, block: 42, ts: "t" },
+      { cursor: 1, block: "x" },
+      { cursor: -1, block: "x", ts: "t" },
+      "not-an-object",
+    ]) {
+      await writeFile(
+        p,
+        JSON.stringify({ cursor: 1, channel: "c", v: 1, lastInjection: bad }),
+        "utf8",
+      );
+      // The cursor remains usable even when the injection record is junk.
+      expect(await readCheckpoint(p, "c")).toBe(1);
+      expect(await readLastInjection(p, "c")).toBeUndefined();
+    }
   });
 });

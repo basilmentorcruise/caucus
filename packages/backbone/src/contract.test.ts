@@ -139,6 +139,7 @@ describe("result shapes", () => {
       kind: "ephemeral",
       purpose: "p",
       verbosity: "quiet",
+      renderBudgetChars: 200,
       created_by: "alice",
       head: 0,
     });

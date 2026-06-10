@@ -7,6 +7,7 @@ describe("@caucus/hook public surface", () => {
     expect(typeof hook.loadHookConfig).toBe("function");
     expect(typeof hook.checkpointPath).toBe("function");
     expect(typeof hook.readCheckpoint).toBe("function");
+    expect(typeof hook.readLastInjection).toBe("function");
     expect(typeof hook.writeCheckpoint).toBe("function");
     expect(typeof hook.renderMessage).toBe("function");
     expect(typeof hook.renderDelta).toBe("function");
@@ -16,7 +17,6 @@ describe("@caucus/hook public surface", () => {
 
   it("re-exports the shared constants", () => {
     expect(typeof hook.DEFAULT_CAUCUS_URL).toBe("string");
-    expect(typeof hook.BODY_TRUNCATE_CHARS).toBe("number");
     expect(typeof hook.HOOK_TIMEOUT_MS).toBe("number");
     expect(hook.DELTA_HEADER).toContain("CAUCUS");
     expect(hook.DELTA_FOOTER).toContain("CAUCUS");

@@ -16,8 +16,21 @@ import {
 import { newMsgId, type MessageInput } from "@caucus/schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { checkpointPath, readCheckpoint, writeCheckpoint } from "./checkpoint.js";
+import {
+  checkpointPath,
+  readCheckpoint,
+  readLastInjection,
+  writeCheckpoint,
+} from "./checkpoint.js";
+import { renderDelta } from "./render.js";
 import { parseHookInput, runHook } from "./run.js";
+
+/** Extract the injected additionalContext from a non-empty runHook return. */
+function injectedContext(out: string): string {
+  return (
+    JSON.parse(out) as { hookSpecificOutput: { additionalContext: string } }
+  ).hookSpecificOutput.additionalContext;
+}
 
 const CHANNEL = "incident-42";
 const SESSION = "sess-abc";
@@ -30,9 +43,12 @@ const SESSION = "sess-abc";
 class FakeBackbone implements Backbone {
   log: AppendResult["message"][] = [];
   subscribeCalls = 0;
+  describeCalls = 0;
   readCalls: Array<{ cursor: Cursor }> = [];
-  throwOn: "subscribe" | "readSince" | "none" = "none";
-  hangOn: "subscribe" | "readSince" | "none" = "none";
+  throwOn: "subscribe" | "readSince" | "describeChannel" | "none" = "none";
+  hangOn: "subscribe" | "readSince" | "describeChannel" | "none" = "none";
+  /** The render budget the scripted descriptor reports (CAU-94). */
+  renderBudgetChars = 200;
   /** When set, rejections use this value verbatim (e.g. a non-Error string). */
   rejectValue: unknown = new Error("boom");
   /**
@@ -67,8 +83,20 @@ class FakeBackbone implements Backbone {
   createChannel(_opts: CreateChannelOptions): Promise<ChannelDescriptor> {
     throw new Error("not used");
   }
-  describeChannel(_channel: string): Promise<ChannelDescriptor> {
-    throw new Error("not used");
+  describeChannel(channel: string): Promise<ChannelDescriptor> {
+    this.describeCalls++;
+    if (this.throwOn === "describeChannel") return Promise.reject(this.rejectValue);
+    if (this.hangOn === "describeChannel") return new Promise<ChannelDescriptor>(() => {});
+    return Promise.resolve({
+      channel,
+      kind: "ephemeral",
+      purpose: "",
+      verbosity: "quiet",
+      renderBudgetChars: this.renderBudgetChars,
+      created_by: "alice",
+      created_ts: "t",
+      head: this.log.length,
+    });
   }
   listChannels(): Promise<readonly ChannelDescriptor[]> {
     throw new Error("not used");
@@ -447,5 +475,141 @@ describe("runHook — pages a clamped backlog across turns (CAU-83)", () => {
     expect(await readCheckpoint(path, CHANNEL)).toBe(await bb.subscribe(CHANNEL));
     // …so the fourth turn injects nothing.
     expect(await runHook(deps(bb, env))).toBe("");
+  });
+});
+
+describe("runHook — persists the last injection byte-equal (CAU-93)", () => {
+  it("records lastInjection.block byte-identical to the injected additionalContext", async () => {
+    const bb = new FakeBackbone();
+    const env = { CAUCUS_CHANNEL: CHANNEL };
+    const path = checkpointPath(SESSION, CHANNEL, home);
+
+    await runHook(deps(bb, env)); // mint at head 0
+    bb.push(
+      appended("login accepts expired JWTs", { type: "finding" }),
+      appended("on it", { type: "claim", target: "auth-timeout", agent_id: "bob-agent", owner: "bob" } as Partial<AppendResult["message"]>),
+    );
+
+    const out = await runHook(deps(bb, env));
+    const ctx = injectedContext(out);
+
+    const li = await readLastInjection(path, CHANNEL);
+    expect(li).toBeDefined();
+    // A3 byte-equal: the persisted block is EXACTLY what was injected.
+    expect(li!.block).toBe(ctx);
+    expect(li!.cursor).toBe(2); // the returned cursor
+    // The block equals a fresh production renderDelta over the same inputs.
+    expect(li!.block).toBe(renderDelta(bb.log, 2, bb.renderBudgetChars));
+    // ts is an ISO-8601 instant.
+    expect(Number.isNaN(Date.parse(li!.ts))).toBe(false);
+  });
+
+  it("does NOT record a lastInjection on an empty delta (cursor still advances)", async () => {
+    const bb = new FakeBackbone();
+    const env = { CAUCUS_CHANNEL: CHANNEL };
+    const path = checkpointPath(SESSION, CHANNEL, home);
+
+    await runHook(deps(bb, env)); // mint
+    // No new messages ⇒ empty delta on the next run.
+    expect(await runHook(deps(bb, env))).toBe("");
+    expect(await readLastInjection(path, CHANNEL)).toBeUndefined();
+  });
+});
+
+describe("runHook — render budget is honored / fail-open (CAU-94)", () => {
+  it("threads the channel renderBudgetChars into the injected delta", async () => {
+    const bb = new FakeBackbone();
+    bb.renderBudgetChars = 50; // tighter than the 200 default
+    const env = { CAUCUS_CHANNEL: CHANNEL };
+
+    await runHook(deps(bb, env)); // mint
+    bb.push(appended("Z".repeat(500)));
+    const ctx = injectedContext(await runHook(deps(bb, env)));
+
+    expect(bb.describeCalls).toBe(1); // describe was consulted
+    // Truncated to 50 chars with the affordance reporting 450 dropped.
+    expect(ctx).toContain("Z".repeat(50) + "… +truncated, 450 chars — caucus_read_channel");
+    expect(ctx).not.toContain("Z".repeat(51));
+  });
+
+  it("a raised budget renders more body end-to-end", async () => {
+    const bb = new FakeBackbone();
+    bb.renderBudgetChars = 400; // raised above the 200 default
+    const env = { CAUCUS_CHANNEL: CHANNEL };
+
+    await runHook(deps(bb, env)); // mint
+    bb.push(appended("Y".repeat(500)));
+    const ctx = injectedContext(await runHook(deps(bb, env)));
+
+    expect(ctx).toContain("Y".repeat(400) + "… +truncated, 100 chars — caucus_read_channel");
+  });
+
+  it("FAILS OPEN to the default budget when describeChannel throws — still injects", async () => {
+    const bb = new FakeBackbone();
+    bb.throwOn = "describeChannel";
+    const env = { CAUCUS_CHANNEL: CHANNEL };
+
+    await runHook(deps(bb, env)); // mint (describe not reached on first run)
+    stderrLines.length = 0;
+    bb.push(appended("W".repeat(500)));
+
+    const out = await runHook(deps(bb, env));
+    // Did NOT block the turn: a non-empty injection is still produced.
+    expect(out).not.toBe("");
+    const ctx = injectedContext(out);
+    // Fell back to the default 200-char budget.
+    expect(ctx).toContain("W".repeat(200) + "… +truncated, 300 chars — caucus_read_channel");
+    // A single value-free "budget unavailable" diagnostic; never the channel/url.
+    expect(stderrLines).toHaveLength(1);
+    expect(stderrLines[0]).not.toContain(CHANNEL);
+    expect(stderrLines[0]).not.toContain("http");
+  });
+
+  it("FAILS OPEN to the default budget when describeChannel hangs — still injects", async () => {
+    const bb = new FakeBackbone();
+    bb.hangOn = "describeChannel";
+    const env = { CAUCUS_CHANNEL: CHANNEL };
+
+    await runHook(deps(bb, env)); // mint
+    bb.push(appended("hello"));
+    const out = await runHook({ ...deps(bb, env), timeoutMs: 50 });
+    expect(out).not.toBe("");
+    expect(injectedContext(out)).toContain("hello");
+  });
+});
+
+describe("runHook — stdout-sacred on every error branch (CAU-93/94)", () => {
+  // The contract: runHook returns EITHER "" OR a parseable injection envelope —
+  // never a half-written or non-JSON string — on any failure mode.
+  const assertSacred = (out: string): void => {
+    if (out === "") return;
+    const parsed = JSON.parse(out) as {
+      hookSpecificOutput?: { hookEventName?: string; additionalContext?: string };
+    };
+    expect(parsed.hookSpecificOutput?.hookEventName).toBe("UserPromptSubmit");
+    expect(typeof parsed.hookSpecificOutput?.additionalContext).toBe("string");
+  };
+
+  it("describe throws ⇒ valid envelope (fail-open), not garbage on stdout", async () => {
+    const bb = new FakeBackbone();
+    bb.throwOn = "describeChannel";
+    const env = { CAUCUS_CHANNEL: CHANNEL };
+    await runHook(deps(bb, env));
+    bb.push(appended("body"));
+    assertSacred(await runHook(deps(bb, env)));
+  });
+
+  it("readSince transient throw ⇒ empty string, never garbage", async () => {
+    const bb = new FakeBackbone();
+    const env = { CAUCUS_CHANNEL: CHANNEL };
+    await runHook(deps(bb, env));
+    bb.throwOn = "readSince";
+    assertSacred(await runHook(deps(bb, env)));
+  });
+
+  it("subscribe throw on first run ⇒ empty string", async () => {
+    const bb = new FakeBackbone();
+    bb.throwOn = "subscribe";
+    assertSacred(await runHook(deps(bb, { CAUCUS_CHANNEL: CHANNEL })));
   });
 });

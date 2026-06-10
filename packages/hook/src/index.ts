@@ -20,12 +20,13 @@ export {
   checkpointDir,
   checkpointPath,
   readCheckpoint,
+  readLastInjection,
   writeCheckpoint,
+  type LastInjection,
 } from "./checkpoint.js";
 export {
   renderMessage,
   renderDelta,
-  BODY_TRUNCATE_CHARS,
   DELTA_HEADER,
   DELTA_FOOTER,
 } from "./render.js";

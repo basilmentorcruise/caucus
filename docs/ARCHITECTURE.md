@@ -57,6 +57,8 @@ Tool descriptions teach the typed schema and the **claim-before-you-work** norm.
 ### Claude Code hook
 A turn-start hook that calls `read_channel(since = checkpoint)`, formats the delta into injected context, and advances the checkpoint. This is the **passive-awareness primitive** — agents need not remember to read. It injects only new messages, capped to a size budget with a "+N older, call `read_channel`" overflow line so context never floods.
 
+The injected block is wrapped in a **stable, quotable delimiter** — `DELTA_HEADER = "=== CAUCUS CHANNEL (new since last turn) ==="` and `DELTA_FOOTER = "=== END CAUCUS ==="` (CAU-93). These strings are a **load-bearing contract**: an agent may quote the text between them verbatim and a human can audit delivery from the session itself; the hook also persists the last non-empty injection (cursor + exact block) in its checkpoint for byte-equal verification. They are a **visual** boundary, not a parser-trusted frame (body content cannot forge them). A one-line cursor audit line sits under the header. The per-message body render budget is a **per-channel knob** (`renderBudgetChars`, default 200 — CAU-94); a truncated body renders an explicit `+truncated, N chars — caucus_read_channel` affordance instead of silently dropping the tail.
+
 ### Backbone (single process — see substrate decision below)
 Holds the shared state behind one implementation-agnostic interface:
 - **Append-only message log** per channel, with `readSince(cursor)` returning ordered new messages.

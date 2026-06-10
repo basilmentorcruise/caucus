@@ -33,12 +33,18 @@
  * a genuine delta — the same code path, end to end.)
  */
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { HttpBackbone } from "@caucus/backbone-server";
+import {
+  DELTA_FOOTER,
+  DELTA_HEADER,
+  checkpointPath,
+  readLastInjection,
+} from "@caucus/hook";
 import { newMsgId, type MessageInput } from "@caucus/schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -264,5 +270,182 @@ describe("turn-start hook self-heals after an ephemeral-backbone restart (CAU-72
     } finally {
       await gen2.stop();
     }
+  });
+});
+
+/**
+ * CAU-93 — the injected block is a quotable, auditable artifact. After a real
+ * subprocess run we read the hook's OWN checkpoint and assert the persisted
+ * `lastInjection.block` is byte-equal to the injected `additionalContext`, and
+ * equals exactly the text between the `DELTA_HEADER`/`DELTA_FOOTER` markers — the
+ * stable, quotable boundary a human audits delivery against.
+ */
+describe("hook injection is quotable + auditable (CAU-93)", () => {
+  let url: string;
+  let stopServer: () => Promise<void>;
+  let backbone: HttpBackbone;
+  let home: string;
+  const sessionId = "sess-hook-audit";
+  const CH = "incident-audit";
+
+  beforeAll(async () => {
+    const started = await startServerProcess({ CAUCUS_TOKENS: SERVER_TOKENS });
+    url = started.url;
+    stopServer = started.stop;
+    backbone = new HttpBackbone(url, { token: TOK_ALICE });
+    home = await mkdtemp(join(tmpdir(), "caucus-hook-audit-"));
+    await backbone.createChannel({ channel: CH, purpose: "audit", created_by: "alice" });
+  });
+
+  afterAll(async () => {
+    await stopServer?.();
+    await rm(home, { recursive: true, force: true });
+  });
+
+  function runHookOn(channel: string): string {
+    return execFileSync("node", [HOOK_BIN], {
+      cwd: REPO_ROOT,
+      env: { ...process.env, HOME: home, USERPROFILE: home, CAUCUS_URL: url, CAUCUS_CHANNEL: channel },
+      input: JSON.stringify({ session_id: sessionId, hook_event_name: "UserPromptSubmit" }),
+      encoding: "utf8",
+    });
+  }
+
+  it("persists lastInjection.block byte-equal to the injected, quotable block", async () => {
+    expect(runHookOn(CH).trim()).toBe(""); // pre-mint
+    await backbone.append(CH, finding("alice-agent", "alice", "auth bypass confirmed"));
+
+    const ctx = additionalContext(runHookOn(CH));
+    // The block carries the cursor audit line under the header (CAU-93).
+    expect(ctx).toContain("delivered — cursor 1 · quote between the === markers to verify");
+    expect(ctx.startsWith(DELTA_HEADER)).toBe(true);
+    expect(ctx.endsWith(DELTA_FOOTER)).toBe(true);
+
+    // The persisted last injection (the hook's own state) is BYTE-EQUAL to what
+    // was injected — a human can verify delivery from the session.
+    const li = await readLastInjection(checkpointPath(sessionId, CH, home), CH);
+    expect(li).toBeDefined();
+    expect(li!.block).toBe(ctx);
+
+    // And the persisted block equals exactly the text BETWEEN the markers (incl.
+    // the markers themselves), confirming the quotable boundary is load-bearing.
+    const raw = await readFile(checkpointPath(sessionId, CH, home), "utf8");
+    expect(JSON.parse(raw).v).toBe(1); // checkpoint upgraded to v1
+    const between = ctx.slice(ctx.indexOf(DELTA_HEADER), ctx.indexOf(DELTA_FOOTER) + DELTA_FOOTER.length);
+    expect(li!.block).toBe(between);
+  });
+});
+
+/**
+ * CAU-94 — configurable, artifact-aware truncation. A ~2KB-body finding WITH an
+ * artifact injects a TRUNCATED body carrying both the `↗artifact` marker and the
+ * `+truncated, N chars — caucus_read_channel` affordance; the block stays under
+ * the overall 8000 cap; and the affordance is NOT cosmetic — fetching the full
+ * body over the same backbone (what `caucus_read_channel` does) returns the
+ * entire 2KB. A second channel with a RAISED `renderBudgetChars` renders more of
+ * the same body inline, proving the knob is honored end-to-end.
+ */
+describe("hook delta truncation is artifact-aware + configurable (CAU-94)", () => {
+  let url: string;
+  let stopServer: () => Promise<void>;
+  let backbone: HttpBackbone;
+  let home: string;
+  const sessionId = "sess-hook-budget";
+  const BIG_BODY = "EVIDENCE ".repeat(250).trim(); // ~2.2KB, collapses cleanly
+
+  beforeAll(async () => {
+    const started = await startServerProcess({ CAUCUS_TOKENS: SERVER_TOKENS });
+    url = started.url;
+    stopServer = started.stop;
+    backbone = new HttpBackbone(url, { token: TOK_ALICE });
+    home = await mkdtemp(join(tmpdir(), "caucus-hook-budget-"));
+  });
+
+  afterAll(async () => {
+    await stopServer?.();
+    await rm(home, { recursive: true, force: true });
+  });
+
+  function runHookOn(channel: string): string {
+    return execFileSync("node", [HOOK_BIN], {
+      cwd: REPO_ROOT,
+      env: { ...process.env, HOME: home, USERPROFILE: home, CAUCUS_URL: url, CAUCUS_CHANNEL: channel },
+      input: JSON.stringify({ session_id: sessionId, hook_event_name: "UserPromptSubmit" }),
+      encoding: "utf8",
+    });
+  }
+
+  it("truncates a 2KB artifact finding with a WORKING read affordance, under the 8000 cap (AC: CAU-94)", async () => {
+    const CH = "incident-budget-default";
+    await backbone.createChannel({ channel: CH, purpose: "budget default", created_by: "alice" });
+    expect(runHookOn(CH).trim()).toBe(""); // pre-mint
+
+    // A 2KB finding WITH an artifact (the URL must never surface — ADR-C12).
+    await backbone.append(CH, {
+      type: "finding",
+      agent_id: "alice-agent",
+      owner: "alice",
+      msg_id: newMsgId(),
+      body: BIG_BODY,
+      artifact: "https://files.example/dump?token=SECRETVALUE",
+    });
+
+    const ctx = additionalContext(runHookOn(CH));
+    // The affordance + artifact marker are BOTH present.
+    expect(ctx).toContain("+truncated,");
+    expect(ctx).toContain("caucus_read_channel");
+    expect(ctx).toContain("↗artifact");
+    // The URL/secret never surfaces.
+    expect(ctx).not.toContain("files.example");
+    expect(ctx).not.toContain("SECRETVALUE");
+    // The rendered body line is truncated (the full 2KB is NOT inline) and the
+    // whole block stays under the overall cap.
+    expect(ctx).not.toContain(BIG_BODY);
+    expect(ctx.length).toBeLessThanOrEqual(8000);
+
+    // The affordance is REAL: fetching the channel (what caucus_read_channel does
+    // server-side) returns the FULL 2KB body — not cosmetic.
+    const full = await backbone.readSince(CH, 0);
+    expect(full.messages[0]?.body).toBe(BIG_BODY);
+    expect(full.messages[0]?.body.length).toBeGreaterThan(2000);
+  });
+
+  it("a channel with a RAISED renderBudgetChars renders more body inline (budget honored end-to-end)", async () => {
+    const CH_LOW = "incident-budget-low";
+    const CH_HIGH = "incident-budget-high";
+    await backbone.createChannel({
+      channel: CH_LOW,
+      purpose: "low budget",
+      created_by: "alice",
+      renderBudgetChars: 200,
+    });
+    await backbone.createChannel({
+      channel: CH_HIGH,
+      purpose: "high budget",
+      created_by: "alice",
+      renderBudgetChars: 2000,
+    });
+    expect(runHookOn(CH_LOW).trim()).toBe("");
+    expect(runHookOn(CH_HIGH).trim()).toBe("");
+
+    const msg: MessageInput = {
+      type: "finding",
+      agent_id: "alice-agent",
+      owner: "alice",
+      msg_id: newMsgId(),
+      body: BIG_BODY,
+    };
+    await backbone.append(CH_LOW, { ...msg, msg_id: newMsgId() });
+    await backbone.append(CH_HIGH, { ...msg, msg_id: newMsgId() });
+
+    const lowCtx = additionalContext(runHookOn(CH_LOW));
+    const highCtx = additionalContext(runHookOn(CH_HIGH));
+
+    // The high-budget channel renders strictly MORE of the body inline.
+    const collapsed = BIG_BODY.replace(/\s+/g, " ").trim();
+    expect(lowCtx).toContain(collapsed.slice(0, 200));
+    expect(lowCtx).not.toContain(collapsed.slice(0, 201));
+    expect(highCtx).toContain(collapsed.slice(0, 2000));
+    expect(highCtx.length).toBeGreaterThan(lowCtx.length);
   });
 });

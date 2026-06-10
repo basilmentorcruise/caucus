@@ -143,6 +143,7 @@ describe("CAU-73: descriptor control-character sanitization", () => {
       kind: "ephemeral",
       purpose: `triage ${dirty}`,
       verbosity: "quiet",
+      renderBudgetChars: 200,
       created_by: `mallory${dirty}`,
       created_ts: "2026-06-09T00:00:00.000Z#000000000001",
       head: 0,

@@ -83,6 +83,9 @@ importers:
       '@caucus/backbone-server':
         specifier: workspace:*
         version: link:../backbone-server
+      '@caucus/hook':
+        specifier: workspace:*
+        version: link:../hook
       '@caucus/schema':
         specifier: workspace:*
         version: link:../schema

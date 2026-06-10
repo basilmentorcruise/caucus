@@ -4,7 +4,7 @@
  * cursor advancement, channel lifecycle, the monotonic `ts` stamp, and the full
  * validation / error taxonomy.
  */
-import { newMsgId, type MessageInput } from "@caucus/schema";
+import { INJECTED_DELTA_CAP_CHARS, newMsgId, type MessageInput } from "@caucus/schema";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -14,6 +14,7 @@ import {
   DEFAULT_MAX_CHANNELS,
   DEFAULT_MAX_MESSAGES_PER_CHANNEL,
   DEFAULT_MAX_READ_LIMIT,
+  DEFAULT_RENDER_BUDGET_CHARS,
   DuplicatePostError,
   InMemoryBackbone,
   InvalidChannelNameError,
@@ -255,6 +256,44 @@ describe("channels", () => {
       verbosity: "chatty",
     });
     expect((await b.describeChannel("loud")).verbosity).toBe("chatty");
+  });
+
+  it("defaults renderBudgetChars to 200 and honors an explicit value (CAU-94)", async () => {
+    const def = await b.describeChannel(CH);
+    expect(def.renderBudgetChars).toBe(DEFAULT_RENDER_BUDGET_CHARS);
+    expect(def.renderBudgetChars).toBe(200);
+    await b.createChannel({
+      channel: "wide",
+      purpose: "p",
+      created_by: "bob",
+      renderBudgetChars: 1200,
+    });
+    expect((await b.describeChannel("wide")).renderBudgetChars).toBe(1200);
+  });
+
+  it("validates renderBudgetChars as an integer in [1, INJECTED_DELTA_CAP_CHARS] (CAU-94)", async () => {
+    for (const bad of [0, -1, 1.5, INJECTED_DELTA_CAP_CHARS + 1, "200" as unknown as number]) {
+      await expect(
+        b.createChannel({
+          channel: `bad-${String(bad).replace(/\W+/g, "x")}`,
+          purpose: "p",
+          created_by: "bob",
+          renderBudgetChars: bad,
+        }),
+      ).rejects.toThrow(InvalidMessageError);
+    }
+    // The boundary values are accepted.
+    await expect(
+      b.createChannel({ channel: "lo", purpose: "p", created_by: "bob", renderBudgetChars: 1 }),
+    ).resolves.toMatchObject({ renderBudgetChars: 1 });
+    await expect(
+      b.createChannel({
+        channel: "hi",
+        purpose: "p",
+        created_by: "bob",
+        renderBudgetChars: INJECTED_DELTA_CAP_CHARS,
+      }),
+    ).resolves.toMatchObject({ renderBudgetChars: INJECTED_DELTA_CAP_CHARS });
   });
 
   it("stamps ts strictly increasing under a tight append loop", async () => {
