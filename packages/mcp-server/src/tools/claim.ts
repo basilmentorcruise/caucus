@@ -64,6 +64,16 @@ const CLAIM_INPUT = {
     .string()
     .optional()
     .describe("msg_id (ULID) of the specific message you're replying to."),
+  channel: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Target room for this claim. Absent ⇒ your session channel. To claim in " +
+        "another room you must have joined it first with caucus_join_channel; " +
+        "post sparingly into another team's room (ADR-C6). Claim ledgers are " +
+        "per-channel — a target is independently claimable in each room.",
+    ),
 } as const satisfies ZodRawShapeCompat;
 
 /** Parsed `caucus_claim` args (validated by the SDK before `handle`). */
@@ -72,6 +82,13 @@ interface ClaimArgs {
   readonly note?: string;
   readonly thread?: string;
   readonly reply_to?: string;
+  /**
+   * Target room (CAU-92). A ROUTING arg, NOT message content: it is threaded to
+   * `session.claim` separately and never enters {@link buildClaimDraft}. Absent
+   * ⇒ the session's home channel. (Note: `target` here is the CLAIM target — the
+   * work item — which is unrelated to this routing `channel`.)
+   */
+  readonly channel?: string;
 }
 
 /**
@@ -120,11 +137,15 @@ export const claimTool: CaucusTool = {
     session: CaucusSession,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
-    const draft = buildClaimDraft(args as unknown as ClaimArgs);
-    // Both outcomes are normal results — neither is `isError`. Errors (empty
-    // target, unknown channel) propagate untouched; the backbone's messages are
-    // value-free (ADR-C12), so nothing here interpolates target/note.
-    const result = await session.claim(draft);
+    const claimArgs = args as unknown as ClaimArgs;
+    const draft = buildClaimDraft(claimArgs);
+    // `channel` is a routing target threaded SEPARATELY from the draft (CAU-92):
+    // it is not part of the claim. Both outcomes are normal results — neither is
+    // `isError`. Errors (empty target, unknown channel, or a not-joined cross-
+    // room target → value-free NotJoinedError) propagate untouched; the
+    // backbone's and the gate's messages are value-free (ADR-C12), so nothing
+    // here interpolates target/note/channel.
+    const result = await session.claim(draft, claimArgs.channel);
     if (result.outcome === "granted") {
       const payload = {
         outcome: "granted",

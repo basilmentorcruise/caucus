@@ -86,6 +86,9 @@ importers:
       '@caucus/hook':
         specifier: workspace:*
         version: link:../hook
+      '@caucus/mcp-server':
+        specifier: workspace:*
+        version: link:../mcp-server
       '@caucus/schema':
         specifier: workspace:*
         version: link:../schema

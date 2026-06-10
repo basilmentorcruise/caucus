@@ -15,6 +15,12 @@ export default defineConfig({
       "@caucus/backbone": resolve(import.meta.dirname, "packages/backbone/src/index.ts"),
       "@caucus/backbone-server": resolve(import.meta.dirname, "packages/backbone-server/src/index.ts"),
       "@caucus/schema": resolve(import.meta.dirname, "packages/schema/src/index.ts"),
+      // The mcp-server package's index.ts is the stdio bin (side-effecting on
+      // import); `lib.ts` is its importable surface (session factory, tools,
+      // NotJoinedError). The CAU-92 multi-room scenario drives a real
+      // CaucusSession — where the join-gate lives — over the wire-backed
+      // backbone, so it must resolve to that library source, not the bin.
+      "@caucus/mcp-server": resolve(import.meta.dirname, "packages/mcp-server/src/lib.ts"),
     },
   },
   test: {

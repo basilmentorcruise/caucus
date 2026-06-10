@@ -9,6 +9,7 @@ import {
 } from "@caucus/schema";
 import type { ServerConfig } from "../config.js";
 import { createSession } from "../session.js";
+import { NotJoinedError } from "../errors.js";
 import { claimTool } from "./claim.js";
 
 // Control bytes for the CAU-73 sanitization test. Spelled with \x escapes so
@@ -280,5 +281,73 @@ describe("caucus_claim — errors propagate (ADR-C12, value-free)", () => {
       await claimTool.handle(session, { target: "repro" }),
     );
     expect(clean.outcome).toBe("granted");
+  });
+});
+
+describe("caucus_claim — CAU-92 optional channel routing", () => {
+  /** Home (`incident-1`) + a joinable second room (`war-room-2`). */
+  async function twoRoomBackbone(): Promise<InMemoryBackbone> {
+    const backbone = await freshBackbone();
+    await backbone.createChannel({
+      channel: "war-room-2",
+      purpose: "other",
+      created_by: "carol",
+    });
+    return backbone;
+  }
+
+  it("declares an optional channel arg in the input schema", () => {
+    const shape = claimTool.inputSchema as Record<
+      string,
+      { isOptional(): boolean }
+    >;
+    expect(shape["channel"]).toBeDefined();
+    expect(shape["channel"]?.isOptional()).toBe(true);
+  });
+
+  it("routes the claim to the joined room's ledger; per-channel first-write-wins", async () => {
+    const backbone = await twoRoomBackbone();
+    const session = createSession(config, backbone);
+    session.noteJoined("war-room-2");
+
+    const there = envelope<GrantedEnvelope>(
+      await claimTool.handle(session, {
+        target: "shared-target",
+        channel: "war-room-2",
+      }),
+    );
+    expect(there.outcome).toBe("granted");
+
+    // The claim landed in war-room-2, not home.
+    const inOther = await backbone.readSince("war-room-2", 0);
+    expect(inOther.messages).toHaveLength(1);
+    expect(inOther.messages[0]?.type).toBe("claim");
+    expect((await readAll(backbone)).length).toBe(0);
+
+    // Per-channel ledgers: the SAME target is still claimable in home.
+    const atHome = envelope<GrantedEnvelope>(
+      await claimTool.handle(session, { target: "shared-target" }),
+    );
+    expect(atHome.outcome).toBe("granted");
+  });
+
+  it("a NOT-joined channel claim is rejected value-free; the room's ledger is untouched", async () => {
+    const backbone = await twoRoomBackbone();
+    const session = createSession(config, backbone);
+    // Deliberately NOT joined.
+
+    let thrown: unknown;
+    await claimTool
+      .handle(session, { target: "leak-target", channel: "war-room-2" })
+      .catch((e) => {
+        thrown = e;
+      });
+    expect(thrown).toBeInstanceOf(NotJoinedError);
+    const message = (thrown as Error).message;
+    expect(message).not.toContain("war-room-2");
+    expect(message).not.toContain("leak-target");
+    // Gate fired before the backbone — the target room's ledger never moved.
+    const inOther = await backbone.readSince("war-room-2", 0);
+    expect(inOther.messages).toHaveLength(0);
   });
 });

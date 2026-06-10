@@ -5,15 +5,15 @@
   "description": "MCP server over the backbone interface.",
   "license": "MIT",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/lib.js",
+  "types": "./dist/lib.d.ts",
   "bin": {
     "caucus-mcp": "./dist/index.js"
   },
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+      "types": "./dist/lib.d.ts",
+      "default": "./dist/lib.js"
     }
   },
   "files": [
