@@ -445,6 +445,33 @@ describe("dispatch — backbone errors map cleanly", () => {
     expect(body.error.code).toBe("invalid_message");
     expect(Array.isArray(body.error.issues)).toBe(true);
   });
+
+  it("append with an over-cap to[] (33 recipients) → 400; response carries NO recipient values (CAU-90)", async () => {
+    const bb = await seeded();
+    // 33 > MAX_RECIPIENTS (32). Use a distinctive recipient token so we can
+    // assert it never appears anywhere in the serialized error envelope.
+    const RECIPIENT = "sentinel-recipient-xyz";
+    const to = Array.from({ length: 33 }, () => RECIPIENT);
+    const res = await dispatch(bb, "POST", "/channels/c1/append", {
+      type: "finding",
+      agent_id: "a",
+      owner: "alice",
+      msg_id: newMsgId(),
+      body: "fan-out",
+      to,
+    }, AUTH);
+    expect(res.status).toBe(400);
+    const body = res.json as {
+      error: { code: string; issues?: string[] };
+    };
+    expect(body.error.code).toBe("invalid_message");
+    expect(body.error.issues).toContain(
+      "to[] has more than 32 recipients (33)",
+    );
+    // ADR-C12 / CAU-88: the full serialized envelope echoes the count/limit but
+    // never a single recipient value.
+    expect(JSON.stringify(res.json)).not.toContain(RECIPIENT);
+  });
 });
 
 describe("dispatch — claim route (CAU-7)", () => {

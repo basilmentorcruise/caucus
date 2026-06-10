@@ -212,27 +212,37 @@ defend against any of the following:
   channel-create throttle (all ADR-C8 seatbelts), count caps on each channel's log and on the
   number of channels, eviction of idle seatbelt bookkeeping with an LRU backstop, and — closing
   the last single-request lever (CAU-83) — a max `readSince` page size (`maxReadLimit`, default
-  500): one tokenless read can no longer make the server serialize a whole capped log (~330 MB of
+  500): one tokenless read can no longer make the server serialize a whole capped log (~320 MB of
   JSON) synchronously; an over-cap or omitted `limit` is silently clamped and the reader pages via
-  the returned cursor. The arithmetic: with the defaults (30 posts/min/channel, 120/min global per
-  agent, 10 creates/min per owner, 10 000 messages/channel, 1 000 channels, 4 096 tracked seatbelt
-  entries per map) a channel tops out around ~330 MB theoretical worst case (10k messages ×
-  16k-char bodies), and at the capped rates filling one channel takes ~5.6 h for a single token
-  (per-channel cap 30/min), or ~83 min with four colluding tokens (global cap 120/min each). That
-  ~330 MB figure is per channel: with `maxChannels` = 1 000 the backbone-wide theoretical bound is
-  ~330 GB — the count caps bound *counts*, not bytes, to a host-survivable level, and the
-  operative byte bound is the per-token ingest rate (120 msg/min × ~32 KB ≈ 3.8 MB/min, ≈
-  ~5.5 GB/day per token).
+  the returned cursor. The residual, stated honestly: a clamped page is still up to ~10–25 MB of
+  JSON (500 messages × up to 16k-char bodies, plus envelope overhead), and **reads are not
+  rate-limited** — the seatbelt throttles writes, not `readSince` — so a token-holder can issue
+  clamped reads back-to-back. This is acceptable on loopback (the intended deployment), and is
+  another reason not to expose the port. The arithmetic: with the defaults (30 posts/min/channel,
+  120/min global per agent, 10 creates/min per owner, 10 000 messages/channel, 1 000 channels,
+  4 096 tracked seatbelt entries per map) a channel tops out around ~320 MB theoretical worst case
+  (10k messages × 16k-char bodies × 2 bytes/char), and at the capped rates filling one channel takes
+  ~5.6 h for a single token (per-channel cap 30/min), or ~83 min with four colluding tokens (global
+  cap 120/min each). That ~320 MB figure is per channel: with `maxChannels` = 1 000 the
+  backbone-wide theoretical bound is ~320 GB — the count caps bound *counts*, not bytes, to a
+  host-survivable level, and the operative byte bound is the per-token ingest rate (120 msg/min ×
+  ~32 KB ≈ 3.8 MB/min, ≈ ~5.5 GB/day per token).
 
   **Byte-bound decision (CAU-83): operator guidance, not a cap.** v1 ships no per-channel byte
   cap (sum of body lengths); the bound on resident bytes is sized by the count caps the operator
   configures. Size your host with: **resident upper bound ≈ `maxChannels` ×
   `maxMessagesPerChannel` × `MAX_BODY_CHARS` × 2 bytes/char** (JS strings are UTF-16; defaults
   give 1 000 × 10 000 × 16 000 × 2 ≈ ~320 GB theoretical, reached only at full caps after days of
-  max-rate ingest). On a memory-constrained host, lower `maxMessagesPerChannel` and/or
+  max-rate ingest). With the `to[]` recipient-count cap (CAU-90, `MAX_RECIPIENTS` = 32) and the
+  per-field char cap (`MAX_FIELD_CHARS` = 1 024) now bounding the non-body fields, the body-only
+  formula is a **tighter upper bound** than before: a single message's non-body fields add at most a
+  few tens of KB (32 recipients × 1 024 chars × 2 bytes ≈ 64 KB worst case) on top of the 16k-char
+  body, so the body term dominates and the formula above holds with comfortable headroom. On a
+  memory-constrained host, lower `maxMessagesPerChannel` and/or
   `maxChannels` accordingly (e.g. 100 channels × 1 000 messages bounds residency at ~3.2 GB). The
   honest caveat: these caps are **constructor knobs** (`InMemoryBackboneOptions` — embedders
-  passing `maxMessagesPerChannel`/`maxChannels` to `InMemoryBackbone`/`startServer`); the stock
+  passing `maxMessagesPerChannel`/`maxChannels`/`maxReadLimit` to `InMemoryBackbone`/`startServer`);
+  the stock
   `caucus-backbone` bin runs the defaults, and wiring env knobs for them is a separate ticket.
   The residual posture, stated honestly: the seatbelt and caps are cooperative-abuse /
   accidental-loop controls within the ADR-C9 trust boundary; they are not a defense against a

@@ -81,8 +81,9 @@ export type InMemoryBackboneOptions = SeatbeltOptions & {
    * messages, regardless of the requested `limit` (an over-cap or omitted
    * `limit` is SILENTLY clamped, never an error — cursor catch-up converges by
    * reading again from the returned cursor). Default
-   * {@link DEFAULT_MAX_READ_LIMIT}. Like the CAU-74 caps, this is trusted
-   * constructor input — no validation.
+   * {@link DEFAULT_MAX_READ_LIMIT}. Unlike the CAU-74 count caps, this value is
+   * FLOORED at construction (CAU-90): a non-positive or NaN cap would make every
+   * page empty — a silent "caught up" footgun — so it falls back to the default.
    */
   readonly maxReadLimit?: number;
 };
@@ -172,7 +173,20 @@ export class InMemoryBackbone implements Backbone {
     this.#maxChannels = opts.maxChannels ?? DEFAULT_MAX_CHANNELS;
     this.#maxMessagesPerChannel =
       opts.maxMessagesPerChannel ?? DEFAULT_MAX_MESSAGES_PER_CHANNEL;
-    this.#maxReadLimit = opts.maxReadLimit ?? DEFAULT_MAX_READ_LIMIT;
+    // Floor `maxReadLimit` at construction (CAU-90). A value ≤ 0 (or NaN, e.g.
+    // from a fat-fingered env knob) would clamp EVERY `readSince` page to length
+    // 0 — `readSince` reads as "caught up" and the hook silently delivers
+    // nothing, an integrity footgun with no error. We floor to the DEFAULT
+    // rather than to 1: a non-positive/NaN cap is a misconfiguration, not a
+    // request for single-message paging, so the safe recovery is the documented
+    // default page size — keeping catch-up fast — not a pathologically slow
+    // one-at-a-time stream. `Number.isFinite` rejects NaN/±Infinity before the
+    // `> 0` check (NaN must not pass through).
+    const requestedReadLimit = opts.maxReadLimit ?? DEFAULT_MAX_READ_LIMIT;
+    this.#maxReadLimit =
+      Number.isFinite(requestedReadLimit) && requestedReadLimit > 0
+        ? Math.floor(requestedReadLimit)
+        : DEFAULT_MAX_READ_LIMIT;
   }
 
   /**

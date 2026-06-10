@@ -13,6 +13,7 @@ export {
   STATUS_VALUES,
   INJECTED_DELTA_CAP_CHARS,
   MAX_ERROR_FRAGMENT_CHARS,
+  MAX_RECIPIENTS,
 } from "./constants.js";
 export type {
   MessageType,

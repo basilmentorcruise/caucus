@@ -1015,3 +1015,48 @@ describe("readSince max page size (CAU-83)", () => {
     }).toThrow(TypeError);
   });
 });
+
+// CAU-90: a non-positive or NaN `maxReadLimit` must NOT make every page empty.
+// Before the floor, `Math.min(limit ?? maxReadLimit, maxReadLimit)` collapsed to
+// 0 (or NaN), so every readSince returned a length-0 page that the hook reads as
+// "caught up" — silently delivering nothing. The constructor now floors a
+// non-finite/non-positive cap back to the documented default.
+describe("maxReadLimit floor (CAU-90)", () => {
+  /** A backbone with the given cap and `count` messages appended. */
+  async function backboneWith(
+    maxReadLimit: number,
+    count: number,
+  ): Promise<InMemoryBackbone> {
+    const bb = new InMemoryBackbone({ maxReadLimit });
+    await bb.createChannel({ channel: CH, purpose: "p", created_by: "alice" });
+    for (let i = 0; i < count; i++) {
+      await bb.append(CH, finding("a1", `m${i}`));
+    }
+    return bb;
+  }
+
+  it.each([
+    ["zero", 0],
+    ["negative", -5],
+    ["NaN", Number.NaN],
+  ])(
+    "%s maxReadLimit still returns a non-empty page (no silent caught-up); cursor advances",
+    async (_name, cap) => {
+      const bb = await backboneWith(cap, 3);
+      const page = await bb.readSince(CH, 0);
+      // The floor recovers the default page size, so all 3 are returned at once.
+      expect(page.messages.map((m) => m.body)).toEqual(["m0", "m1", "m2"]);
+      expect(page.cursor).toBe(3); // cursor advanced — not stuck at 0
+    },
+  );
+
+  it("floors to the documented default (so a normal page reaches DEFAULT_MAX_READ_LIMIT)", async () => {
+    // More than one default page of messages would be slow to author under the
+    // rate caps; instead assert the effective cap directly: an over-cap explicit
+    // limit clamps to DEFAULT_MAX_READ_LIMIT, proving the floor landed there.
+    const bb = await backboneWith(0, 5);
+    const page = await bb.readSince(CH, 0, DEFAULT_MAX_READ_LIMIT + 1000);
+    expect(page.messages).toHaveLength(5); // all 5 (well under the default cap)
+    expect(page.cursor).toBe(5);
+  });
+});

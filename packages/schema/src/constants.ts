@@ -42,6 +42,21 @@ export const INJECTED_DELTA_CAP_CHARS = 8000 as const;
 export const MAX_REPORTED_ISSUES = 10 as const;
 
 /**
+ * Maximum number of entries allowed in a message's `to[]` routing list (CAU-90).
+ *
+ * `to[]` is a routing fan-out list — "deliver this to these sessions" — NOT a
+ * payload field, so it gets a tight count cap on top of the per-entry char cap
+ * the backbone enforces. Without it the count is poster-controlled: an HTTP body
+ * is bounded (`MAX_BODY_BYTES`, 256 KB) but in-process embedders have no such
+ * bound, so a single message could carry tens of thousands of recipients and a
+ * clamped read page would still serialize tens of MB per tokenless read. 32 is
+ * far above any real fan-out (a war room has a handful of sessions) while
+ * bounding the blast radius. Enforced in the SHARED schema validation so both
+ * the wire and in-process embedders get it.
+ */
+export const MAX_RECIPIENTS = 32 as const;
+
+/**
  * Maximum length of a caller-supplied fragment echoed into an error message
  * (CAU-88) — e.g. the unknown-field key in `validate`, or the received `v` in
  * `UnsupportedVersionError`.

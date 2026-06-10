@@ -13,7 +13,12 @@
  * read/render layer (CAU-69/73). Error strings NEVER echo payload bytes —
  * these errors travel over the wire into TTYs (ADR-C12).
  */
-import { MAX_REPORTED_ISSUES, MESSAGE_TYPES, STATUS_VALUES } from "./constants.js";
+import {
+  MAX_RECIPIENTS,
+  MAX_REPORTED_ISSUES,
+  MESSAGE_TYPES,
+  STATUS_VALUES,
+} from "./constants.js";
 import { MalformedMessageError } from "./errors.js";
 import {
   containsControlChars,
@@ -151,6 +156,18 @@ export function validate(value: unknown): asserts value is CaucusMessage {
       !value.to.every((entry) => isNonEmptyString(entry))
     ) {
       issues.push("to must be a non-empty array of non-empty strings");
+    } else if (value.to.length > MAX_RECIPIENTS) {
+      // Count cap (CAU-90): `to[]` is a routing fan-out list, not a payload —
+      // a poster-controlled count is a read-amplification lever (in-process
+      // embedders have no body-byte bound). Positional + NON-echoing (ADR-C12 /
+      // CAU-88): the message carries the offending count and the limit, never
+      // the recipient values (which are caller-controlled and may contain
+      // control bytes — see the per-entry check below). Checked before the
+      // control-char scan so an over-cap list is rejected by count without
+      // iterating every (possibly dirty) entry.
+      issues.push(
+        `to[] has more than ${MAX_RECIPIENTS} recipients (${value.to.length})`,
+      );
     } else if (
       // ONE aggregate issue for the whole array (CAU-71): the entry count is
       // poster-controlled, so per-entry issues would be unbounded.
