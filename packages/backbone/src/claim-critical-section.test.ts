@@ -73,20 +73,27 @@ describe("claim() critical-section guard (no await between ledger read and write
     expect(region).toContain("claimLedger.set(");
   });
 
-  it("contains no `await` (or `yield`) in code between the markers", () => {
+  it("contains no deferral in code between the markers", () => {
     const region = source.slice(
       source.indexOf(BEGIN),
       source.indexOf(END),
     );
     const code = stripComments(region);
-    const offenders = code.match(/\b(await|yield)\b/g) ?? [];
+    // Not just await/yield: anything that schedules work for a later tick
+    // (.then, queueMicrotask, timers, nextTick, dynamic import) breaks the
+    // run-to-completion property the same way.
+    const offenders =
+      code.match(
+        /\b(await|yield)\b|\.then\s*\(|queueMicrotask|setTimeout|setImmediate|process\.nextTick|\bimport\s*\(/g,
+      ) ?? [];
     expect(
       offenders,
-      "an `await`/`yield` entered the claim() ledger read→write critical " +
-        "section in in-memory.ts — that breaks first-write-wins atomicity " +
-        "(the read-then-write must be a single run-to-completion step; see " +
-        "docs/BACKBONE_CONTRACT.md). Restructure so all awaits happen BEFORE " +
-        "the CLAIM-CRITICAL-SECTION-BEGIN marker.",
+      "a deferral (await/yield/.then/queueMicrotask/timer/nextTick/dynamic " +
+        "import) entered the claim() ledger read→write critical section in " +
+        "in-memory.ts — that breaks first-write-wins atomicity (the " +
+        "read-then-write must be a single run-to-completion step; see " +
+        "docs/BACKBONE_CONTRACT.md). Restructure so all deferrals happen " +
+        "BEFORE the CLAIM-CRITICAL-SECTION-BEGIN marker.",
     ).toEqual([]);
   });
 });
