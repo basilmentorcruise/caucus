@@ -403,6 +403,20 @@ describe("validation & errors", () => {
     }
   });
 
+  it("rejects a control-byte channel name WITHOUT echoing the bytes (CAU-81)", async () => {
+    // `\u009b` is the C1 CSI byte (what a URL path's %C2%9B decodes to) —
+    // JSON.stringify does NOT escape it; \x7f is DEL (also unescaped).
+    for (const name of ["\u009b31mevil", "del\x7fname", "esc\x1b[2Jname"]) {
+      const thrown = await b.describeChannel(name).then(
+        () => undefined,
+        (err: unknown) => err as InvalidChannelNameError,
+      );
+      expect(thrown).toBeInstanceOf(InvalidChannelNameError);
+      // eslint-disable-next-line no-control-regex -- intentionally matching control bytes
+      expect(thrown!.message).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
+    }
+  });
+
   it("rejects duplicate createChannel", async () => {
     await expect(
       b.createChannel({ channel: CH, purpose: "again", created_by: "x" }),

@@ -373,6 +373,26 @@ describe("dispatch — backbone errors map cleanly", () => {
     expect(list.json).toMatchObject({ channels: [{ channel: "c1" }] });
   });
 
+  it("describe with a control-byte name → 400 whose message echoes no control bytes (CAU-81)", async () => {
+    // `\u009b` is C1 CSI — exactly what `GET /channels/%C2%9B…` decodes to,
+    // and the byte JSON.stringify does NOT escape; `\x7f` is DEL (also
+    // unescaped). Reachable tokenlessly, so the error message must be clean.
+    const bb = new InMemoryBackbone();
+    for (const name of ["\u009b31mevil", "del\x7fname", "esc\x1b[2Jname"]) {
+      const res = await dispatch(
+        bb,
+        "GET",
+        `/channels/${encodeURIComponent(name)}`,
+        undefined,
+      );
+      expect(res.status).toBe(400);
+      const body = res.json as { error: { code: string; message: string } };
+      expect(body.error.code).toBe("invalid_channel_name");
+      // eslint-disable-next-line no-control-regex -- intentionally matching control bytes
+      expect(body.error.message).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
+    }
+  });
+
   it("describe unknown channel → 404 unknown_channel", async () => {
     const bb = new InMemoryBackbone();
     const res = await dispatch(bb, "GET", "/channels/ghost", undefined);
@@ -726,6 +746,29 @@ describe("server lifecycle (sockets)", () => {
     const second = await startServer({ port });
     expect(second.port).toBe(port);
     await second.close();
+  });
+
+  it("GET /channels/%C2%9B… → 400 whose wire body carries no control bytes (CAU-81)", async () => {
+    running = await startServer({ port: 0 });
+    // Tokenless probe: %C2%9B decodes to the C1 CSI byte (which JSON.stringify
+    // would NOT escape), %7F is DEL, %1B is C0 ESC. Without the CAU-81 strip
+    // the C1/DEL bytes would ride the error message verbatim onto the wire.
+    const res = await fetch(`${running.url}/channels/%C2%9B31mevil%7Fdel%1Besc`);
+    expect(res.status).toBe(400);
+
+    // Assert on the RAW WIRE BYTES, not a decoded convenience view: every body
+    // byte must be printable ASCII (0x20–0x7e) — this catches raw C0/DEL/C1
+    // bytes AND a UTF-8-encoded C1 (0xc2 0x9b would fail on the 0xc2).
+    const raw = Buffer.from(await res.arrayBuffer());
+    const offending = [...raw].filter((byte) => byte < 0x20 || byte > 0x7e);
+    expect(offending).toEqual([]);
+
+    // And the decoded body is still the well-formed, diagnosable wire error.
+    const body = JSON.parse(raw.toString("utf8")) as {
+      error: { code: string; message: string };
+    };
+    expect(body.error.code).toBe("invalid_channel_name");
+    expect(body.error.message).toContain("must match");
   });
 
   it("malformed percent-encoding path → real HTTP response, never hangs", async () => {

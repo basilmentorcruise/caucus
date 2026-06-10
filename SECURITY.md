@@ -183,6 +183,22 @@ defend against any of the following:
   rejected via the same module's `containsControlChars` / `containsControlCharsExceptWhitespace`
   predicates (CAU-71), which are derived from the strip functions so the two layers cannot drift.
 
+  As of CAU-81 this no-payload-echo discipline also covers the backbone's own **error messages**:
+  the channel-name-bearing errors strip C0/DEL/C1 from the supplied name before embedding it, so a
+  dirty name reachable tokenlessly via a percent-encoded URL path (`GET /channels/%C2%9B…`) cannot
+  ride an error response back into the requester's context or TTY.
+
+- **Bidi-override display spoofing (display-layer only, not defended in v1).** Unicode
+  bidirectional override/embedding characters (e.g. U+202E RIGHT-TO-LEFT OVERRIDE, and the
+  U+202A–U+202E / U+2066–U+2069 families) are **not** C0/DEL/C1 control bytes: they pass write
+  validation and survive read-side stripping, and a poster can use them to visually reorder a
+  rendered hook or `watch` line so displayed text appears in a misleading order (e.g. content
+  seeming to belong to a different part of the line). What it does **not** break: the
+  server-anchored `owner` ([ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer))
+  and the stored log bytes are untouched — the model reads, and the log holds, the true byte
+  order; only the human-rendered glyph order is spoofed. Treat the raw log entry as authoritative
+  when a rendered line looks suspicious. Render-layer bidi neutralization is M2-class work.
+
 - **Resource exhaustion by a hostile token-holder — only cooperative caps (CAU-74).** The backbone
   now enforces resource caps: per-channel and agent-global posting rates plus a per-owner
   channel-create throttle (all ADR-C8 seatbelts), count caps on each channel's log and on the
