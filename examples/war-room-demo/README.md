@@ -65,8 +65,9 @@ Running it **again** is safe and idempotent — the channel already exists, the
 opening scene is not re-posted, and it still exits 0:
 
 ```
+seeding war-room-incident-42 on http://127.0.0.1:4317
 channel war-room-incident-42 already exists — reusing it (idempotent)
-opening scene already seeded — skipping (idempotent)
+channel already has messages — skipping opening scene (idempotent)
 
 seed complete.
 ```
