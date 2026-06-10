@@ -5,7 +5,11 @@ import {
   SchemaError,
   UnsupportedVersionError,
 } from "./errors.js";
-import { MAX_RECIPIENTS, MAX_REPORTED_ISSUES } from "./constants.js";
+import {
+  MAX_FIELD_CHARS,
+  MAX_RECIPIENTS,
+  MAX_REPORTED_ISSUES,
+} from "./constants.js";
 import { validate } from "./validate.js";
 
 /** A minimal valid v0 message (already version-stamped). */
@@ -278,6 +282,39 @@ describe("validate — optional fields", () => {
       expect(message).not.toContain("sess-0");
     }
   });
+
+  // CAU-90: `agent_id`, `owner`, `artifact` are identity/pointer fields, not
+  // payloads — length-capped at MAX_FIELD_CHARS so an embedder (no wire body
+  // cap) cannot inflate a read page via a giant identity string. Non-echoing.
+  it.each(["agent_id", "owner", "artifact"])(
+    "accepts %s at exactly MAX_FIELD_CHARS",
+    (field) => {
+      const atCap = "x".repeat(MAX_FIELD_CHARS);
+      expect(() => validate({ ...validNote(), [field]: atCap })).not.toThrow();
+    },
+  );
+
+  it.each(["agent_id", "owner", "artifact"])(
+    "rejects an over-cap %s — positional, non-echoing (no value in the error)",
+    (field) => {
+      const over = "z".repeat(MAX_FIELD_CHARS + 1000);
+      try {
+        validate({ ...validNote(), [field]: over });
+        expect.unreachable("validate should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(MalformedMessageError);
+        const issues = (err as MalformedMessageError).issues;
+        expect(
+          issues.some((i) =>
+            i.includes(`${field} exceeds ${MAX_FIELD_CHARS} characters`),
+          ),
+        ).toBe(true);
+        // The over-long value itself never appears in the error.
+        for (const issue of issues) expect(issue).not.toContain(over);
+        expect((err as MalformedMessageError).message).not.toContain(over);
+      }
+    },
+  );
 
   it("rejects an invalid status", () => {
     expectIssue({ ...validNote(), status: "maybe" }, "status must be one of");

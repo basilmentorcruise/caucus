@@ -393,6 +393,26 @@ describe("field size caps", () => {
     };
     await expect(b.append(CH, over)).rejects.toBeInstanceOf(InvalidMessageError);
   });
+
+  // CAU-90: the identity/pointer field caps must hold on the in-process path
+  // (InMemoryBackbone.append directly), not just over the wire — embedders have
+  // no MAX_BODY_BYTES, so the shared schema cap is the only bound for them.
+  it.each(["agent_id", "owner", "artifact"] as const)(
+    "rejects an over-cap %s on the in-process append path",
+    async (field) => {
+      const base: MessageInput = {
+        type: "finding",
+        agent_id: "a1",
+        owner: "alice",
+        msg_id: newMsgId(),
+        body: "x",
+      };
+      const over = { ...base, [field]: "z".repeat(MAX_FIELD_CHARS + 1000) };
+      await expect(b.append(CH, over)).rejects.toBeInstanceOf(
+        InvalidMessageError,
+      );
+    },
+  );
 });
 
 describe("validation & errors", () => {
@@ -1039,6 +1059,8 @@ describe("maxReadLimit floor (CAU-90)", () => {
     ["zero", 0],
     ["negative", -5],
     ["NaN", Number.NaN],
+    ["fractional in (0,1)", 0.5], // passes a `> 0` test but Math.floor → 0
+    ["+Infinity", Number.POSITIVE_INFINITY],
   ])(
     "%s maxReadLimit still returns a non-empty page (no silent caught-up); cursor advances",
     async (_name, cap) => {

@@ -21,6 +21,7 @@ import {
   containsControlCharsExceptWhitespace,
   MalformedMessageError,
   type CaucusMessage,
+  MAX_FIELD_CHARS,
   type MessageInput,
   normalizeTarget,
   SCHEMA_VERSION,
@@ -94,8 +95,13 @@ export type InMemoryBackboneOptions = SeatbeltOptions & {
  * key), a channel `purpose`, and every `to[]` entry. These are short
  * identifiers / descriptions, not payloads, so they get a much tighter cap than
  * `body`.
+ *
+ * Re-exported from `@caucus/schema` so there is a SINGLE source of truth: the
+ * shared `validate` caps `agent_id`/`owner`/`artifact` to the same constant
+ * (CAU-90), and the backbone caps the descriptor/ledger fields it owns
+ * (`target`/`purpose`/`to[]` entries) that don't pass through `validate`.
  */
-export const MAX_FIELD_CHARS = 1_024;
+export { MAX_FIELD_CHARS };
 
 /**
  * Recursively `Object.freeze` a value and every nested object/array it owns, so
@@ -180,12 +186,16 @@ export class InMemoryBackbone implements Backbone {
     // rather than to 1: a non-positive/NaN cap is a misconfiguration, not a
     // request for single-message paging, so the safe recovery is the documented
     // default page size — keeping catch-up fast — not a pathologically slow
-    // one-at-a-time stream. `Number.isFinite` rejects NaN/±Infinity before the
-    // `> 0` check (NaN must not pass through).
+    // one-at-a-time stream. Floor FIRST, then check `> 0`: a fractional cap in
+    // `(0, 1)` (e.g. 0.5) passes a `> 0` test but `Math.floor`s to 0, which would
+    // reintroduce the empty-page footgun — so the truncation must happen before
+    // the positivity check. `Number.isFinite` rejects NaN/±Infinity (NaN must
+    // not pass through).
     const requestedReadLimit = opts.maxReadLimit ?? DEFAULT_MAX_READ_LIMIT;
+    const flooredReadLimit = Math.floor(requestedReadLimit);
     this.#maxReadLimit =
-      Number.isFinite(requestedReadLimit) && requestedReadLimit > 0
-        ? Math.floor(requestedReadLimit)
+      Number.isFinite(flooredReadLimit) && flooredReadLimit > 0
+        ? flooredReadLimit
         : DEFAULT_MAX_READ_LIMIT;
   }
 

@@ -214,8 +214,12 @@ defend against any of the following:
   the last single-request lever (CAU-83) — a max `readSince` page size (`maxReadLimit`, default
   500): one tokenless read can no longer make the server serialize a whole capped log (~320 MB of
   JSON) synchronously; an over-cap or omitted `limit` is silently clamped and the reader pages via
-  the returned cursor. The residual, stated honestly: a clamped page is still up to ~10–25 MB of
-  JSON (500 messages × up to 16k-char bodies, plus envelope overhead), and **reads are not
+  the returned cursor. The residual, stated honestly: a clamped page is still up to ~48 MB of
+  JSON — 500 messages × (up to a 16k-char body **plus** up to a full `to[]` of 32 × 1024 chars ≈
+  32k more chars), i.e. ~24 M chars before envelope/escaping overhead. (The earlier ~10–25 MB
+  figure counted body text only; with `to[]` now legitimately bounded at 32 × `MAX_FIELD_CHARS`
+  the per-message recipient text is the same order as the body and must be counted.) Reads are
+  **not
   rate-limited** — the seatbelt throttles writes, not `readSince` — so a token-holder can issue
   clamped reads back-to-back. This is acceptable on loopback (the intended deployment), and is
   another reason not to expose the port. The arithmetic: with the defaults (30 posts/min/channel,
@@ -233,11 +237,17 @@ defend against any of the following:
   configures. Size your host with: **resident upper bound ≈ `maxChannels` ×
   `maxMessagesPerChannel` × `MAX_BODY_CHARS` × 2 bytes/char** (JS strings are UTF-16; defaults
   give 1 000 × 10 000 × 16 000 × 2 ≈ ~320 GB theoretical, reached only at full caps after days of
-  max-rate ingest). With the `to[]` recipient-count cap (CAU-90, `MAX_RECIPIENTS` = 32) and the
-  per-field char cap (`MAX_FIELD_CHARS` = 1 024) now bounding the non-body fields, the body-only
-  formula is a **tighter upper bound** than before: a single message's non-body fields add at most a
-  few tens of KB (32 recipients × 1 024 chars × 2 bytes ≈ 64 KB worst case) on top of the 16k-char
-  body, so the body term dominates and the formula above holds with comfortable headroom. On a
+  max-rate ingest). The body-only formula is a **true upper bound** because, after CAU-90, *every*
+  length-unbounded string field is now capped: the `to[]` recipient-count cap
+  (`MAX_RECIPIENTS` = 32), the per-`to[]`-entry char cap, the claim `target`, the channel
+  `purpose`, and — closing the last gaps the count cap alone left open — `agent_id`, `owner`, and
+  `artifact`, all at `MAX_FIELD_CHARS` = 1 024 chars. The exhaustive per-message non-body bound is
+  therefore `(MAX_RECIPIENTS × MAX_FIELD_CHARS) + (3 × MAX_FIELD_CHARS)` for the three identity/
+  pointer fields = (32 + 3) × 1 024 ≈ 36 K chars ≈ ~70 KB (× 2 bytes/char), on top of the
+  16k-char (`MAX_BODY_CHARS`) body. The body term still dominates by ~225×, so the body-only
+  residency formula above holds with comfortable headroom — and, crucially, it now holds for the
+  **in-process** embedder too (which has no `MAX_BODY_BYTES` HTTP bound): no string field is left
+  uncapped, so there is no remaining read-amplification lever and no false "upper bound" claim. On a
   memory-constrained host, lower `maxMessagesPerChannel` and/or
   `maxChannels` accordingly (e.g. 100 channels × 1 000 messages bounds residency at ~3.2 GB). The
   honest caveat: these caps are **constructor knobs** (`InMemoryBackboneOptions` — embedders

@@ -14,6 +14,7 @@
  * these errors travel over the wire into TTYs (ADR-C12).
  */
 import {
+  MAX_FIELD_CHARS,
   MAX_RECIPIENTS,
   MAX_REPORTED_ISSUES,
   MESSAGE_TYPES,
@@ -117,11 +118,27 @@ export function validate(value: unknown): asserts value is CaucusMessage {
     issues.push("agent_id must be a non-empty string");
   } else if (containsControlChars(value.agent_id)) {
     issues.push("agent_id must not contain control characters");
+  } else if (value.agent_id.length > MAX_FIELD_CHARS) {
+    // Length cap (CAU-90): `agent_id` is a short session label, not a payload —
+    // an in-process embedder has no HTTP byte bound, so an unbounded value is a
+    // read-amplification lever (a 50MB `agent_id` survives into a clamped read
+    // page). Positional + NON-echoing (ADR-C12 / CAU-88): name the field, the
+    // limit, and the actual length — never the value. The length is a plain
+    // integer (control-byte-free per CAU-88), so it is safe to interpolate.
+    issues.push(
+      `agent_id exceeds ${MAX_FIELD_CHARS} characters (${value.agent_id.length})`,
+    );
   }
   if (!isNonEmptyString(value.owner)) {
     issues.push("owner must be a non-empty string");
   } else if (containsControlChars(value.owner)) {
     issues.push("owner must not contain control characters");
+  } else if (value.owner.length > MAX_FIELD_CHARS) {
+    // Length cap (CAU-90) — same rationale as `agent_id` above; `owner` is a
+    // short human label. Non-echoing: field name + limit + actual length only.
+    issues.push(
+      `owner exceeds ${MAX_FIELD_CHARS} characters (${value.owner.length})`,
+    );
   }
   // msg_id needs no control-char check: the ULID regex already excludes them.
   if (!isUlid(value.msg_id)) {
@@ -191,6 +208,14 @@ export function validate(value: unknown): asserts value is CaucusMessage {
       issues.push("artifact must be a non-empty string");
     } else if (containsControlChars(value.artifact)) {
       issues.push("artifact must not contain control characters");
+    } else if (value.artifact.length > MAX_FIELD_CHARS) {
+      // Length cap (CAU-90): `artifact` is a *pointer* — a URI/URL to the full
+      // content (docs/MESSAGE_SCHEMA.md), never the payload itself — so
+      // MAX_FIELD_CHARS (1024) sits comfortably above any legitimate reference.
+      // Same read-amplification rationale and non-echoing idiom as `agent_id`.
+      issues.push(
+        `artifact exceeds ${MAX_FIELD_CHARS} characters (${value.artifact.length})`,
+      );
     }
   }
 
