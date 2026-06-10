@@ -99,4 +99,50 @@ describe("CAU-88 — invalid_message wire body carries no control bytes (over HT
     // And the whole serialized body is control-byte-free end to end.
     expect(JSON.stringify(json)).not.toMatch(CONTROL_CHARS);
   });
+
+  it("a C1 byte arriving as MULTIBYTE UTF-8 (0xC2 0x9B) in a body key is still stripped (decode-boundary guard, CAU-81/88)", async () => {
+    // The canonical CAU-81 vector: C1 CSI as the two raw UTF-8 bytes 0xC2 0x9B,
+    // not a literal 0x9b. This pins that stripping runs AFTER the utf8 decode
+    // (server reads Buffer.toString("utf8") → JSON.parse → strip on code points),
+    // so a future refactor that moved stripping ahead of the decode would fail here.
+    const dirtyKey = "pwnevil"; // U+009B = C1 CSI; UTF-8-encodes to 0xC2 0x9B
+    const bodyBytes = new TextEncoder().encode(
+      JSON.stringify({
+        type: "note",
+        agent_id: "alice-agent",
+        owner: "alice",
+        msg_id: "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+        body: "hello",
+        [dirtyKey]: 1,
+      }),
+    );
+    // Sanity: the bytes actually on the wire carry the 0xC2 0x9B sequence (the
+    // multibyte form), so a clean response is the decode-then-strip working —
+    // not the byte being absent or pre-scrubbed.
+    const hasC2C1 = bodyBytes.some(
+      (b, i) => b === 0xc2 && bodyBytes[i + 1] === 0x9b,
+    );
+    expect(hasC2C1).toBe(true);
+
+    const res = await fetch(`${server.url}/channels/${CH}/append`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${TOKEN}`,
+      },
+      body: bodyBytes,
+    });
+
+    expect(res.status).toBe(400);
+    // Assert on the RAW response bytes: no lone 0x9b and no 0xC2 0x9B survive.
+    const raw = new Uint8Array(await res.arrayBuffer());
+    expect(raw.some((b) => b === 0x9b)).toBe(false);
+    expect(
+      raw.some((b, i) => b === 0xc2 && raw[i + 1] === 0x9b),
+    ).toBe(false);
+    const json = JSON.parse(new TextDecoder().decode(raw)) as WireError;
+    expect(json.error.code).toBe("invalid_message");
+    expect(json.error.message).not.toMatch(CONTROL_CHARS);
+    expect(json.error.issues).toContain('unknown field "pwnevil"');
+  });
 });
