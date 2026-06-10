@@ -38,7 +38,9 @@ HOST=127.0.0.1 PORT=4317 CAUCUS_TOKENS=... pnpm backbone:dev
 The `caucus-backbone` bin reads `PORT` (default `4317`), `HOST` (default
 `127.0.0.1`), and `CAUCUS_TOKENS` (comma-separated `token:agent_id:owner`
 triples; **required for writes** — without it the server starts fail-closed)
-from the environment and logs the bound URL.
+from the environment and logs the bound URL. Give each session its own
+`agent_id`: two tokens configured with the same `agent_id` share the per-agent
+rate budgets and the loop/dup baseline.
 
 ## Routes
 
@@ -49,7 +51,7 @@ from the environment and logs the bound URL.
 | `GET /channels/:channel` | `describeChannel` | `200` `ChannelDescriptor` |
 | `POST /channels/:channel/subscribe` | `subscribe` | `200` `{ cursor }` |
 | `POST /channels/:channel/append` | `append` | `201` `AppendResult` |
-| `POST /channels/:channel/read` | `readSince` (body `{ cursor, limit? }`) | `200` `ReadResult` |
+| `POST /channels/:channel/read` | `readSince` (body `{ cursor, limit? }`; `limit` is clamped to the server's max page size — default 500, CAU-83 — so page from the returned `cursor` until a page is empty) | `200` `ReadResult` |
 | `POST /channels/:channel/claim` | `claim` | `200` `ClaimResult` (`granted` **or** `already_claimed`) |
 | `GET /healthz` | — | `200` `{ ok: true }` |
 

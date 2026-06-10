@@ -8,11 +8,12 @@ import {
   type ClaimResult,
   type CreateChannelOptions,
   type Cursor,
+  InMemoryBackbone,
   InvalidCursorError,
   type ReadResult,
   UnknownChannelError,
 } from "@caucus/backbone";
-import type { MessageInput } from "@caucus/schema";
+import { newMsgId, type MessageInput } from "@caucus/schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { checkpointPath, readCheckpoint, writeCheckpoint } from "./checkpoint.js";
@@ -390,5 +391,61 @@ describe("runHook — self-heals a stale checkpoint after an ephemeral restart (
     expect(stderrLines).toHaveLength(1);
     expect(stderrLines[0]).not.toContain(CHANNEL);
     expect(stderrLines[0]).not.toContain("http");
+  });
+});
+
+describe("runHook — pages a clamped backlog across turns (CAU-83)", () => {
+  it("drains a 5-message backlog over three turns at maxReadLimit 2, then injects nothing", async () => {
+    // A REAL backbone with a tiny read page cap: the hook reads ONE page per
+    // turn (deliberately no drain loop — turn-time + context budget) and
+    // converges on head across turns via the persisted returned cursor.
+    const bb = new InMemoryBackbone({ maxReadLimit: 2 });
+    await bb.createChannel({
+      channel: CHANNEL,
+      purpose: "paging",
+      created_by: "alice",
+    });
+    const env = { CAUCUS_CHANNEL: CHANNEL };
+    const path = checkpointPath(SESSION, CHANNEL, home);
+
+    // Mint the checkpoint at head 0, then a 5-message backlog arrives.
+    expect(await runHook(deps(bb, env))).toBe("");
+    const bodies = ["page-a", "page-b", "page-c", "page-d", "page-e"];
+    for (const body of bodies) {
+      await bb.append(CHANNEL, {
+        type: "finding",
+        agent_id: "alice-agent",
+        owner: "alice",
+        msg_id: newMsgId(),
+        body,
+      });
+    }
+
+    // Three turns, each injecting one non-empty page; the union covers all 5
+    // bodies with no repeats across turns (2 + 2 + 1).
+    const expectPage = async (expected: string[]): Promise<void> => {
+      const out = await runHook(deps(bb, env));
+      expect(out).not.toBe("");
+      const ctx = (
+        JSON.parse(out) as {
+          hookSpecificOutput: { additionalContext: string };
+        }
+      ).hookSpecificOutput.additionalContext;
+      for (const body of bodies) {
+        if (expected.includes(body)) {
+          expect(ctx).toContain(body);
+        } else {
+          expect(ctx).not.toContain(body);
+        }
+      }
+    };
+    await expectPage(["page-a", "page-b"]);
+    await expectPage(["page-c", "page-d"]);
+    await expectPage(["page-e"]);
+
+    // Converged: the checkpoint sits at head after turn 3…
+    expect(await readCheckpoint(path, CHANNEL)).toBe(await bb.subscribe(CHANNEL));
+    // …so the fourth turn injects nothing.
+    expect(await runHook(deps(bb, env))).toBe("");
   });
 });

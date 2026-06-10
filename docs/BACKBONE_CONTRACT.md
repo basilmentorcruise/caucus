@@ -25,10 +25,14 @@ All methods are async so one contract serves both the in-memory and a future dur
 A `Cursor` is an **opaque**, monotonically non-decreasing position in a channel's log. Numerically it is the count of messages observed (so `head === log.length`), but callers MUST treat it as opaque: the only valid operations are passing it back to `readSince`, and comparing two cursors *from the same channel*. Its representation may change when durability lands.
 
 - `subscribe(channel)` mints a cursor at the **current head**. It is a stateless cursor-mint, NOT a server-side subscription — the backbone keeps no per-subscriber state. Messages appended *before* the subscribe are invisible to a reader starting from the minted cursor; everything appended *after* is delivered by `readSince`.
-- `readSince(channel, cursor, limit?)` returns the messages appended strictly after `cursor`, in append order, capped by `limit` (default: all available). The returned `cursor` **advances by exactly `messages.length`**:
+- `readSince(channel, cursor, limit?)` returns the messages appended strictly after `cursor`, in append order, capped by `limit` **and by the implementation's max page size** (CAU-83 — `maxReadLimit`, documented default **500**). `limit` is a *request*, not a guarantee: an omitted or over-cap `limit` is **silently clamped** to the max page size, never an error. The returned `cursor` **advances by exactly `messages.length`**:
   - Re-reading from the same cursor never duplicates a message.
   - When nothing new is available, the returned cursor **equals** the input cursor and `messages` is empty.
   - A **granted claim advances the head like any other append** (the claim message is appended); a claim *conflict* appends nothing and the head does not move.
+
+### Read paging (CAU-83)
+
+A single `readSince` call returns at most `maxReadLimit` messages (default 500), so one request can never serialize a whole capped log (~10k messages × 16k-char bodies ≈ hundreds of MB) in one synchronous slice. The clamp is **silent** — no error, no `hasMore` flag: the existing cursor semantics already encode progress. To drain a channel, **loop**: read from the returned cursor until a page comes back **empty** (an empty page ⇔ caught up). Per-turn readers (the hook) converge across turns without a loop.
 
 ## Claim conflict semantics (first-write-wins)
 
@@ -93,7 +97,7 @@ A **claim conflict is not in this table** — it is the `already_claimed` result
 No SQLite durability, no identity anchoring (CAU-9), no lease/heartbeat enforcement (CAU-18). The schema ships `lease_ttl`/`heartbeat` fields, but the backbone enforces first-write-wins only.
 
 - **Identity is trusted input.** The backbone does **not** authenticate `agent_id`/`owner`; the caller MUST anchor `agent_id`/`owner` before calling `append`/`claim`, and the backbone treats them as trusted input (CAU-9/CAU-13). It validates shape, never provenance.
-- **Unbounded growth is now PARTIALLY bounded (CAU-74).** A channel's log is capped at `maxMessagesPerChannel` (default 10 000 → `channel_full`) and the channel count at `maxChannels` (default 1 000 → `channel_limit`); channel creation is throttled per creator and seatbelt state is evicted when idle (see *Seatbelts* below). Still deferred: a maximum `readSince` `limit` (a reader can request the whole capped log in one call) and any retention/expiry of stored messages — a full channel stays full; the remedy is a fresh channel.
+- **Unbounded growth is now PARTIALLY bounded (CAU-74).** A channel's log is capped at `maxMessagesPerChannel` (default 10 000 → `channel_full`) and the channel count at `maxChannels` (default 1 000 → `channel_limit`); channel creation is throttled per creator and seatbelt state is evicted when idle (see *Seatbelts* below); every `readSince` page is clamped to `maxReadLimit` (default 500, CAU-83 — see *Read paging* above). Still deferred: any retention/expiry of stored messages — a full channel stays full; the remedy is a fresh channel.
 
 ## Seatbelts (ADR-C8, CAU-8) & resource caps (CAU-74)
 
@@ -107,4 +111,4 @@ The backbone enforces pure, synchronous seatbelts on the write paths (configurab
 
 Count caps (CAU-74, enforced by the backbone itself): a channel's log holds at most `maxMessagesPerChannel` messages (`channel_full`; checked **before** the seatbelt charges budget, so a doomed post burns nothing and never becomes the dup baseline) and the backbone holds at most `maxChannels` channels (`channel_limit`). The claim ledger needs **no separate cap and is never evicted**: every ledger entry is created only alongside a granted-claim append, so `claimLedger.size ≤ log.length ≤ maxMessagesPerChannel`. On a full channel, a claim for an already-claimed target still answers `already_claimed`; only the would-append path throws `channel_full` — all synchronous, preserving the CAS invariant.
 
-All seatbelt checks run inside the claim path without any `await`, preserving the compare-and-set property. A max `readSince` limit and retention remain deferred as above.
+All seatbelt checks run inside the claim path without any `await`, preserving the compare-and-set property. On the read side, every `readSince` page is clamped to `maxReadLimit` (default 500, CAU-83 — see *Read paging* above); retention remains deferred as above.

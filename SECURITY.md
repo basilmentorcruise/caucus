@@ -199,18 +199,33 @@ defend against any of the following:
   order; only the human-rendered glyph order is spoofed. Treat the raw log entry as authoritative
   when a rendered line looks suspicious. Render-layer bidi neutralization is M2-class work.
 
-- **Resource exhaustion by a hostile token-holder — only cooperative caps (CAU-74).** The backbone
-  now enforces resource caps: per-channel and agent-global posting rates plus a per-owner
+- **Resource exhaustion by a hostile token-holder — only cooperative caps (CAU-74, CAU-83).** The
+  backbone now enforces resource caps: per-channel and agent-global posting rates plus a per-owner
   channel-create throttle (all ADR-C8 seatbelts), count caps on each channel's log and on the
-  number of channels, and eviction of idle seatbelt bookkeeping with an LRU backstop. The
-  arithmetic: with the defaults (30 posts/min/channel, 120/min global per agent, 10 creates/min
-  per owner, 10 000 messages/channel, 1 000 channels, 4 096 tracked seatbelt entries per map) a
-  channel tops out around ~330 MB theoretical worst case (10k messages × 16k-char bodies), and at
-  the capped rates filling one channel takes ~5.6 h for a single token (per-channel cap 30/min),
-  or ~83 min with four colluding tokens (global cap 120/min each). That ~330 MB figure is per
-  channel: with `maxChannels` = 1 000 the backbone-wide theoretical bound is ~330 GB — the count
-  caps bound *counts*, not bytes, to a host-survivable level, and the operative byte bound is the
-  per-token ingest rate (120 msg/min × ~32 KB ≈ 3.8 MB/min, ≈ ~5.5 GB/day per token).
+  number of channels, eviction of idle seatbelt bookkeeping with an LRU backstop, and — closing
+  the last single-request lever (CAU-83) — a max `readSince` page size (`maxReadLimit`, default
+  500): one tokenless read can no longer make the server serialize a whole capped log (~330 MB of
+  JSON) synchronously; an over-cap or omitted `limit` is silently clamped and the reader pages via
+  the returned cursor. The arithmetic: with the defaults (30 posts/min/channel, 120/min global per
+  agent, 10 creates/min per owner, 10 000 messages/channel, 1 000 channels, 4 096 tracked seatbelt
+  entries per map) a channel tops out around ~330 MB theoretical worst case (10k messages ×
+  16k-char bodies), and at the capped rates filling one channel takes ~5.6 h for a single token
+  (per-channel cap 30/min), or ~83 min with four colluding tokens (global cap 120/min each). That
+  ~330 MB figure is per channel: with `maxChannels` = 1 000 the backbone-wide theoretical bound is
+  ~330 GB — the count caps bound *counts*, not bytes, to a host-survivable level, and the
+  operative byte bound is the per-token ingest rate (120 msg/min × ~32 KB ≈ 3.8 MB/min, ≈
+  ~5.5 GB/day per token).
+
+  **Byte-bound decision (CAU-83): operator guidance, not a cap.** v1 ships no per-channel byte
+  cap (sum of body lengths); the bound on resident bytes is sized by the count caps the operator
+  configures. Size your host with: **resident upper bound ≈ `maxChannels` ×
+  `maxMessagesPerChannel` × `MAX_BODY_CHARS` × 2 bytes/char** (JS strings are UTF-16; defaults
+  give 1 000 × 10 000 × 16 000 × 2 ≈ ~320 GB theoretical, reached only at full caps after days of
+  max-rate ingest). On a memory-constrained host, lower `maxMessagesPerChannel` and/or
+  `maxChannels` accordingly (e.g. 100 channels × 1 000 messages bounds residency at ~3.2 GB). The
+  honest caveat: these caps are **constructor knobs** (`InMemoryBackboneOptions` — embedders
+  passing `maxMessagesPerChannel`/`maxChannels` to `InMemoryBackbone`/`startServer`); the stock
+  `caucus-backbone` bin runs the defaults, and wiring env knobs for them is a separate ticket.
   The residual posture, stated honestly: the seatbelt and caps are cooperative-abuse /
   accidental-loop controls within the ADR-C9 trust boundary; they are not a defense against a
   hostile valid-token holder — the remedy for a hostile or compromised token is revocation, not
@@ -313,7 +328,8 @@ is **not** message-content confidentiality and is **not** end-to-end encryption.
 | Server operator can read the log | **Yes** — single shared server, plaintext (ADR-C9) |
 | Server-side secret scanning / redaction | **Not provided** — keeping secrets out is the operator's job |
 | Owner identity anchoring (no forged owner) | **SHIPPED** (CAU-13: bearer-token resolve-and-overwrite at the HTTP write boundary, ADR-C7) — does not defend a stolen token (timing-safe digest lookup) |
-| Resource caps (rates, log/channel counts, seatbelt-state eviction) | **SHIPPED** (CAU-74) — cooperative-abuse / accidental-loop controls (ADR-C8/C9), **not** a defense against a hostile token-holder; revoke the token instead |
+| Resource caps (rates, log/channel counts, seatbelt-state eviction, read page size) | **SHIPPED** (CAU-74, CAU-83) — cooperative-abuse / accidental-loop controls (ADR-C8/C9), **not** a defense against a hostile token-holder; revoke the token instead |
+| Per-channel byte cap | **Not provided** — operator guidance instead (CAU-83): size hosts via the count caps (see the resource-exhaustion bullet) |
 | AEAD `{agent_id,owner,to,ts,channel}` routing binding | **NOT YET IMPLEMENTED** — backbone design intent (ADR-C11/C12) |
 
 The honest one-liner: **Caucus coordinates a trusted team; it does not keep secrets from that

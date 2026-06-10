@@ -58,6 +58,9 @@ export const DEFAULT_MAX_CHANNELS = 1_000;
 /** Default per-channel message (log-length) cap (CAU-74). */
 export const DEFAULT_MAX_MESSAGES_PER_CHANNEL = 10_000;
 
+/** Default `readSince` max page size (CAU-83). */
+export const DEFAULT_MAX_READ_LIMIT = 500;
+
 /**
  * Constructor options for {@link InMemoryBackbone}: every seatbelt tunable
  * (rate caps, create throttle, eviction knobs, clock — see
@@ -73,6 +76,15 @@ export type InMemoryBackboneOptions = SeatbeltOptions & {
    * {@link DEFAULT_MAX_MESSAGES_PER_CHANNEL}.
    */
   readonly maxMessagesPerChannel?: number;
+  /**
+   * `readSince` max page size (CAU-83): every read returns at most this many
+   * messages, regardless of the requested `limit` (an over-cap or omitted
+   * `limit` is SILENTLY clamped, never an error — cursor catch-up converges by
+   * reading again from the returned cursor). Default
+   * {@link DEFAULT_MAX_READ_LIMIT}. Like the CAU-74 caps, this is trusted
+   * constructor input — no validation.
+   */
+  readonly maxReadLimit?: number;
 };
 
 /**
@@ -146,6 +158,9 @@ export class InMemoryBackbone implements Backbone {
   /** Per-channel message (log-length) cap (CAU-74). */
   readonly #maxMessagesPerChannel: number;
 
+  /** `readSince` max page size (CAU-83). */
+  readonly #maxReadLimit: number;
+
   /**
    * @param opts seatbelt tunables (caps / window / clock) plus the CAU-74
    * count caps. Defaults are production-safe: generous rate caps, bounded
@@ -157,6 +172,7 @@ export class InMemoryBackbone implements Backbone {
     this.#maxChannels = opts.maxChannels ?? DEFAULT_MAX_CHANNELS;
     this.#maxMessagesPerChannel =
       opts.maxMessagesPerChannel ?? DEFAULT_MAX_MESSAGES_PER_CHANNEL;
+    this.#maxReadLimit = opts.maxReadLimit ?? DEFAULT_MAX_READ_LIMIT;
   }
 
   /**
@@ -403,7 +419,14 @@ export class InMemoryBackbone implements Backbone {
         limit,
       );
     }
-    const end = limit === undefined ? head : Math.min(head, cursor + limit);
+    // Max page size (CAU-83): an omitted or over-cap `limit` is SILENTLY
+    // clamped to `maxReadLimit` — never an error. A whole-log read against a
+    // full channel would otherwise serialize hundreds of MB in one synchronous
+    // call. Cursor semantics are unchanged: the returned cursor advances by
+    // exactly `messages.length`, so a caller catches up by reading again from
+    // it until a page comes back empty.
+    const effective = Math.min(limit ?? this.#maxReadLimit, this.#maxReadLimit);
+    const end = Math.min(head, cursor + effective);
     const messages = state.log.slice(cursor, end);
     return { messages, cursor: cursor + messages.length };
   }

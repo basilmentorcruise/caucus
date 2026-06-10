@@ -34,6 +34,7 @@ export {
 export {
   DEFAULT_MAX_CHANNELS,
   DEFAULT_MAX_MESSAGES_PER_CHANNEL,
+  DEFAULT_MAX_READ_LIMIT,
   InMemoryBackbone,
   type InMemoryBackboneOptions,
   MAX_BODY_CHARS,
