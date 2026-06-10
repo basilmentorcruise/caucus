@@ -56,24 +56,32 @@ const inputs: Record<string, MessageInput> = {
     agent_id: "sess-C",
     owner: "carol",
     msg_id: MSG_ID,
-    body: "Human steer: check the 14:02 deploy.",
+    body: "Aside: the 14:02 deploy log is in #ops.",
     to: ["sess-A", "sess-B"],
+  },
+  steer: {
+    type: "steer",
+    agent_id: "sess-C",
+    owner: "carol",
+    msg_id: MSG_ID,
+    body: "Human directive: check whether the 14:02 deploy correlates.",
+    status: "needs-response",
   },
 };
 
 describe("round-trip identity per message type", () => {
   for (const [name, input] of Object.entries(inputs)) {
-    it(`decode(encode(x)) deep-equals {...x, v:0} for ${name}`, () => {
+    it(`decode(encode(x)) deep-equals {...x, v:1} for ${name}`, () => {
       const round = decode(encode(input));
-      expect(round).toEqual({ ...input, v: 0 });
+      expect(round).toEqual({ ...input, v: 1 });
     });
   }
 });
 
 describe("encode", () => {
-  it("stamps v:0", () => {
+  it("stamps v:1", () => {
     const out = JSON.parse(encode(inputs.note!));
-    expect(out.v).toBe(0);
+    expect(out.v).toBe(1);
   });
 
   it("never sets ts", () => {
@@ -96,14 +104,14 @@ describe("encode", () => {
 
 describe("decode", () => {
   it("accepts the post-append form with ts present", () => {
-    const withTs = { ...inputs.finding!, v: 0, ts: "2026-06-03T00:00:00Z" };
+    const withTs = { ...inputs.finding!, v: 1, ts: "2026-06-03T00:00:00Z" };
     const round = decode(JSON.stringify(withTs));
     expect(round.ts).toBe("2026-06-03T00:00:00Z");
     expect(round).toEqual(withTs);
   });
 
   it("accepts an already-parsed object", () => {
-    expect(() => decode({ ...inputs.note!, v: 0 })).not.toThrow();
+    expect(() => decode({ ...inputs.note!, v: 1 })).not.toThrow();
   });
 
   it("throws MalformedMessageError on non-JSON string input", () => {
@@ -121,6 +129,6 @@ describe("decode", () => {
   });
 
   it("throws MalformedMessageError for a valid-version but bad-field object", () => {
-    expect(() => decode({ v: 0, type: "note" })).toThrow(MalformedMessageError);
+    expect(() => decode({ v: 1, type: "note" })).toThrow(MalformedMessageError);
   });
 });

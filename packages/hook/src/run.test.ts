@@ -116,7 +116,7 @@ function appended(body: string, over: Partial<AppendResult["message"]> = {}): Ap
     owner: "alice",
     msg_id: "01J0000000000000000000000A",
     body,
-    v: 0,
+    v: 1,
     ts: "t",
     ...over,
   } as AppendResult["message"];

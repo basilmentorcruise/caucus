@@ -14,7 +14,7 @@ import type { ServerConfig } from "./config.js";
 import { createSession } from "./session.js";
 import { registerTools, type CaucusTool } from "./tools/registry.js";
 import { statusTool } from "./tools/status.js";
-import { postTool, postFindingTool } from "./tools/post.js";
+import { postTool, postFindingTool, steerTool } from "./tools/post.js";
 import { readChannelTool } from "./tools/read-channel.js";
 import { claimTool } from "./tools/claim.js";
 import { subscribeTool } from "./tools/subscribe.js";
@@ -51,6 +51,7 @@ export function createCaucusServer({
     statusTool,
     postTool,
     postFindingTool,
+    steerTool,
     readChannelTool,
     claimTool,
     subscribeTool,

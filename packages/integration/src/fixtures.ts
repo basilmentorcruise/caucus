@@ -33,6 +33,25 @@ export function finding(
 }
 
 /**
+ * A `steer` (human-directive) message authored by `agentId` on behalf of
+ * `owner`, with a fresh ULID `msg_id` (CAU-99). Goes through `Backbone.append`
+ * like a finding.
+ */
+export function steer(
+  agentId: string,
+  owner: string,
+  opts: MessageOpts = {},
+): MessageInput {
+  return {
+    type: "steer",
+    agent_id: agentId,
+    owner,
+    msg_id: newMsgId(),
+    body: opts.body ?? "human steer",
+  };
+}
+
+/**
  * A `claim` message for `target` authored by `agentId` on behalf of `owner`,
  * with a fresh ULID `msg_id`. Goes through `Backbone.claim`, never `append`.
  */

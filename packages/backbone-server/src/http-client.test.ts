@@ -167,7 +167,7 @@ describe("HttpBackbone — stubbed fetch for not-yet-served cases", () => {
       outcome: "granted",
       cursor: 1,
       message: {
-        v: 0,
+        v: 1,
         type: "claim",
         agent_id: "a",
         owner: "alice",

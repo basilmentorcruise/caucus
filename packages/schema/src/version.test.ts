@@ -12,18 +12,36 @@ const baseFields = {
 };
 
 describe("SCHEMA_VERSION", () => {
-  it("is 0", () => {
-    expect(SCHEMA_VERSION).toBe(0);
+  it("is 1 (CAU-99 bump from v0)", () => {
+    expect(SCHEMA_VERSION).toBe(1);
   });
 });
 
 describe("version gate (via decode)", () => {
-  it("accepts v:0", () => {
-    expect(() => decode({ ...baseFields, v: 0 })).not.toThrow();
+  it("accepts v:1", () => {
+    expect(() => decode({ ...baseFields, v: 1 })).not.toThrow();
   });
 
-  it("rejects a future version v:1", () => {
-    expect(() => decode({ ...baseFields, v: 1 })).toThrow(
+  it("rejects the now-unsupported old version v:0 (hard cutover, ADR-C13)", () => {
+    // The gate is exact-match: after the v0→v1 bump, a stored/forged v0 message
+    // is rejected outright rather than silently re-validated. The error names
+    // the received and supported versions.
+    try {
+      decode({ ...baseFields, v: 0 });
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnsupportedVersionError);
+      const e = err as UnsupportedVersionError;
+      expect(e.code).toBe("unsupported_version");
+      expect(e.received).toBe(0);
+      expect(e.supported).toBe(1);
+      expect(e.message).toContain("received 0");
+      expect(e.message).toContain("supported 1");
+    }
+  });
+
+  it("rejects a future version v:2", () => {
+    expect(() => decode({ ...baseFields, v: 2 })).toThrow(
       UnsupportedVersionError,
     );
   });
@@ -34,14 +52,14 @@ describe("version gate (via decode)", () => {
     );
   });
 
-  it("rejects a string version v:'0' (wrong type)", () => {
-    expect(() => decode({ ...baseFields, v: "0" })).toThrow(
+  it("rejects a string version v:'1' (wrong type)", () => {
+    expect(() => decode({ ...baseFields, v: "1" })).toThrow(
       UnsupportedVersionError,
     );
   });
 
-  it("rejects a non-integer version v:0.5", () => {
-    expect(() => decode({ ...baseFields, v: 0.5 })).toThrow(
+  it("rejects a non-integer version v:1.5", () => {
+    expect(() => decode({ ...baseFields, v: 1.5 })).toThrow(
       UnsupportedVersionError,
     );
   });
@@ -57,21 +75,21 @@ describe("version gate (via decode)", () => {
 
   it("carries received and supported on the error", () => {
     try {
-      decode({ ...baseFields, v: 1 });
+      decode({ ...baseFields, v: 2 });
       expect.unreachable("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(UnsupportedVersionError);
       const e = err as UnsupportedVersionError;
       expect(e.code).toBe("unsupported_version");
-      expect(e.received).toBe(1);
-      expect(e.supported).toBe(0);
+      expect(e.received).toBe(2);
+      expect(e.supported).toBe(1);
     }
   });
 
   it("runs the version gate BEFORE field validation", () => {
     // Wrong version AND a missing body: must report the version error, not
     // field issues.
-    expect(() => decode({ type: "note", v: 1 })).toThrow(
+    expect(() => decode({ type: "note", v: 0 })).toThrow(
       UnsupportedVersionError,
     );
   });

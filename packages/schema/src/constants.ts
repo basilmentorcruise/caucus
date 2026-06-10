@@ -3,7 +3,15 @@
  * tuples so the corresponding union types derive directly from them.
  */
 
-/** The fixed set of message intents (ADR-C5; see docs/MESSAGE_SCHEMA.md). */
+/**
+ * The fixed set of message intents (ADR-C5; see docs/MESSAGE_SCHEMA.md).
+ *
+ * `steer` (CAU-99, ADR-C13, schema v1) is the first-class human-directive type:
+ * one principal's human context crossing to another principal's agent. It is
+ * rendered as a distinct, descriptive "human directive" line by the hook and is
+ * *context, not command* — never auto-executed (vision principle #1). It carries
+ * no claim-only fields and is part of the non-claim union below.
+ */
 export const MESSAGE_TYPES = [
   "finding",
   "claim",
@@ -11,6 +19,7 @@ export const MESSAGE_TYPES = [
   "question",
   "answer",
   "note",
+  "steer",
 ] as const;
 
 /** Coordination signals an optional `status` field may carry. */

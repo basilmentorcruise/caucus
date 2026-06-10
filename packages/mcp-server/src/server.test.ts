@@ -129,7 +129,7 @@ describe("createCaucusServer (CAU-88 AC2 — in-process backbone error is contro
       async handle(): Promise<CallToolResult> {
         // Append a structurally-valid-looking note plus a dirty unknown key.
         await backbone.append("incident-1", {
-          v: 0,
+          v: 1,
           type: "note",
           agent_id: "agent-1",
           owner: "alice",
@@ -203,7 +203,7 @@ describe("createCaucusServer (CAU-88 AC2 — shared/wire backbone error is contr
       inputSchema: {},
       async handle(): Promise<CallToolResult> {
         await http.append("incident-1", {
-          v: 0,
+          v: 1,
           type: "note",
           agent_id: "agent-1",
           owner: "alice",

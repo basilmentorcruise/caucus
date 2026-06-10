@@ -61,7 +61,7 @@ function appended(
   overrides: Partial<AppendedMessage> & Record<string, unknown> = {},
 ): AppendedMessage {
   return {
-    v: 0,
+    v: 1,
     type: "finding",
     agent_id: "evil-agent",
     owner: "mallory",

@@ -12,10 +12,10 @@ import {
 } from "./constants.js";
 import { validate } from "./validate.js";
 
-/** A minimal valid v0 message (already version-stamped). */
+/** A minimal valid v1 message (already version-stamped). */
 function validNote(): Record<string, unknown> {
   return {
-    v: 0,
+    v: 1,
     type: "note",
     agent_id: "sess-A",
     owner: "alice",
@@ -26,7 +26,7 @@ function validNote(): Record<string, unknown> {
 
 function validClaim(): Record<string, unknown> {
   return {
-    v: 0,
+    v: 1,
     type: "claim",
     agent_id: "sess-A",
     owner: "alice",
@@ -55,6 +55,20 @@ describe("validate — happy path", () => {
 
   it("accepts a valid claim with target", () => {
     expect(() => validate(validClaim())).not.toThrow();
+  });
+
+  it("accepts a valid steer (CAU-99) — incl. status:needs-response", () => {
+    expect(() => validate({ ...validNote(), type: "steer" })).not.toThrow();
+    expect(() =>
+      validate({ ...validNote(), type: "steer", status: "needs-response" }),
+    ).not.toThrow();
+  });
+
+  it("rejects claim-only fields on a steer (steer is in the non-claim union)", () => {
+    expectIssue(
+      { ...validNote(), type: "steer", target: "auth-timeout" },
+      "target is only valid on claim messages",
+    );
   });
 });
 
@@ -94,7 +108,7 @@ describe("validate — structural", () => {
   });
 
   it("rejects a wrong v at the field layer", () => {
-    expectIssue({ ...validNote(), v: 5 }, "v must be 0");
+    expectIssue({ ...validNote(), v: 5 }, "v must be 1");
   });
 
   // CAU-88: the unknown-field key is caller-controlled and rides into the
@@ -572,7 +586,7 @@ describe("schema errors share the SchemaError base class", () => {
 
   it("UnsupportedVersionError is a SchemaError (consumers branch on the base)", () => {
     try {
-      decode({ ...validNote(), v: 1 });
+      decode({ ...validNote(), v: 99 });
       expect.unreachable("decode should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(UnsupportedVersionError);
