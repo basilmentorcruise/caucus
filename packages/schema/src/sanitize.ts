@@ -27,6 +27,7 @@
  * predicates are DERIVED from the strip functions, so the byte sets cannot
  * diverge).
  */
+import { MAX_ERROR_FRAGMENT_CHARS } from "./constants.js";
 
 /**
  * Remove terminal control characters from an untrusted, poster-controlled
@@ -51,6 +52,31 @@ export function stripControlChars(s: string): string {
   // source stays plain ASCII and the intent is auditable at a glance.
   // eslint-disable-next-line no-control-regex -- intentionally matching control bytes
   return s.replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+}
+
+/**
+ * Sanitize a caller-supplied fragment for embedding in an error `.message`
+ * (CAU-88): {@link stripControlChars} it, then truncate to `maxLen` characters,
+ * appending a `…` marker when it was cut.
+ *
+ * Error messages are a display/serialization surface — they ride the HTTP wire
+ * (`wire-errors.ts`) into another principal's context or TTY. A hostile caller
+ * controls BOTH the bytes (control characters smuggle terminal escapes / C1) and
+ * the length (a multi-kilobyte unknown key would bloat the error far past the
+ * body that caused it). This helper closes both: strip the dangerous bytes,
+ * bound the size. It is a no-op for any short, clean fragment.
+ *
+ * The strip runs BEFORE truncation so the length cap counts visible characters,
+ * not removed control bytes (a fragment that is all control bytes collapses to
+ * empty and is never truncated). The `…` marker is itself control-byte-free.
+ */
+export function sanitizeErrorFragment(
+  s: string,
+  maxLen: number = MAX_ERROR_FRAGMENT_CHARS,
+): string {
+  const clean = stripControlChars(s);
+  if (clean.length <= maxLen) return clean;
+  return `${clean.slice(0, maxLen)}…`;
 }
 
 /**

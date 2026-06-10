@@ -92,6 +92,47 @@ describe("validate — structural", () => {
   it("rejects a wrong v at the field layer", () => {
     expectIssue({ ...validNote(), v: 5 }, "v must be 0");
   });
+
+  // CAU-88: the unknown-field key is caller-controlled and rides into the
+  // thrown error's .message AND the wire-forwarded .issues[]. It is the SOLE
+  // caller-content echo in validate.ts — every other push is a server-derived
+  // constant/count — so it is sanitized at construction.
+  it("strips control bytes from an echoed unknown-field key (DEL + C1)", () => {
+    // eslint-disable-next-line no-control-regex -- intentionally matching control bytes
+    const CONTROL = /[\x00-\x1f\x7f-\x9f]/;
+    const dirtyKey = `pwn\x7f${"\x9b"}[2J`;
+    try {
+      validate({ ...validNote(), [dirtyKey]: 1 });
+      expect.unreachable("validate should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(MalformedMessageError);
+      const e = err as MalformedMessageError;
+      expect(e.message).not.toMatch(CONTROL);
+      for (const issue of e.issues) expect(issue).not.toMatch(CONTROL);
+      // The clean key text is preserved.
+      expect(e.issues).toContain('unknown field "pwn[2J"');
+    }
+  });
+
+  it("length-caps an overlong unknown-field key in the issue (… marker)", () => {
+    const longKey = "k".repeat(300);
+    try {
+      validate({ ...validNote(), [longKey]: 1 });
+      expect.unreachable("validate should have thrown");
+    } catch (err) {
+      const e = err as MalformedMessageError;
+      const issue = e.issues.find((i) => i.startsWith("unknown field"));
+      expect(issue).toBeDefined();
+      // Capped well below the raw 300-char key, and the truncation marker shows.
+      expect(issue!.length).toBeLessThan(longKey.length);
+      expect(issue).toContain("…");
+      expect(issue).not.toContain("k".repeat(300));
+    }
+  });
+
+  it("leaves a normal unknown-field key unchanged (no-op)", () => {
+    expectIssue({ ...validNote(), bogus_field: 1 }, 'unknown field "bogus_field"');
+  });
 });
 
 describe("validate — required fields (missing one at a time)", () => {

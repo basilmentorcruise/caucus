@@ -119,9 +119,18 @@ export class InvalidMessageError extends BackboneError {
   readonly issues: readonly string[];
 
   constructor(issues: readonly string[]) {
-    super(`Invalid message: ${issues.join("; ")}`, "invalid_message");
+    // Strip control bytes from every issue before it reaches a display surface
+    // (ADR-C12 / CAU-88). Some issues echo caller content (the unknown-field key
+    // forwarded from schema validation) and this array is sent verbatim as the
+    // wire `.issues[]` AND joined into `.message`. The strip is intentional and
+    // is NOT made redundant by the wire mapping: `in-memory.ts` constructs this
+    // error directly and, when CAUCUS_URL is unset, the MCP server runs the
+    // backbone IN-PROCESS — that path never traverses the wire, so without the
+    // strip here a dirty issue would reach the model's context verbatim.
+    const clean = issues.map(stripControlChars);
+    super(`Invalid message: ${clean.join("; ")}`, "invalid_message");
     this.name = "InvalidMessageError";
-    this.issues = issues;
+    this.issues = clean;
   }
 }
 

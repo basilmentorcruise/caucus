@@ -40,3 +40,16 @@ export const INJECTED_DELTA_CAP_CHARS = 8000 as const;
  * is inherently bounded.
  */
 export const MAX_REPORTED_ISSUES = 10 as const;
+
+/**
+ * Maximum length of a caller-supplied fragment echoed into an error message
+ * (CAU-88) — e.g. the unknown-field key in `validate`, or the received `v` in
+ * `UnsupportedVersionError`.
+ *
+ * Error messages travel verbatim over the HTTP wire (`wire-errors.ts`) into a
+ * requester's context or TTY, and a hostile caller can make an echoed fragment
+ * arbitrarily long (a multi-kilobyte unknown key) to dwarf the error itself. We
+ * neutralize control bytes (`stripControlChars`) AND cap the length: 120 chars
+ * is plenty to identify the offending field while bounding the blast radius.
+ */
+export const MAX_ERROR_FRAGMENT_CHARS = 120 as const;

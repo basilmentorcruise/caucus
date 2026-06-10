@@ -1,8 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { InMemoryBackbone } from "@caucus/backbone";
+import {
+  HttpBackbone,
+  startServer,
+  tokenDigest,
+  type RunningServer,
+  type TokenIdentity,
+} from "@caucus/backbone-server";
 import type { ServerConfig } from "./config.js";
 import { createCaucusServer } from "./server.js";
 import type { CaucusSession } from "./session.js";
@@ -87,6 +94,140 @@ describe("createCaucusServer (a throwing tool is surfaced, not fatal)", () => {
     // The server did not crash: a subsequent request is still answered.
     const { tools } = await client.listTools();
     expect(tools.find((t) => t.name === "test_throws")).toBeDefined();
+  });
+});
+
+// CAU-88 AC2 — the decisive in-process poison test. With CAUCUS_URL unset the
+// MCP server runs the backbone IN-PROCESS (InMemoryBackbone in this process), so
+// a thrown backbone error NEVER traverses the HTTP wire / mapError. The SDK
+// echoes the thrown error's .message into the model-facing isError text
+// (registry.ts WARNING). If the strip lived only at the wire boundary, a
+// control-byte-bearing issue would reach another agent's context verbatim here.
+// This test proves the construction-time strip covers the in-process path.
+describe("createCaucusServer (CAU-88 AC2 — in-process backbone error is control-byte-free)", () => {
+  // eslint-disable-next-line no-control-regex -- intentionally matching control bytes
+  const CONTROL_CHARS = /[\x00-\x1f\x7f-\x9f]/;
+
+  it("an InvalidMessageError whose issue carries control bytes reaches the model clean", async () => {
+    const backbone = new InMemoryBackbone();
+    await backbone.createChannel({
+      channel: "incident-1",
+      purpose: "test",
+      created_by: "alice",
+    });
+
+    // A throwaway tool that appends a RAW message carrying a control-byte
+    // UNKNOWN KEY straight through the in-process backbone. The schema validator
+    // (run inside the backbone) rejects it and constructs an InvalidMessageError
+    // whose .issues echoes that key — the exact CAU-88 conduit. We let it throw
+    // so the SDK surfaces its .message to the caller as isError text.
+    const poisonKey = `pwn\x7f${"\x9b"}[2Jevil`;
+    const poisonTool: CaucusTool = {
+      name: "test_poison",
+      description: "test-only: trigger a control-byte invalid_message",
+      inputSchema: {},
+      async handle(): Promise<CallToolResult> {
+        // Append a structurally-valid-looking note plus a dirty unknown key.
+        await backbone.append("incident-1", {
+          v: 0,
+          type: "note",
+          agent_id: "agent-1",
+          owner: "alice",
+          msg_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          body: "hi",
+          [poisonKey]: 1,
+        } as never);
+        return { content: [{ type: "text", text: "unreachable" }] };
+      },
+    };
+
+    const client = await connectClient(backbone, [poisonTool]);
+    const result = (await client.callTool({
+      name: "test_poison",
+      arguments: {},
+    })) as CallToolResult;
+
+    expect(result.isError).toBe(true);
+    const first = result.content[0];
+    expect(first?.type).toBe("text");
+    const text = (first as { type: "text"; text: string }).text;
+    // THE ASSERTION: the model-facing error text carries no control byte, even
+    // though it names the offending unknown field.
+    expect(text).not.toMatch(CONTROL_CHARS);
+    // And it is the real invalid_message issue (the key, stripped), not a
+    // generic message — proving the conduit was exercised, not bypassed.
+    expect(text).toContain("unknown field");
+    expect(text).toContain("pwn[2Jevil");
+    // The raw control bytes never landed in the text.
+    expect(text).not.toContain(poisonKey);
+  });
+});
+
+// CAU-88 AC2 — the shared/wire half. With CAUCUS_URL set the MCP server talks to
+// a real backbone-server over HTTP; a control-byte-bearing invalid_message error
+// round-trips the wire (mapError → wire .issues[] → backboneErrorFromWire). This
+// proves the construction-time strip ALSO holds across the wire reconstruction,
+// so the model-facing isError text is clean in shared mode too.
+describe("createCaucusServer (CAU-88 AC2 — shared/wire backbone error is control-byte-free)", () => {
+  // eslint-disable-next-line no-control-regex -- intentionally matching control bytes
+  const CONTROL_CHARS = /[\x00-\x1f\x7f-\x9f]/;
+
+  let running: RunningServer | undefined;
+  afterEach(async () => {
+    const r = running;
+    running = undefined;
+    if (r) await r.close();
+  });
+
+  it("an InvalidMessageError round-tripping the wire reaches the model clean", async () => {
+    const TOKEN = "tok-alice";
+    const identity: TokenIdentity = { agent_id: "agent-1", owner: "alice" };
+    const tokens = new Map([[tokenDigest(TOKEN), identity]]);
+    const backbone = new InMemoryBackbone();
+    await backbone.createChannel({
+      channel: "incident-1",
+      purpose: "test",
+      created_by: "alice",
+    });
+    running = await startServer({ port: 0, backbone, tokens });
+
+    // The MCP session writes through an HttpBackbone — the real shared-mode
+    // wiring. The poison append crosses the wire, the server returns a 400
+    // invalid_message, and the client reconstructs the InvalidMessageError from
+    // the wire `.issues[]` (already stripped at construction server-side).
+    const http = new HttpBackbone(running.url, { token: TOKEN });
+    const poisonKey = `pwn\x7f${"\x9b"}[2Jevil`;
+    const poisonTool: CaucusTool = {
+      name: "test_poison_wire",
+      description: "test-only: trigger a control-byte invalid_message over HTTP",
+      inputSchema: {},
+      async handle(): Promise<CallToolResult> {
+        await http.append("incident-1", {
+          v: 0,
+          type: "note",
+          agent_id: "agent-1",
+          owner: "alice",
+          msg_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          body: "hi",
+          [poisonKey]: 1,
+        } as never);
+        return { content: [{ type: "text", text: "unreachable" }] };
+      },
+    };
+
+    const client = await connectClient(backbone, [poisonTool]);
+    const result = (await client.callTool({
+      name: "test_poison_wire",
+      arguments: {},
+    })) as CallToolResult;
+
+    expect(result.isError).toBe(true);
+    const first = result.content[0];
+    const text = (first as { type: "text"; text: string }).text;
+    expect(text).not.toMatch(CONTROL_CHARS);
+    expect(text).toContain("unknown field");
+    expect(text).toContain("pwn[2Jevil");
+    expect(text).not.toContain(poisonKey);
   });
 });
 

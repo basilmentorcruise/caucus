@@ -31,6 +31,7 @@ import { createServer as createHttpServer, type Server } from "node:http";
 import type { Backbone, Cursor } from "@caucus/backbone";
 import { InMemoryBackbone } from "@caucus/backbone";
 import type { MessageInput } from "@caucus/schema";
+import { sanitizeErrorFragment } from "@caucus/schema";
 
 import { resolveToken, type TokenIdentity, type TokenMap } from "./tokens.js";
 import { mapError, UnauthorizedError, type WireErrorBody } from "./wire-errors.js";
@@ -145,7 +146,14 @@ function parseSegments(path: string): string[] {
       try {
         return decodeURIComponent(s);
       } catch {
-        throw new MalformedPathError(`malformed percent-encoding in path: ${s}`);
+        // `s` is the raw, caller-controlled path segment and this message rides
+        // into the 400 `invalid_request` body (ADR-C12 / CAU-88). Node's llhttp
+        // rejects control/high bytes in `req.url` before dispatch TODAY, but that
+        // guard reopens under `insecureHTTPParser` or a raw-forwarding proxy —
+        // strip-and-cap here as defense-in-depth so the boundary holds regardless.
+        throw new MalformedPathError(
+          `malformed percent-encoding in path: ${sanitizeErrorFragment(s)}`,
+        );
       }
     });
 }

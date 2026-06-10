@@ -12,6 +12,7 @@ export {
   MESSAGE_TYPES,
   STATUS_VALUES,
   INJECTED_DELTA_CAP_CHARS,
+  MAX_ERROR_FRAGMENT_CHARS,
 } from "./constants.js";
 export type {
   MessageType,
@@ -29,6 +30,7 @@ export {
 export {
   stripControlChars,
   stripControlCharsKeepWhitespace,
+  sanitizeErrorFragment,
   containsControlChars,
   containsControlCharsExceptWhitespace,
 } from "./sanitize.js";

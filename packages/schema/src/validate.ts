@@ -18,6 +18,7 @@ import { MalformedMessageError } from "./errors.js";
 import {
   containsControlChars,
   containsControlCharsExceptWhitespace,
+  sanitizeErrorFragment,
 } from "./sanitize.js";
 import type { CaucusMessage } from "./types.js";
 import { isUlid } from "./ulid.js";
@@ -76,7 +77,13 @@ export function validate(value: unknown): asserts value is CaucusMessage {
     if (ALLOWED_KEYS.has(key)) continue;
     unknownTotal += 1;
     if (unknownReported < MAX_REPORTED_ISSUES) {
-      issues.push(`unknown field "${key}"`);
+      // `key` is caller-controlled and rides into the thrown error's `.message`
+      // / wire-forwarded `.issues[]` (ADR-C12 / CAU-88): strip control bytes and
+      // length-cap before echoing it. Every OTHER push in this file interpolates
+      // only server-derived constants/counts (SCHEMA_VERSION, the enum joins,
+      // unknown-field count, the fixed CLAIM_ONLY_KEYS names) — this is the sole
+      // caller-content echo here, so it is the only one sanitized.
+      issues.push(`unknown field "${sanitizeErrorFragment(key)}"`);
       unknownReported += 1;
     }
   }
