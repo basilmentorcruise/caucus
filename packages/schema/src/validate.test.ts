@@ -5,7 +5,11 @@ import {
   SchemaError,
   UnsupportedVersionError,
 } from "./errors.js";
-import { MAX_REPORTED_ISSUES } from "./constants.js";
+import {
+  MAX_FIELD_CHARS,
+  MAX_RECIPIENTS,
+  MAX_REPORTED_ISSUES,
+} from "./constants.js";
 import { validate } from "./validate.js";
 
 /** A minimal valid v0 message (already version-stamped). */
@@ -225,6 +229,92 @@ describe("validate — optional fields", () => {
       validate({ ...validNote(), to: ["sess-B", "sess-C"] }),
     ).not.toThrow();
   });
+
+  // CAU-90: `to[]` is a routing fan-out list, not a payload — its entry count
+  // is capped at MAX_RECIPIENTS so a poster cannot inflate a read page.
+  it(`accepts a to array at exactly MAX_RECIPIENTS (${MAX_RECIPIENTS})`, () => {
+    const to = Array.from({ length: MAX_RECIPIENTS }, (_v, i) => `sess-${i}`);
+    expect(() => validate({ ...validNote(), to })).not.toThrow();
+  });
+
+  it(`rejects a to array over MAX_RECIPIENTS — positional, non-echoing`, () => {
+    const to = Array.from(
+      { length: MAX_RECIPIENTS + 1 },
+      (_v, i) => `sess-${i}`,
+    );
+    try {
+      validate({ ...validNote(), to });
+      expect.unreachable("validate should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(MalformedMessageError);
+      const issues = (err as MalformedMessageError).issues;
+      // The issue names the count and the limit — never any recipient value.
+      expect(issues).toEqual([
+        `to[] has more than ${MAX_RECIPIENTS} recipients (${MAX_RECIPIENTS + 1})`,
+      ]);
+      for (const recipient of to) {
+        expect(issues.join("\n")).not.toContain(recipient);
+      }
+    }
+  });
+
+  it("rejects an over-cap to with control-byte recipients — error stays clean (CAU-88)", () => {
+    const ESC = "\x1b";
+    const CSI = "\x9b";
+    // Over the cap AND every entry dirty: the count check fires first, so the
+    // error must carry neither the recipient values nor any control byte.
+    const to = Array.from(
+      { length: MAX_RECIPIENTS + 5 },
+      (_v, i) => `sess-${i}${ESC}${CSI}`,
+    );
+    try {
+      validate({ ...validNote(), to });
+      expect.unreachable("validate should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(MalformedMessageError);
+      const message = (err as MalformedMessageError).message;
+      const issues = (err as MalformedMessageError).issues;
+      expect(issues).toEqual([
+        `to[] has more than ${MAX_RECIPIENTS} recipients (${MAX_RECIPIENTS + 5})`,
+      ]);
+      expect(message).not.toContain(ESC);
+      expect(message).not.toContain(CSI);
+      expect(message).not.toContain("sess-0");
+    }
+  });
+
+  // CAU-90: `agent_id`, `owner`, `artifact` are identity/pointer fields, not
+  // payloads — length-capped at MAX_FIELD_CHARS so an embedder (no wire body
+  // cap) cannot inflate a read page via a giant identity string. Non-echoing.
+  it.each(["agent_id", "owner", "artifact"])(
+    "accepts %s at exactly MAX_FIELD_CHARS",
+    (field) => {
+      const atCap = "x".repeat(MAX_FIELD_CHARS);
+      expect(() => validate({ ...validNote(), [field]: atCap })).not.toThrow();
+    },
+  );
+
+  it.each(["agent_id", "owner", "artifact"])(
+    "rejects an over-cap %s — positional, non-echoing (no value in the error)",
+    (field) => {
+      const over = "z".repeat(MAX_FIELD_CHARS + 1000);
+      try {
+        validate({ ...validNote(), [field]: over });
+        expect.unreachable("validate should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(MalformedMessageError);
+        const issues = (err as MalformedMessageError).issues;
+        expect(
+          issues.some((i) =>
+            i.includes(`${field} exceeds ${MAX_FIELD_CHARS} characters`),
+          ),
+        ).toBe(true);
+        // The over-long value itself never appears in the error.
+        for (const issue of issues) expect(issue).not.toContain(over);
+        expect((err as MalformedMessageError).message).not.toContain(over);
+      }
+    },
+  );
 
   it("rejects an invalid status", () => {
     expectIssue({ ...validNote(), status: "maybe" }, "status must be one of");

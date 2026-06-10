@@ -42,6 +42,44 @@ export const INJECTED_DELTA_CAP_CHARS = 8000 as const;
 export const MAX_REPORTED_ISSUES = 10 as const;
 
 /**
+ * Maximum number of entries allowed in a message's `to[]` routing list (CAU-90).
+ *
+ * `to[]` is a routing fan-out list — "deliver this to these sessions" — NOT a
+ * payload field, so it gets a tight count cap on top of the per-entry char cap
+ * the backbone enforces. Without it the count is poster-controlled: an HTTP body
+ * is bounded (`MAX_BODY_BYTES`, 256 KB) but in-process embedders have no such
+ * bound, so a single message could carry tens of thousands of recipients and a
+ * clamped read page would still serialize tens of MB per tokenless read. 32 is
+ * far above any real fan-out (a war room has a handful of sessions) while
+ * bounding the blast radius. Enforced in the SHARED schema validation so both
+ * the wire and in-process embedders get it.
+ */
+export const MAX_RECIPIENTS = 32 as const;
+
+/**
+ * Maximum length, in characters, of each short free-text identifier / pointer
+ * field (CAU-90).
+ *
+ * Covers the schema's `agent_id`, `owner`, and `artifact` (validated here) plus
+ * the backbone's `target`, channel `purpose`, and every `to[]` entry (validated
+ * at the backbone boundary, which re-uses this constant). These are short
+ * identifiers, labels, or URLs — NOT payloads — so they get a much tighter cap
+ * than `body`. 1024 chars is comfortably above any legitimate value: an
+ * `agent_id`/`owner` is a session/human label, and `artifact` is a *pointer*
+ * (a URI/URL to the full content, per docs/MESSAGE_SCHEMA.md), never the
+ * content itself.
+ *
+ * Enforced in the SHARED schema validation so BOTH transports get it: the HTTP
+ * edge is already bounded by `MAX_BODY_BYTES` (256 KB), but an in-process
+ * embedder has no such bound — without a per-field char cap a single message
+ * could store a 50 MB `owner`, turning a clamped, tokenless read page into a
+ * multi-GB serialization (read amplification). Capping every length-unbounded
+ * string field makes the per-message size a genuine constant, so the body-only
+ * residency formula in SECURITY.md is a true upper bound for both transports.
+ */
+export const MAX_FIELD_CHARS = 1_024 as const;
+
+/**
  * Maximum length of a caller-supplied fragment echoed into an error message
  * (CAU-88) — e.g. the unknown-field key in `validate`, or the received `v` in
  * `UnsupportedVersionError`.

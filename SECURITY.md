@@ -212,27 +212,52 @@ defend against any of the following:
   channel-create throttle (all ADR-C8 seatbelts), count caps on each channel's log and on the
   number of channels, eviction of idle seatbelt bookkeeping with an LRU backstop, and — closing
   the last single-request lever (CAU-83) — a max `readSince` page size (`maxReadLimit`, default
-  500): one tokenless read can no longer make the server serialize a whole capped log (~330 MB of
+  500): one tokenless read can no longer make the server serialize a whole capped log (~320 MB of
   JSON) synchronously; an over-cap or omitted `limit` is silently clamped and the reader pages via
-  the returned cursor. The arithmetic: with the defaults (30 posts/min/channel, 120/min global per
-  agent, 10 creates/min per owner, 10 000 messages/channel, 1 000 channels, 4 096 tracked seatbelt
-  entries per map) a channel tops out around ~330 MB theoretical worst case (10k messages ×
-  16k-char bodies), and at the capped rates filling one channel takes ~5.6 h for a single token
-  (per-channel cap 30/min), or ~83 min with four colluding tokens (global cap 120/min each). That
-  ~330 MB figure is per channel: with `maxChannels` = 1 000 the backbone-wide theoretical bound is
-  ~330 GB — the count caps bound *counts*, not bytes, to a host-survivable level, and the
-  operative byte bound is the per-token ingest rate (120 msg/min × ~32 KB ≈ 3.8 MB/min, ≈
-  ~5.5 GB/day per token).
+  the returned cursor. The residual, stated honestly: a clamped page is still up to ~48 MB of
+  JSON — 500 messages × (up to a 16k-char body **plus** up to a full `to[]` of 32 × 1024 chars ≈
+  32k more chars), i.e. ~24 M chars before envelope/escaping overhead. (The earlier ~10–25 MB
+  figure counted body text only; with `to[]` now legitimately bounded at 32 × `MAX_FIELD_CHARS`
+  the per-message recipient text is the same order as the body and must be counted.) Reads are
+  **not
+  rate-limited** — the seatbelt throttles writes, not `readSince` — so a token-holder can issue
+  clamped reads back-to-back. This is acceptable on loopback (the intended deployment), and is
+  another reason not to expose the port. The arithmetic: with the defaults (30 posts/min/channel,
+  120/min global per agent, 10 creates/min per owner, 10 000 messages/channel, 1 000 channels,
+  4 096 tracked seatbelt entries per map) a channel tops out around ~320 MB theoretical worst case
+  (10k messages × 16k-char bodies × 2 bytes/char), and at the capped rates filling one channel takes
+  ~5.6 h for a single token (per-channel cap 30/min), or ~83 min with four colluding tokens (global
+  cap 120/min each). That ~320 MB figure is per channel: with `maxChannels` = 1 000 the
+  backbone-wide theoretical bound is ~320 GB — the count caps bound *counts*, not bytes, to a
+  host-survivable level, and the operative byte bound is the per-token ingest rate (120 msg/min ×
+  ~32 KB ≈ 3.8 MB/min, ≈ ~5.5 GB/day per token).
 
   **Byte-bound decision (CAU-83): operator guidance, not a cap.** v1 ships no per-channel byte
   cap (sum of body lengths); the bound on resident bytes is sized by the count caps the operator
-  configures. Size your host with: **resident upper bound ≈ `maxChannels` ×
+  configures. Quick estimate (body-dominated): **≈ `maxChannels` ×
   `maxMessagesPerChannel` × `MAX_BODY_CHARS` × 2 bytes/char** (JS strings are UTF-16; defaults
-  give 1 000 × 10 000 × 16 000 × 2 ≈ ~320 GB theoretical, reached only at full caps after days of
-  max-rate ingest). On a memory-constrained host, lower `maxMessagesPerChannel` and/or
-  `maxChannels` accordingly (e.g. 100 channels × 1 000 messages bounds residency at ~3.2 GB). The
+  give 1 000 × 10 000 × 16 000 × 2 ≈ ~320 GB, reached only at full caps after days of
+  max-rate ingest). This body-only term is **not** the worst case, but every field that contributes
+  is now bounded — after CAU-90 *every* length-unbounded string field is capped: the `to[]`
+  recipient-count cap (`MAX_RECIPIENTS` = 32), the per-`to[]`-entry char cap, the claim `target`,
+  the channel `purpose`, and — closing the last gaps the count cap alone left open — `agent_id`,
+  `owner`, and `artifact`, all at `MAX_FIELD_CHARS` = 1 024 chars. The exhaustive per-message
+  non-body bound is `(MAX_RECIPIENTS × MAX_FIELD_CHARS) + (4 × MAX_FIELD_CHARS)` for the four capped
+  variable-length non-body fields (`agent_id`, `owner`, `artifact`, claim `target`) = (32 + 4) ×
+  1 024 ≈ 37 K chars ≈ ~72 KB (× 2 bytes/char), plus O(tens of bytes) of fixed-size fields
+  (`msg_id` ULID, `type`/`status` enums, JSON keys). At maximal `to[]` fan-out this non-body term is
+  ~2.3× the 16k-char (`MAX_BODY_CHARS`) body, so a **true** resident upper bound is
+  `maxChannels × maxMessagesPerChannel × (MAX_BODY_CHARS + ~37 K) × 2 bytes/char` ≈ **~1 TB** at
+  defaults — ~3.3× the body-only estimate. Typical traffic (few or no recipients) lands near the
+  ~320 GB body-dominated figure; size to the ~1 TB bound only if you expect every message to fan out
+  to the recipient cap. Both hold for the **in-process** embedder too (no `MAX_BODY_BYTES` HTTP
+  bound): no string field is left uncapped, so there is no remaining read-amplification lever. On a
+  memory-constrained host, lower `maxMessagesPerChannel` and/or
+  `maxChannels` accordingly (e.g. 100 channels × 1 000 messages bounds the body term at ~3.2 GB,
+  the full bound at ~10.6 GB). The
   honest caveat: these caps are **constructor knobs** (`InMemoryBackboneOptions` — embedders
-  passing `maxMessagesPerChannel`/`maxChannels` to `InMemoryBackbone`/`startServer`); the stock
+  passing `maxMessagesPerChannel`/`maxChannels`/`maxReadLimit` to `InMemoryBackbone`/`startServer`);
+  the stock
   `caucus-backbone` bin runs the defaults, and wiring env knobs for them is a separate ticket.
   The residual posture, stated honestly: the seatbelt and caps are cooperative-abuse /
   accidental-loop controls within the ADR-C9 trust boundary; they are not a defense against a

@@ -21,6 +21,7 @@ import {
   containsControlCharsExceptWhitespace,
   MalformedMessageError,
   type CaucusMessage,
+  MAX_FIELD_CHARS,
   type MessageInput,
   normalizeTarget,
   SCHEMA_VERSION,
@@ -81,8 +82,9 @@ export type InMemoryBackboneOptions = SeatbeltOptions & {
    * messages, regardless of the requested `limit` (an over-cap or omitted
    * `limit` is SILENTLY clamped, never an error — cursor catch-up converges by
    * reading again from the returned cursor). Default
-   * {@link DEFAULT_MAX_READ_LIMIT}. Like the CAU-74 caps, this is trusted
-   * constructor input — no validation.
+   * {@link DEFAULT_MAX_READ_LIMIT}. Unlike the CAU-74 count caps, this value is
+   * FLOORED at construction (CAU-90): a non-positive or NaN cap would make every
+   * page empty — a silent "caught up" footgun — so it falls back to the default.
    */
   readonly maxReadLimit?: number;
 };
@@ -93,8 +95,13 @@ export type InMemoryBackboneOptions = SeatbeltOptions & {
  * key), a channel `purpose`, and every `to[]` entry. These are short
  * identifiers / descriptions, not payloads, so they get a much tighter cap than
  * `body`.
+ *
+ * Re-exported from `@caucus/schema` so there is a SINGLE source of truth: the
+ * shared `validate` caps `agent_id`/`owner`/`artifact` to the same constant
+ * (CAU-90), and the backbone caps the descriptor/ledger fields it owns
+ * (`target`/`purpose`/`to[]` entries) that don't pass through `validate`.
  */
-export const MAX_FIELD_CHARS = 1_024;
+export { MAX_FIELD_CHARS };
 
 /**
  * Recursively `Object.freeze` a value and every nested object/array it owns, so
@@ -172,7 +179,24 @@ export class InMemoryBackbone implements Backbone {
     this.#maxChannels = opts.maxChannels ?? DEFAULT_MAX_CHANNELS;
     this.#maxMessagesPerChannel =
       opts.maxMessagesPerChannel ?? DEFAULT_MAX_MESSAGES_PER_CHANNEL;
-    this.#maxReadLimit = opts.maxReadLimit ?? DEFAULT_MAX_READ_LIMIT;
+    // Floor `maxReadLimit` at construction (CAU-90). A value ≤ 0 (or NaN, e.g.
+    // from a fat-fingered env knob) would clamp EVERY `readSince` page to length
+    // 0 — `readSince` reads as "caught up" and the hook silently delivers
+    // nothing, an integrity footgun with no error. We floor to the DEFAULT
+    // rather than to 1: a non-positive/NaN cap is a misconfiguration, not a
+    // request for single-message paging, so the safe recovery is the documented
+    // default page size — keeping catch-up fast — not a pathologically slow
+    // one-at-a-time stream. Floor FIRST, then check `> 0`: a fractional cap in
+    // `(0, 1)` (e.g. 0.5) passes a `> 0` test but `Math.floor`s to 0, which would
+    // reintroduce the empty-page footgun — so the truncation must happen before
+    // the positivity check. `Number.isFinite` rejects NaN/±Infinity (NaN must
+    // not pass through).
+    const requestedReadLimit = opts.maxReadLimit ?? DEFAULT_MAX_READ_LIMIT;
+    const flooredReadLimit = Math.floor(requestedReadLimit);
+    this.#maxReadLimit =
+      Number.isFinite(flooredReadLimit) && flooredReadLimit > 0
+        ? flooredReadLimit
+        : DEFAULT_MAX_READ_LIMIT;
   }
 
   /**

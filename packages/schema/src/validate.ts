@@ -13,7 +13,13 @@
  * read/render layer (CAU-69/73). Error strings NEVER echo payload bytes —
  * these errors travel over the wire into TTYs (ADR-C12).
  */
-import { MAX_REPORTED_ISSUES, MESSAGE_TYPES, STATUS_VALUES } from "./constants.js";
+import {
+  MAX_FIELD_CHARS,
+  MAX_RECIPIENTS,
+  MAX_REPORTED_ISSUES,
+  MESSAGE_TYPES,
+  STATUS_VALUES,
+} from "./constants.js";
 import { MalformedMessageError } from "./errors.js";
 import {
   containsControlChars,
@@ -112,11 +118,27 @@ export function validate(value: unknown): asserts value is CaucusMessage {
     issues.push("agent_id must be a non-empty string");
   } else if (containsControlChars(value.agent_id)) {
     issues.push("agent_id must not contain control characters");
+  } else if (value.agent_id.length > MAX_FIELD_CHARS) {
+    // Length cap (CAU-90): `agent_id` is a short session label, not a payload —
+    // an in-process embedder has no HTTP byte bound, so an unbounded value is a
+    // read-amplification lever (a 50MB `agent_id` survives into a clamped read
+    // page). Positional + NON-echoing (ADR-C12 / CAU-88): name the field, the
+    // limit, and the actual length — never the value. The length is a plain
+    // integer (control-byte-free per CAU-88), so it is safe to interpolate.
+    issues.push(
+      `agent_id exceeds ${MAX_FIELD_CHARS} characters (${value.agent_id.length})`,
+    );
   }
   if (!isNonEmptyString(value.owner)) {
     issues.push("owner must be a non-empty string");
   } else if (containsControlChars(value.owner)) {
     issues.push("owner must not contain control characters");
+  } else if (value.owner.length > MAX_FIELD_CHARS) {
+    // Length cap (CAU-90) — same rationale as `agent_id` above; `owner` is a
+    // short human label. Non-echoing: field name + limit + actual length only.
+    issues.push(
+      `owner exceeds ${MAX_FIELD_CHARS} characters (${value.owner.length})`,
+    );
   }
   // msg_id needs no control-char check: the ULID regex already excludes them.
   if (!isUlid(value.msg_id)) {
@@ -151,6 +173,18 @@ export function validate(value: unknown): asserts value is CaucusMessage {
       !value.to.every((entry) => isNonEmptyString(entry))
     ) {
       issues.push("to must be a non-empty array of non-empty strings");
+    } else if (value.to.length > MAX_RECIPIENTS) {
+      // Count cap (CAU-90): `to[]` is a routing fan-out list, not a payload —
+      // a poster-controlled count is a read-amplification lever (in-process
+      // embedders have no body-byte bound). Positional + NON-echoing (ADR-C12 /
+      // CAU-88): the message carries the offending count and the limit, never
+      // the recipient values (which are caller-controlled and may contain
+      // control bytes — see the per-entry check below). Checked before the
+      // control-char scan so an over-cap list is rejected by count without
+      // iterating every (possibly dirty) entry.
+      issues.push(
+        `to[] has more than ${MAX_RECIPIENTS} recipients (${value.to.length})`,
+      );
     } else if (
       // ONE aggregate issue for the whole array (CAU-71): the entry count is
       // poster-controlled, so per-entry issues would be unbounded.
@@ -174,6 +208,14 @@ export function validate(value: unknown): asserts value is CaucusMessage {
       issues.push("artifact must be a non-empty string");
     } else if (containsControlChars(value.artifact)) {
       issues.push("artifact must not contain control characters");
+    } else if (value.artifact.length > MAX_FIELD_CHARS) {
+      // Length cap (CAU-90): `artifact` is a *pointer* — a URI/URL to the full
+      // content (docs/MESSAGE_SCHEMA.md), never the payload itself — so
+      // MAX_FIELD_CHARS (1024) sits comfortably above any legitimate reference.
+      // Same read-amplification rationale and non-echoing idiom as `agent_id`.
+      issues.push(
+        `artifact exceeds ${MAX_FIELD_CHARS} characters (${value.artifact.length})`,
+      );
     }
   }
 
