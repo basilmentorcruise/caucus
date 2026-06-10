@@ -9,6 +9,9 @@ import {
   createChannelTool,
   joinChannelTool,
 } from "./channels.js";
+import { postTool } from "./post.js";
+import { readChannelTool } from "./read-channel.js";
+import { NotJoinedError } from "../errors.js";
 
 const config: ServerConfig = {
   identity: { agent_id: "agent-1", owner: "alice" },
@@ -320,5 +323,60 @@ describe("caucus_join_channel", () => {
     await joinChannelTool.handle(session, { channel: "incident-1" });
     const after = (await backbone.readSince("incident-1", 0)).messages.length;
     expect(after).toBe(before);
+  });
+});
+
+describe("caucus_join_channel — CAU-92 opens the cross-room posting gate", () => {
+  /** Home (`incident-1`) + a second room (`war-room-2`). */
+  async function twoRoomBackbone(): Promise<InMemoryBackbone> {
+    const backbone = await freshBackbone();
+    await backbone.createChannel({
+      channel: "war-room-2",
+      purpose: "other room",
+      created_by: "carol",
+    });
+    return backbone;
+  }
+
+  it("a join authorizes a subsequent cross-room post into that room", async () => {
+    const backbone = await twoRoomBackbone();
+    const session = createSession(config, backbone);
+
+    // Before joining, a cross-room post is rejected (gate closed).
+    await expect(
+      postTool.handle(session, {
+        type: "note",
+        body: "too early",
+        channel: "war-room-2",
+      }),
+    ).rejects.toBeInstanceOf(NotJoinedError);
+    expect((await backbone.readSince("war-room-2", 0)).messages).toHaveLength(0);
+
+    // The deliberate join opens the gate.
+    await joinChannelTool.handle(session, { channel: "war-room-2" });
+    await postTool.handle(session, {
+      type: "note",
+      body: "now allowed",
+      channel: "war-room-2",
+    });
+    const there = await backbone.readSince("war-room-2", 0);
+    expect(there.messages).toHaveLength(1);
+    expect(there.messages[0]?.body).toBe("now allowed");
+  });
+
+  it("a bare caucus_read_channel({channel:X}) does NOT open the gate (only join does)", async () => {
+    const backbone = await twoRoomBackbone();
+    const session = createSession(config, backbone);
+
+    // Reading X mints no posting authorization — the divergence CAU-92 pins.
+    await readChannelTool.handle(session, { channel: "war-room-2" });
+    await expect(
+      postTool.handle(session, {
+        type: "note",
+        body: "read is not join",
+        channel: "war-room-2",
+      }),
+    ).rejects.toBeInstanceOf(NotJoinedError);
+    expect((await backbone.readSince("war-room-2", 0)).messages).toHaveLength(0);
   });
 });

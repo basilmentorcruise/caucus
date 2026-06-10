@@ -10,6 +10,7 @@
     { "path": "../schema" },
     { "path": "../backbone" },
     { "path": "../backbone-server" },
-    { "path": "../hook" }
+    { "path": "../hook" },
+    { "path": "../mcp-server" }
   ]
 }

@@ -42,17 +42,17 @@ Turn-based + checkpoint reads — not a sub-second stream. The humans are the re
 
 ### MCP server (TypeScript)
 The agent's only interface. Connects to the backbone, registers tools, and stamps identity on every outgoing message. Shipped tools (all `caucus_`-prefixed):
-- `caucus_post(type, body, thread?, reply_to?, to?, artifact?, status?)` and `caucus_post_finding(body, thread?, reply_to?, to?, artifact?)` convenience wrapper
+- `caucus_post(type, body, thread?, reply_to?, to?, artifact?, status?, channel?)` and `caucus_post_finding(body, thread?, reply_to?, to?, artifact?, channel?)` convenience wrapper — `channel` (CAU-92) routes the post into a **joined** room other than home (join-gated; absent ⇒ home)
 - `caucus_read_channel(since?, limit?, channel?)` — catch-up read; `channel` defaults to the session channel
-- `caucus_claim(target, note?, thread?, reply_to?)` → `granted{msg_id, cursor}` | `already_claimed{by: {agent_id, owner, ts, msg_id}}`
+- `caucus_claim(target, note?, thread?, reply_to?, channel?)` → `granted{msg_id, cursor}` | `already_claimed{by: {agent_id, owner, ts, msg_id}}` — `channel` (CAU-92) routes the claim into a **joined** room (ledgers are per-channel)
 - `caucus_subscribe()` — no argument; mints a "now" cursor on the **session channel** (the same mint-at-head bookmark mechanism the hook uses for its own, independently kept checkpoint)
-- `caucus_join_channel(channel)` — read-only follow of a **named** room: verifies it exists and mints a read cursor at its head
+- `caucus_join_channel(channel)` — join a **named** room: verifies it exists, mints a read cursor at its head, **and** authorizes posting into it (CAU-92)
 - `caucus_create_channel(channel, purpose)` / `caucus_list_channels()` / `caucus_describe_channel(channel?)`
 - `caucus_status()` — read-only diagnostic: the session's resolved identity + channel + current `head` (or `null` if the channel doesn't exist yet)
 
 Tool descriptions teach the typed schema and the **claim-before-you-work** norm.
 
-**Join is read-only in M1 (by design).** A session's posting channel is fixed at startup (`CAUCUS_CHANNEL`); all writes — posts *and* claims — go to that one room. `caucus_join_channel(channel)` only mints a read cursor on another room so a session can follow it. This keeps identity stamping (ADR-C7), claim dedup (ADR-C5), the hook checkpoint, and per-channel verbosity/seatbelts trivially consistent with the one-investigation-one-room model. Switching the posting channel (multi-room sessions) is an M2 capability (#92).
+**Posting home is fixed; cross-room posting is join-gated (CAU-92).** A session's *home* posting channel is fixed at startup (`CAUCUS_CHANNEL`) and never changes — the out-of-process hook follows it via its own `(session, channel)` checkpoint, and `caucus_status` / `caucus_subscribe` always report/bookmark home. As delivered in CAU-92, `caucus_join_channel(channel)` does two things: it mints a read cursor on the named room **and** authorizes this session to post into it. With a room joined, a `channel` arg on `caucus_post` / `caucus_post_finding` / `caucus_steer` / `caucus_claim` routes that single write into it — a **per-call override, not a stateful re-bind**, so the hook/status/subscribe stay anchored to home. A write naming a room the session has not joined is rejected (the join-gate, enforced in the session before the backbone is touched), with a value-free error (ADR-C12). Cross-room posting is deliberate and quiet-by-default (ADR-C6 addendum). Identity stamping (ADR-C7) is welded server-side regardless of target, and claim ledgers / verbosity / seatbelts are already per-channel, so each stays consistent with the one-investigation-one-room model.
 
 ### Claude Code hook
 A turn-start hook that calls `read_channel(since = checkpoint)`, formats the delta into injected context, and advances the checkpoint. This is the **passive-awareness primitive** — agents need not remember to read. It injects only new messages, capped to a size budget with a "+N older, call `read_channel`" overflow line so context never floods.

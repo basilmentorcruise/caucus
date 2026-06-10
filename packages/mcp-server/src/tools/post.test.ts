@@ -12,6 +12,7 @@ import { isUlid } from "@caucus/schema";
 import type { ServerConfig } from "../config.js";
 import type { CaucusSession } from "../session.js";
 import { createSession } from "../session.js";
+import { NotJoinedError } from "../errors.js";
 import { postTool, postFindingTool, steerTool } from "./post.js";
 
 const config: ServerConfig = {
@@ -166,6 +167,7 @@ describe("caucus_post", () => {
       identity: { agent_id: "agent-1", owner: "alice" },
       channel: "incident-1",
       reader: {} as CaucusSession["reader"],
+      noteJoined: () => undefined,
       post: () => Promise.reject(err),
       claim: () => Promise.reject(err),
       createChannel: () => Promise.reject(err),
@@ -266,5 +268,108 @@ describe("caucus_steer (CAU-99)", () => {
     const [msg] = await readAll(backbone);
     expect(msg?.type).toBe("steer");
     expect(msg?.status).toBe("needs-response");
+  });
+});
+
+describe("CAU-92 — optional channel routing arg", () => {
+  /** A backbone with home + a joinable second room. */
+  async function twoRoomSession(): Promise<{
+    backbone: InMemoryBackbone;
+    session: CaucusSession;
+  }> {
+    const backbone = new InMemoryBackbone();
+    await backbone.createChannel({
+      channel: "incident-1",
+      purpose: "home",
+      created_by: "alice",
+    });
+    await backbone.createChannel({
+      channel: "war-room-2",
+      purpose: "other",
+      created_by: "carol",
+    });
+    return { backbone, session: createSession(config, backbone) };
+  }
+
+  it("schema declares an optional channel on all three post tools", () => {
+    for (const tool of [postTool, postFindingTool, steerTool]) {
+      // The SDK validates with this raw shape; `channel` must be present and
+      // optional so today's callers (no channel) stay byte-identical.
+      const shape = tool.inputSchema as Record<string, { isOptional(): boolean }>;
+      expect(shape["channel"]).toBeDefined();
+      expect(shape["channel"]?.isOptional()).toBe(true);
+    }
+  });
+
+  it("threads channel through to the joined room (caucus_post)", async () => {
+    const { backbone, session } = await twoRoomSession();
+    session.noteJoined("war-room-2");
+
+    await postTool.handle(session, {
+      type: "finding",
+      body: "routed cross-room",
+      channel: "war-room-2",
+    });
+
+    const there = await backbone.readSince("war-room-2", 0);
+    expect(there.messages).toHaveLength(1);
+    expect(there.messages[0]?.body).toBe("routed cross-room");
+    const home = await backbone.readSince("incident-1", 0);
+    expect(home.messages).toHaveLength(0);
+  });
+
+  it("threads channel through caucus_post_finding and caucus_steer", async () => {
+    const { backbone, session } = await twoRoomSession();
+    session.noteJoined("war-room-2");
+
+    await postFindingTool.handle(session, {
+      body: "finding there",
+      channel: "war-room-2",
+    });
+    await steerTool.handle(session, {
+      body: "steer there",
+      channel: "war-room-2",
+    });
+
+    const there = await backbone.readSince("war-room-2", 0);
+    expect(there.messages.map((m) => m.body)).toEqual([
+      "finding there",
+      "steer there",
+    ]);
+  });
+
+  it("does NOT store channel as message content (routing only)", async () => {
+    const { backbone, session } = await twoRoomSession();
+    session.noteJoined("war-room-2");
+    await postTool.handle(session, {
+      type: "note",
+      body: "routing-not-content",
+      channel: "war-room-2",
+    });
+    const there = await backbone.readSince("war-room-2", 0);
+    const stored = there.messages[0] as AppendedMessage;
+    expect("channel" in stored).toBe(false);
+  });
+
+  it("NotJoinedError surfaces a value-free SDK error (channel/body absent — ADR-C12)", async () => {
+    const { backbone, session } = await twoRoomSession();
+    // Deliberately NOT joined.
+    let thrown: unknown;
+    await postTool
+      .handle(session, {
+        type: "finding",
+        body: "leak-me-body",
+        channel: "war-room-2",
+      })
+      .catch((e) => {
+        thrown = e;
+      });
+    expect(thrown).toBeInstanceOf(NotJoinedError);
+    const message = (thrown as Error).message;
+    expect(message).not.toContain("war-room-2");
+    expect(message).not.toContain("leak-me-body");
+    // The gate fired before the backbone — nothing landed in the target.
+    const there = await backbone.readSince("war-room-2", 0);
+    expect(there.messages).toHaveLength(0);
   });
 });

@@ -90,6 +90,15 @@ const SHARED_FIELDS = {
     .string()
     .optional()
     .describe("URI linking full content when `body` is only a summary."),
+  channel: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Target room for this post. Absent ⇒ your session channel. To post into " +
+        "another room you must have joined it first with caucus_join_channel; " +
+        "post sparingly into another team's room (ADR-C6).",
+    ),
 } as const;
 
 /** The input schema for `caucus_post`: `type`, the shared fields, and `status`. */
@@ -124,6 +133,7 @@ const POST_FINDING_INPUT = {
   artifact: SHARED_FIELDS.artifact.describe(
     "URI to the full logs / repro / evidence behind the finding.",
   ),
+  channel: SHARED_FIELDS.channel,
 } as const satisfies ZodRawShapeCompat;
 
 /**
@@ -141,6 +151,7 @@ const STEER_INPUT = {
   reply_to: SHARED_FIELDS.reply_to,
   to: SHARED_FIELDS.to,
   artifact: SHARED_FIELDS.artifact,
+  channel: SHARED_FIELDS.channel,
   status: z
     .enum(STATUS_VALUES as unknown as [string, ...string[]])
     .optional()
@@ -157,6 +168,12 @@ interface SharedPostArgs {
   readonly reply_to?: string;
   readonly to?: string[];
   readonly artifact?: string;
+  /**
+   * Target room (CAU-92). A ROUTING arg, NOT message content: it is threaded to
+   * `session.post` separately and never enters {@link buildDraft}, so it is not
+   * part of the stored message. Absent ⇒ the session's home channel.
+   */
+  readonly channel?: string;
 }
 
 /** Parsed `caucus_post` args. */
@@ -188,8 +205,14 @@ function buildDraft(args: PostArgs): ToolMessageDraft {
 async function postDraft(
   session: CaucusSession,
   draft: ToolMessageDraft,
+  channel?: string,
 ): Promise<ToolResult> {
-  const { message, cursor } = await session.post(draft);
+  // `channel` is a routing target threaded SEPARATELY from the draft (CAU-92):
+  // it is not message content. The session enforces the join-gate before
+  // touching the backbone and throws a value-free NotJoinedError for a
+  // not-joined target — which propagates here untouched, so nothing
+  // interpolates the channel/body into the surfaced error (ADR-C12).
+  const { message, cursor } = await session.post(draft, channel);
   return {
     content: [
       { type: "text", text: JSON.stringify({ msg_id: message.msg_id, cursor }) },
@@ -215,7 +238,8 @@ export const postTool: CaucusTool = {
     session: CaucusSession,
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
-    return postDraft(session, buildDraft(args as unknown as PostArgs));
+    const post = args as unknown as PostArgs;
+    return postDraft(session, buildDraft(post), post.channel);
   },
 };
 
@@ -237,7 +261,11 @@ export const postFindingTool: CaucusTool = {
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
     const shared = args as unknown as SharedPostArgs;
-    return postDraft(session, buildDraft({ ...shared, type: "finding" }));
+    return postDraft(
+      session,
+      buildDraft({ ...shared, type: "finding" }),
+      shared.channel,
+    );
   },
 };
 
@@ -270,6 +298,10 @@ export const steerTool: CaucusTool = {
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
     const steer = args as unknown as SteerArgs;
-    return postDraft(session, buildDraft({ ...steer, type: "steer" }));
+    return postDraft(
+      session,
+      buildDraft({ ...steer, type: "steer" }),
+      steer.channel,
+    );
   },
 };

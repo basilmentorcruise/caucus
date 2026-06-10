@@ -14,10 +14,14 @@
  *   CaucusSession.createChannel}, which anchors `created_by` to the session
  *   owner server-side — a tool cannot forge attribution because there is no
  *   `created_by` argument to forge (ADR-C7).
- * - `caucus_join_channel` is read-only BY DESIGN in M1: "joining" a room ==
- *   minting a cursor on it. The session's POSTING channel is fixed by
- *   `CAUCUS_CHANNEL`; join only yields a read cursor on another room
- *   (switching the posting channel is an M2 capability — CAU-92).
+ * - `caucus_join_channel` mints a read cursor on a room AND opens the
+ *   cross-room posting gate for it (CAU-92): after joining X, this session may
+ *   post/claim into X via the tools' `channel` arg. The session's POSTING HOME
+ *   stays fixed by `CAUCUS_CHANNEL` (a per-call override, not a re-bind, so the
+ *   hook keeps following home); cross-room posting is join-gated and
+ *   quiet-by-default (ADR-C6 addendum). A bare `caucus_read_channel({channel})`
+ *   does NOT open the gate — only a deliberate join does, keeping it the
+ *   explicit, auditable act.
  *
  * Unknown-channel handling DIFFERS per tool on purpose: describe and join let
  * {@link UnknownChannelError} propagate (a missing room is the answer to "does
@@ -210,13 +214,16 @@ interface JoinChannelArgs {
 export const joinChannelTool: CaucusTool = {
   name: "caucus_join_channel",
   description:
-    "Follow an existing Caucus war room: verifies it exists and mints a read " +
-    "cursor at its current head, returning {channel, cursor, head}. Read-only: " +
-    "posts nothing (ADR-C6). By design in M1, joining does NOT change where " +
-    "you post — your posting channel is fixed for the session by " +
-    "CAUCUS_CHANNEL. Join lets you FOLLOW another room: call " +
-    "caucus_read_channel with `channel` set to the room and the returned " +
-    "`cursor` as `since`. Joining a non-existent room is an error.",
+    "Join an existing Caucus war room: verifies it exists, mints a read cursor " +
+    "at its current head, and authorizes this session to post into it — " +
+    "returning {channel, cursor, head}. Join a room to READ it AND to be " +
+    "ALLOWED to post into it (sparingly, ADR-C6): after joining, set `channel` " +
+    "on caucus_post / caucus_post_finding / caucus_steer / caucus_claim to that " +
+    "room. Your posting HOME stays fixed by CAUCUS_CHANNEL — this is a per-call " +
+    "override, not a re-bind. To follow the room, call caucus_read_channel with " +
+    "`channel` set and the returned `cursor` as `since`. A bare read does NOT " +
+    "authorize posting — only this join does. Joining a non-existent room is an " +
+    "error.",
   inputSchema: JOIN_CHANNEL_INPUT,
   async handle(
     session: CaucusSession,
@@ -229,6 +236,12 @@ export const joinChannelTool: CaucusTool = {
     // cursor at the current head in ONE call, so cursor === head is atomic by
     // construction rather than racing a separate describeChannel.
     const cursor = await session.reader.subscribe(channel);
+    // Only AFTER a successful subscribe (the room provably exists) do we open
+    // the cross-room posting gate for it (CAU-92). This is the SOLE caller of
+    // noteJoined — a bare caucus_read_channel({channel}) deliberately does not
+    // reach it, so "join" stays the explicit, auditable act that authorizes
+    // posting into another room.
+    session.noteJoined(channel);
     return jsonResult({ channel, cursor, head: cursor });
   },
 };

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { InMemoryBackbone } from "@caucus/backbone";
 import type { ServerConfig } from "./config.js";
 import { createSession } from "./session.js";
+import { NotJoinedError } from "./errors.js";
 
 const config: ServerConfig = {
   identity: { agent_id: "agent-1", owner: "alice" },
@@ -99,6 +100,129 @@ describe("createSession", () => {
         target: "hypothesis-9",
       } as Parameters<typeof session.post>[0]),
     ).rejects.toThrow();
+  });
+
+  describe("CAU-92 — per-call channel override + join-gate", () => {
+    /** A backbone with home (`incident-1`) and a second room (`war-room-2`). */
+    async function twoRoomBackbone(): Promise<InMemoryBackbone> {
+      const backbone = new InMemoryBackbone();
+      await backbone.createChannel({
+        channel: "incident-1",
+        purpose: "home",
+        created_by: "alice",
+      });
+      await backbone.createChannel({
+        channel: "war-room-2",
+        purpose: "other",
+        created_by: "carol",
+      });
+      return backbone;
+    }
+
+    it("post(draft, 'war-room-2') routes to that room once joined, stamped server-side", async () => {
+      const backbone = await twoRoomBackbone();
+      const session = createSession(config, backbone);
+      session.noteJoined("war-room-2");
+
+      const result = await session.post(
+        { type: "finding", body: "cross-room finding" },
+        "war-room-2",
+      );
+      // Identity is welded server-side regardless of target.
+      expect(result.message.agent_id).toBe("agent-1");
+      expect(result.message.owner).toBe("alice");
+
+      // It landed in war-room-2, NOT home.
+      const there = await backbone.readSince("war-room-2", 0);
+      expect(there.messages).toHaveLength(1);
+      expect(there.messages[0]?.body).toBe("cross-room finding");
+      expect(there.messages[0]?.agent_id).toBe("agent-1");
+      expect(there.messages[0]?.owner).toBe("alice");
+
+      const home = await backbone.readSince("incident-1", 0);
+      expect(home.messages).toHaveLength(0);
+    });
+
+    it("claim(draft, 'war-room-2') writes that room's ledger once joined", async () => {
+      const backbone = await twoRoomBackbone();
+      const session = createSession(config, backbone);
+      session.noteJoined("war-room-2");
+
+      const result = await session.claim(
+        { type: "claim", body: "I'll take this", target: "hypothesis-7" },
+        "war-room-2",
+      );
+      expect(result.outcome).toBe("granted");
+
+      // The granted claim is in war-room-2's log, not home's.
+      const there = await backbone.readSince("war-room-2", 0);
+      expect(there.messages).toHaveLength(1);
+      expect(there.messages[0]?.type).toBe("claim");
+      const home = await backbone.readSince("incident-1", 0);
+      expect(home.messages).toHaveLength(0);
+    });
+
+    it("post(draft, 'war-room-2') throws NotJoinedError when NOT joined — head unchanged", async () => {
+      const backbone = await twoRoomBackbone();
+      const session = createSession(config, backbone);
+      // Deliberately NOT joined.
+
+      let thrown: unknown;
+      await session
+        .post({ type: "finding", body: "should be rejected" }, "war-room-2")
+        .catch((e) => {
+          thrown = e;
+        });
+      expect(thrown).toBeInstanceOf(NotJoinedError);
+      expect((thrown as NotJoinedError).code).toBe("not_joined");
+      // Value-free (ADR-C12): the message names neither the target nor the body.
+      const message = (thrown as Error).message;
+      expect(message).not.toContain("war-room-2");
+      expect(message).not.toContain("should be rejected");
+
+      // Nothing was appended to the target — the gate fires BEFORE the backbone.
+      const there = await backbone.readSince("war-room-2", 0);
+      expect(there.messages).toHaveLength(0);
+    });
+
+    it("claim(draft, 'war-room-2') throws NotJoinedError when NOT joined — ledger untouched", async () => {
+      const backbone = await twoRoomBackbone();
+      const session = createSession(config, backbone);
+
+      await expect(
+        session.claim(
+          { type: "claim", body: "nope", target: "t" },
+          "war-room-2",
+        ),
+      ).rejects.toBeInstanceOf(NotJoinedError);
+      const there = await backbone.readSince("war-room-2", 0);
+      expect(there.messages).toHaveLength(0);
+    });
+
+    it("post(draft) and post(draft, undefined) still go home (regression)", async () => {
+      const backbone = await twoRoomBackbone();
+      const session = createSession(config, backbone);
+
+      await session.post({ type: "note", body: "no target" });
+      await session.post({ type: "note", body: "explicit undefined" }, undefined);
+
+      const home = await backbone.readSince("incident-1", 0);
+      expect(home.messages.map((m) => m.body)).toEqual([
+        "no target",
+        "explicit undefined",
+      ]);
+      const there = await backbone.readSince("war-room-2", 0);
+      expect(there.messages).toHaveLength(0);
+    });
+
+    it("post(draft, home) is allowed without an explicit join (your own channel never needs a join)", async () => {
+      const backbone = await twoRoomBackbone();
+      const session = createSession(config, backbone);
+
+      await session.post({ type: "note", body: "naming home explicitly" }, "incident-1");
+      const home = await backbone.readSince("incident-1", 0);
+      expect(home.messages).toHaveLength(1);
+    });
   });
 
   describe("AC2 — identity cannot be bypassed (type-enforced write narrowing)", () => {
