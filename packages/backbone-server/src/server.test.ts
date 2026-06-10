@@ -33,6 +33,10 @@ async function jsonBody(res: Response): Promise<Record<string, unknown>> {
   return (await res.json()) as Record<string, unknown>;
 }
 
+/** Matches any C0 (\x00–\x1f), DEL (\x7f), or C1 (\x80–\x9f) control byte. */
+// eslint-disable-next-line no-control-regex -- intentionally matching control bytes
+const CONTROL_CHARS = /[\x00-\x1f\x7f-\x9f]/;
+
 /**
  * Token map + bearers for the write-route tests (CAU-13). Writes are now token-
  * gated and ANCHORED, so every write dispatch passes an {@link AuthContext}.
@@ -203,6 +207,33 @@ describe("dispatch — routing", () => {
     const res = await dispatch(bb, "GET", "/channels/%ZZ", undefined);
     expect(res.status).toBe(400);
     expect(res.json).toMatchObject({ error: { code: "invalid_request" } });
+  });
+
+  // CAU-88: the MalformedPathError echoes the RAW, undecoded segment. llhttp
+  // rejects control bytes in `req.url` before dispatch today, but that reopens
+  // under insecureHTTPParser / a raw-forwarding proxy — so the segment passes
+  // through the same strip-and-cap as every other caller-content echo.
+  it("malformed-path 400 strips control bytes from the echoed raw segment (CAU-88)", async () => {
+    const bb = await seeded();
+    // A segment with a literal C1 (\x9b) + DEL (\x7f) AND invalid percent-encoding
+    // (`%ZZ`) so decodeURIComponent throws and the raw segment is what's echoed.
+    const dirty = `/channels/%ZZ\x9bevil\x7f`;
+    const res = await dispatch(bb, "GET", dirty, undefined);
+    expect(res.status).toBe(400);
+    const body = res.json as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("invalid_request");
+    expect(body.error.message).not.toMatch(CONTROL_CHARS);
+  });
+
+  it("malformed-path 400 length-caps an overlong echoed segment (CAU-88)", async () => {
+    const bb = await seeded();
+    // Long, invalid-percent segment → the echoed fragment is capped (… marker).
+    const longSeg = `%ZZ${"a".repeat(400)}`;
+    const res = await dispatch(bb, "GET", `/channels/${longSeg}`, undefined);
+    expect(res.status).toBe(400);
+    const body = res.json as { error: { message: string } };
+    expect(body.error.message).toContain("…");
+    expect(body.error.message).not.toContain("a".repeat(400));
   });
 });
 

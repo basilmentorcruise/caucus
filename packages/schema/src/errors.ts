@@ -2,6 +2,7 @@
  * Typed errors thrown at the codec boundary. Every schema error carries a
  * stable string `code` so callers can branch without string-matching messages.
  */
+import { sanitizeErrorFragment, stripControlChars } from "./sanitize.js";
 import { SCHEMA_VERSION } from "./version.js";
 
 /** Base class for all schema errors. */
@@ -28,7 +29,14 @@ export class UnsupportedVersionError extends SchemaError {
 
   constructor(received: unknown) {
     super(
-      `Unsupported schema version: received ${JSON.stringify(received)}, supported ${SCHEMA_VERSION}`,
+      // `received` is caller-controlled: a hostile `v` (e.g. a string carrying
+      // DEL/C1 bytes) survives `JSON.stringify` and would ride the message over
+      // the wire (ADR-C12 / CAU-88). Sanitize the serialized fragment for the
+      // message; `.received` below is kept RAW for in-process consumers (the
+      // message is the only display surface). `JSON.stringify(undefined)` is
+      // itself `undefined` (the missing-`v` gate), so fall back to the string
+      // "undefined" — matching the pre-CAU-88 template-literal coercion.
+      `Unsupported schema version: received ${sanitizeErrorFragment(JSON.stringify(received) ?? "undefined")}, supported ${SCHEMA_VERSION}`,
       "unsupported_version",
     );
     this.name = "UnsupportedVersionError";
@@ -43,8 +51,15 @@ export class MalformedMessageError extends SchemaError {
   readonly issues: string[];
 
   constructor(issues: string[]) {
-    super(`Malformed message: ${issues.join("; ")}`, "malformed_message");
+    // Strip control bytes from EVERY issue before they reach a display surface
+    // (ADR-C12 / CAU-88). Most issues are server-derived constants, but some
+    // echo caller content (the unknown-field key from `validate`), and this
+    // array is forwarded verbatim into the wire `.issues[]` AND joined into
+    // `.message`. Cleaning once here means BOTH stored `.issues` and `.message`
+    // are control-byte-free, so no consumer (wire, MCP, TTY) re-strips.
+    const clean = issues.map(stripControlChars);
+    super(`Malformed message: ${clean.join("; ")}`, "malformed_message");
     this.name = "MalformedMessageError";
-    this.issues = issues;
+    this.issues = clean;
   }
 }

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import { MAX_ERROR_FRAGMENT_CHARS } from "./constants.js";
 import {
   containsControlChars,
   containsControlCharsExceptWhitespace,
+  sanitizeErrorFragment,
   stripControlChars,
   stripControlCharsKeepWhitespace,
 } from "./sanitize.js";
@@ -12,6 +14,7 @@ import {
 const ESC = "\x1b"; // ANSI escape introducer
 const BEL = "\x07"; // bell / OSC string terminator
 const DEL = "\x7f"; // delete
+const C1 = "\x9b"; // C1 CSI — survives JSON.stringify
 
 describe("stripControlChars", () => {
   it("keeps printable ASCII 0x20–0x7e (space through ~) unchanged", () => {
@@ -185,5 +188,45 @@ describe("predicate/strip drift lock (CAU-71)", () => {
       }
     }
     expect(differing).toEqual([0x09, 0x0a]);
+  });
+});
+
+describe("sanitizeErrorFragment (CAU-88)", () => {
+  it("strips C0/DEL/C1 control bytes (delegates to stripControlChars)", () => {
+    // Only the control BYTES are removed (ESC, DEL, C1) — the printable `[2J`
+    // tail of the escape sequence is left intact (this is byte neutralization,
+    // not an ANSI-aware parser).
+    const dirty = `unknown${ESC}[2J${DEL}field${C1}`;
+    const out = sanitizeErrorFragment(dirty);
+    expect(out).toBe("unknown[2Jfield");
+    expect(containsControlChars(out)).toBe(false);
+  });
+
+  it("is a no-op for a short, clean fragment", () => {
+    expect(sanitizeErrorFragment("evil-key")).toBe("evil-key");
+  });
+
+  it("truncates an overlong fragment to maxLen and appends a … marker", () => {
+    const long = "x".repeat(MAX_ERROR_FRAGMENT_CHARS + 50);
+    const out = sanitizeErrorFragment(long);
+    expect(out).toBe(`${"x".repeat(MAX_ERROR_FRAGMENT_CHARS)}…`);
+    // The … marker is one printable char; the visible body is exactly capped.
+    expect(out.length).toBe(MAX_ERROR_FRAGMENT_CHARS + 1);
+  });
+
+  it("does NOT truncate a fragment exactly at maxLen (boundary, no marker)", () => {
+    const exact = "y".repeat(MAX_ERROR_FRAGMENT_CHARS);
+    const out = sanitizeErrorFragment(exact);
+    expect(out).toBe(exact);
+    expect(out.endsWith("…")).toBe(false);
+  });
+
+  it("counts visible chars AFTER the strip: an all-control fragment collapses to empty (never truncated)", () => {
+    const allControl = DEL.repeat(MAX_ERROR_FRAGMENT_CHARS + 100);
+    expect(sanitizeErrorFragment(allControl)).toBe("");
+  });
+
+  it("honors an explicit maxLen override", () => {
+    expect(sanitizeErrorFragment("abcdef", 3)).toBe("abc…");
   });
 });

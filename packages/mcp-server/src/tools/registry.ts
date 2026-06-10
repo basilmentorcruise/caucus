@@ -16,6 +16,15 @@
  * (with `isError: true`). Never build an error message out of a token, secret,
  * or other sensitive value — sanitize before throwing, or the secret lands in
  * the shared log.
+ *
+ * Control-byte hygiene (CAU-88): the backbone/schema error constructors already
+ * strip C0/DEL/C1 from their `.message` / `.issues[]` at CONSTRUCTION — covering
+ * BOTH MCP wirings (the in-process `InMemoryBackbone` fallback, whose errors
+ * never traverse the wire, and the shared `HttpBackbone` mode, whose errors are
+ * reconstructed clean by `backboneErrorFromWire`). So the error message the SDK
+ * surfaces here is control-byte-free with no extra strip in this layer. Tool
+ * authors must NOT undo that by interpolating raw caller content into a
+ * `handle()` error message after the fact — sanitize any fragment first.
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
