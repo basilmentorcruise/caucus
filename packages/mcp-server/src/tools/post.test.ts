@@ -12,7 +12,7 @@ import { isUlid } from "@caucus/schema";
 import type { ServerConfig } from "../config.js";
 import type { CaucusSession } from "../session.js";
 import { createSession } from "../session.js";
-import { postTool, postFindingTool } from "./post.js";
+import { postTool, postFindingTool, steerTool } from "./post.js";
 
 const config: ServerConfig = {
   identity: { agent_id: "agent-1", owner: "alice" },
@@ -53,7 +53,14 @@ async function readAll(
 // Independently spelled (NOT derived from the code under test): if the schema
 // union or the tool's accepted set drifts, the lockstep test below fails loudly
 // instead of silently auto-expanding.
-const POST_TYPES = ["finding", "status", "question", "answer", "note"] as const;
+const POST_TYPES = [
+  "finding",
+  "status",
+  "question",
+  "answer",
+  "note",
+  "steer",
+] as const;
 
 describe("POST_TYPES lockstep", () => {
   it("the schema union is exactly POST_TYPES plus claim", () => {
@@ -225,5 +232,39 @@ describe("caucus_post_finding", () => {
     expect(msg?.thread).toBe("01ARZ3NDEKTSV4RRFFQ69G5FAV");
     expect(msg?.to).toEqual(["agent-2"]);
     expect(msg?.artifact).toBe("https://example.com/repro");
+  });
+});
+
+describe("caucus_steer (CAU-99)", () => {
+  it("fixes type=steer and anchors identity server-side (ADR-C7)", async () => {
+    const { backbone, session } = await freshSession();
+
+    const { msg_id } = envelope(
+      await steerTool.handle(session, {
+        body: "focus on the 14:02 deploy correlation",
+      }),
+    );
+    expect(isUlid(msg_id)).toBe(true);
+
+    const [msg] = await readAll(backbone);
+    expect(msg?.type).toBe("steer");
+    expect(msg?.body).toBe("focus on the 14:02 deploy correlation");
+    // Identity is the relaying session's — "whose human steered" (ADR-C7), not a
+    // free-typed field.
+    expect(msg?.agent_id).toBe("agent-1");
+    expect(msg?.owner).toBe("alice");
+    expect(msg?.v).toBe(1);
+  });
+
+  it("carries an optional status=needs-response", async () => {
+    const { backbone, session } = await freshSession();
+    await steerTool.handle(session, {
+      body: "hold for my call",
+      status: "needs-response",
+    });
+
+    const [msg] = await readAll(backbone);
+    expect(msg?.type).toBe("steer");
+    expect(msg?.status).toBe("needs-response");
   });
 });

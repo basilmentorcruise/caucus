@@ -62,7 +62,7 @@ function isNonEmptyString(v: unknown): v is string {
 }
 
 /**
- * Assert that `value` is a structurally valid schema-v0 message. Assumes the
+ * Assert that `value` is a structurally valid schema message (v1). Assumes the
  * version gate has already accepted `value.v`. Throws
  * {@link MalformedMessageError} listing every problem found.
  */

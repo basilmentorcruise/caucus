@@ -22,4 +22,4 @@ export { inProcessConnector } from "./connectors/in-process.js";
 export { httpConnector, identityForId, tokenFor } from "./connectors/http.js";
 export { runScenarios, startServerProcess, type ServerProcess } from "./harness.js";
 export type { Scenario } from "./scenario.js";
-export { claimMsg, finding, type MessageOpts } from "./fixtures.js";
+export { claimMsg, finding, steer, type MessageOpts } from "./fixtures.js";

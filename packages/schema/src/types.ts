@@ -1,5 +1,5 @@
 /**
- * Pure type definitions for schema v0. No runtime values live here — value
+ * Pure type definitions for the schema (v1). No runtime values live here — value
  * sets are in `constants.ts`, validation in `validate.ts`.
  */
 import type { MESSAGE_TYPES, STATUS_VALUES } from "./constants.js";

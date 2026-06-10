@@ -155,7 +155,7 @@ describe("result shapes", () => {
     expect(appended.cursor).toBe(1);
     const msg: AppendedMessage = appended.message;
     expect(typeof msg.ts).toBe("string");
-    expect(msg.v).toBe(0);
+    expect(msg.v).toBe(1);
 
     const read: ReadResult = await b.readSince(CHANNEL, 0);
     expect(read.messages).toHaveLength(1);

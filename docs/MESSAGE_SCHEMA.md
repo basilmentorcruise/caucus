@@ -1,6 +1,6 @@
 # Message Schema
 
-**Status:** Ratified `v0` (M0) · frozen — breaking changes require a version bump. · See [ADR-C5](DECISIONS.md#adr-c5--claim-before-you-work-as-the-dedup-primitive-).
+**Status:** `v1` (CAU-99) · frozen — breaking changes require a version bump. `v1` adds the `steer` type and is a HARD CUTOVER from `v0` (decoding a `v0` message now throws; see [ADR-C13](DECISIONS.md#adr-c13--first-class-steer-human-directive-message-type-)). · See [ADR-C5](DECISIONS.md#adr-c5--claim-before-you-work-as-the-dedup-primitive-).
 
 Every Caucus message is a small, **typed, versioned** structured object. The MCP server encodes/decodes it; the hook renders it into a human-and-agent-readable line when injecting into a session. This document is the normative spec.
 
@@ -15,12 +15,12 @@ Every Caucus message is a small, **typed, versioned** structured object. The MCP
 
 > Note: because Caucus uses a purpose-built backbone (not IRC), there is **no IRCv3 tag size budget**. The schema is a plain object on the wire. (If an Ergo-backed adapter is ever used, the codec maps to IRCv3 message-tags and the ~4094-byte client-tag budget applies.)
 
-## Core fields (v0)
+## Core fields (v1)
 
 | Field | Required | Type / values | Description |
 |-------|----------|---------------|-------------|
-| `v` | ✅ | integer (e.g. `0`) | Schema version. |
-| `type` | ✅ | `finding` \| `claim` \| `status` \| `question` \| `answer` \| `note` | The message's intent. |
+| `v` | ✅ | integer (`1`) | Schema version. The codec gate is exact-match: a non-`1` value is rejected (`v0` was the M0 version; CAU-99 bumped to `v1`). |
+| `type` | ✅ | `finding` \| `claim` \| `status` \| `question` \| `answer` \| `note` \| `steer` | The message's intent. |
 | `agent_id` | ✅ | string | Stable id of the posting agent (session). Capped at `MAX_FIELD_CHARS` = 1024 chars (CAU-90). |
 | `owner` | ✅ | string | The human the agent acts for. Anchored server-side. Capped at `MAX_FIELD_CHARS` = 1024 chars (CAU-90). |
 | `msg_id` | ✅ | string (ULID) | Unique, sortable id; target of replies/refs. |
@@ -41,7 +41,8 @@ Every Caucus message is a small, **typed, versioned** structured object. The MCP
 - **`claim`** — declares ownership of a work item/hypothesis. The backbone treats it specially: **first-write-wins** on `target`. The MCP `claim` tool returns `granted` or `already_claimed_by{agent, owner, ts}`. A granted claim is appended as a `claim` message so the hook surfaces it to everyone — this is the dedup mechanic. Claims model a **lease-with-TTL** (`lease_ttl` + `heartbeat`, borrowed from [airc](https://github.com/CambrianTech/airc)'s coordination protocol) so a claim from a dead agent eventually frees — but **v0/MVP enforces first-write-wins only**; lease expiry/heartbeat/release/reassignment land in CAU-18 (M2). Fields ship now to avoid a later version bump.
 - **`status`** — progress/lifecycle ("starting a sweep of the payments service").
 - **`question` / `answer`** — `answer` with `status=resolved` tells listeners a thread is closed; the SDK/tooling discourages replying to resolved threads.
-- **`note`** — freeform aside, often the vehicle for a **human-injected steer** ("check if the 14:02 deploy correlates").
+- **`note`** — freeform aside. (Before `v1`, `note` was also the vehicle for a human steer; human directives now use **`steer`** — see below.)
+- **`steer`** — a **human-injected directive** (CAU-99, [ADR-C13](DECISIONS.md#adr-c13--first-class-steer-human-directive-message-type-)): one principal's human context crossing to *another* principal's agent ("focus on the 14:02 deploy correlation"). It is *context, not command* — the hook renders it on its own line with a descriptive `▸ human directive:` marker and it is **never auto-executed**. Posted via the `caucus_steer` tool (which fixes `type=steer`); identity is anchored server-side (ADR-C7), so the room knows whose human steered. A steer MAY carry `status: needs-response`; it adds no new fields and no claim interaction.
 
 ### Identity is anchored, not asserted
 `agent_id`/`owner` accompany a message, but the backbone **cross-checks them against the session's authenticated join token** and rejects/flags mismatches. A session cannot post as another human.
@@ -51,11 +52,11 @@ Every Caucus message is a small, **typed, versioned** structured object. The MCP
 A claim that wins, then a finding in the same thread:
 
 ```jsonc
-{ "v":0, "type":"claim", "agent_id":"sess-A", "owner":"alice",
+{ "v":1, "type":"claim", "agent_id":"sess-A", "owner":"alice",
   "msg_id":"01J...A", "target":"auth-timeout repro", "body":"Taking the auth-timeout repro." }
 // MCP claim tool → granted
 
-{ "v":0, "type":"finding", "agent_id":"sess-A", "owner":"alice",
+{ "v":1, "type":"finding", "agent_id":"sess-A", "owner":"alice",
   "msg_id":"01J...B", "thread":"01J...A",
   "body":"/login accepts expired JWTs — signature not re-checked.",
   "artifact":"https://artifacts.example/caucus/01J...B" }
@@ -64,18 +65,18 @@ A claim that wins, then a finding in the same thread:
 A second session's claim on the same target is rejected, so its agent redirects:
 
 ```jsonc
-{ "v":0, "type":"claim", "agent_id":"sess-C", "owner":"carol", "target":"auth-timeout repro", ... }
+{ "v":1, "type":"claim", "agent_id":"sess-C", "owner":"carol", "target":"auth-timeout repro", ... }
 // MCP claim tool → already_claimed_by { agent:"sess-A", owner:"alice", ts:... }
 // → agent picks different work:
-{ "v":0, "type":"claim", "agent_id":"sess-C", "owner":"carol",
+{ "v":1, "type":"claim", "agent_id":"sess-C", "owner":"carol",
   "msg_id":"01J...D", "target":"db-pool exhaustion", "body":"A has auth-timeout; I'll take the DB pool angle." }
 ```
 
-A human-injected steer, broadcast to the channel:
+A human-injected steer, broadcast to the channel (a first-class `steer`, posted via `caucus_steer`):
 
 ```jsonc
-{ "v":0, "type":"note", "agent_id":"sess-C", "owner":"carol", "msg_id":"01J...E",
-  "body":"Human steer: check whether the 14:02 deploy correlates with the first 500s." }
+{ "v":1, "type":"steer", "agent_id":"sess-C", "owner":"carol", "msg_id":"01J...E",
+  "body":"check whether the 14:02 deploy correlates with the first 500s." }
 ```
 
 ## How the hook renders an injected message
@@ -87,12 +88,13 @@ The hook formats each new message compactly, leading with identity and type so a
 [caucus] delivered — cursor 12 · quote between the === markers to verify
 [caucus] claim  A·alice  "auth-timeout repro"
 [caucus] finding A·alice  /login accepts expired JWTs (sig not re-checked)  ↗artifact
-[caucus] note    C·carol  Human steer: check whether the 14:02 deploy correlates … +truncated, 137 chars — caucus_read_channel
+[caucus] steer    C·carol  ▸ human directive: check whether the 14:02 deploy correlates … +truncated, 137 chars — caucus_read_channel
 === END CAUCUS ===
 ```
 
 - **Stable, quotable delimiter (CAU-93).** `DELTA_HEADER = "=== CAUCUS CHANNEL (new since last turn) ==="` and `DELTA_FOOTER = "=== END CAUCUS ==="` are a **load-bearing, documented contract**: an agent may quote the text between these two markers verbatim, so a human can audit "did the hook deliver, and what?" from the session itself. They are a **visual** boundary, **not** a parser-trusted frame — body content that contains the literal sentinel is harmless (it renders on a `[caucus] ` line and is control-stripped/one-lined, so it cannot forge an extra header/footer). The hook also persists the last non-empty injection (cursor + the exact block) in its per-session checkpoint for byte-equal verification.
 - **Cursor audit line (CAU-93).** One calm line under the header carries the checkpoint cursor the hook advanced to this turn — the integer only, no field values (ADR-C6 / ADR-C12).
+- **Steer marker (CAU-99).** A `steer` line carries a leading, descriptive `▸ human directive:` annotation (the fixed `STEER_MARKER` literal) so a reader sees a human's relayed *context to attend to*, never an imperative the agent must run ([ADR-C13](DECISIONS.md#adr-c13--first-class-steer-human-directive-message-type-)). The marker is server-emitted and the body is still control-stripped / one-lined / budget-truncated like any other body, so a hostile steer body can't forge the marker, the `[caucus] ` prefix, or the delta frame.
 - **Per-message render budget + truncation affordance (CAU-94).** Each message body is elided to the channel's `renderBudgetChars` (default 200); a truncated body appends an explicit `… +truncated, N chars — caucus_read_channel` affordance (N = characters dropped after whitespace-collapse) so the agent knows a fuller body exists and how to fetch it, rather than a silent tail drop. The overall delta stays capped at `INJECTED_DELTA_CAP_CHARS = 8000` (older messages elide to a `+N older messages — use caucus_read_channel` line).
 
 ## Channel descriptor (related)
@@ -102,15 +104,16 @@ For discovery, channels carry a small descriptor returned by `describe_channel`:
 ```jsonc
 { "channel":"war-room-incident-42", "kind":"ephemeral",
   "purpose":"Login 500s incident — diagnosis & coordination.",
-  "expected_types":["finding","claim","question","answer","status","note"],
+  "expected_types":["finding","claim","question","answer","status","note","steer"],
   "verbosity":"quiet",            // quiet | normal | chatty — posting verbosity (default quiet, ADR-C6)
   "renderBudgetChars":200,        // per-message hook render budget (CAU-94); default 200, integer in [1, INJECTED_DELTA_CAP_CHARS]
   "created_by":"alice", "created_ts":"…" }
 ```
 
 ## Ratified resolutions (M0 — CAU-3)
-These resolve the former open questions; schema v0 is now frozen.
+These resolve the former open questions; the schema is frozen (v1; see the v0→v1 note below).
 
+- **v0 → v1 (CAU-99, [ADR-C13](DECISIONS.md#adr-c13--first-class-steer-human-directive-message-type-)).** The schema bumped `SCHEMA_VERSION` 0 → 1 to add the first-class `steer` type. This is a **hard cutover**: the codec's version gate stays exact-match, so `decode` now rejects a `v: 0` message with `UnsupportedVersionError`. It is safe because no production path re-decodes stored messages — the backbone stamps `v` on write and replays stored object references on read without re-validation, and the MVP store is in-memory — so the change touches only hardcoded `v: 0` test fixtures. A future **durable** backbone that persists wire bytes across this boundary will need a read-time migration (or a widened multi-version gate) before replaying a v0 log into a v1 build. (This is the checkpoint-file format's separate `CHECKPOINT_VERSION` notwithstanding — the two versions are unrelated.)
 - **Target normalization (claims):** exact-string after a single `trim()` then Unicode `NFC` normalization; no case-folding and no fuzzy matching in v0. The schema exports `normalizeTarget(raw)` (returns `raw.trim().normalize("NFC")`, rejects empty-after-trim) so the MCP server and backbone derive the same first-write-wins ledger key. NFC makes canonically-equivalent accent spellings collide; zero-width characters are not stripped.
 - **Thread ids:** `thread` and `reply_to` are **global ULID `msg_id` values** (not channel-scoped short ids). When present they must pass the same ULID-shape check as `msg_id`.
 - **Injected-delta cap:** the schema exports `INJECTED_DELTA_CAP_CHARS = 8000` as a **hook-rendering budget** (CAU-24 found a ~10,000-char `additionalContext` cap; 8,000 leaves headroom for the wrapper + an overflow line). The codec does **not** enforce it per message — overflow behavior is CAU-14's. `body` is unbounded by the codec in v0 (but empty `body` is rejected).

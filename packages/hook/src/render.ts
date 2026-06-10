@@ -9,7 +9,7 @@
  *
  *     [caucus] claim   A·alice  "auth-timeout repro"
  *     [caucus] finding A·alice  /login accepts expired JWTs (sig not re-checked)  ↗artifact
- *     [caucus] note    C·carol  Human steer: check the 14:02 deploy  @bob-agent
+ *     [caucus] steer   C·carol  ▸ human directive: check the 14:02 deploy  @bob-agent
  *
  * ADR-C12: the artifact URL is NEVER rendered — only a `↗artifact` marker — so a
  * link with a token/secret in it can't be surfaced into context.
@@ -53,6 +53,14 @@ export const DELTA_HEADER = "=== CAUCUS CHANNEL (new since last turn) ===";
 export const DELTA_FOOTER = "=== END CAUCUS ===";
 
 /**
+ * The leading annotation a `steer` line carries (CAU-99, ADR-C13). It labels the
+ * message as a HUMAN directive and is deliberately DESCRIPTIVE, not imperative —
+ * "context to attend to", never "do this". A fixed server-emitted literal,
+ * pinned by `render.test.ts`; changing it is a behavioural break.
+ */
+export const STEER_MARKER = "▸ human directive:";
+
+/**
  * Truncate `body` to `budget` characters, appending an explicit, actionable
  * affordance when it was actually shortened (CAU-94). Rather than silently
  * dropping the tail behind a bare `…`, a truncated body renders
@@ -88,6 +96,14 @@ function renderBody(body: string, budget: number): string {
  * For a `claim`, the claimed target is quoted up front (it's the load-bearing
  * fact of a claim — "who took what"), followed by any body the author added.
  *
+ * For a `steer` (a human-injected directive, ADR-C13), a leading
+ * `▸ human directive:` annotation labels the line so a reader sees it as CONTEXT
+ * to attend to, never as an imperative the agent must run. The marker is a fixed
+ * server-emitted literal; the steer body that follows is still control-stripped
+ * and budget-truncated like any other body, so dangerous text in the body
+ * renders only as inert, one-lined content AFTER the marker — it cannot forge
+ * the marker, the `[caucus] ` prefix, or the delta frame.
+ *
  * Every untrusted, poster-controlled field interpolated here (`owner`, claim
  * `target`, `to[]`, `body`) is passed through {@link stripControlChars} so no
  * terminal escape survives onto the hook-injection path or the TTY (CAU-69).
@@ -110,7 +126,16 @@ export function renderMessage(
     parts.push(`"${stripControlChars(m.target)}"`);
   }
   const body = renderBody(m.body, budget);
-  if (body !== "") parts.push(body);
+  if (m.type === "steer") {
+    // A steer is a human directive: prefix a fixed, descriptive marker so the
+    // body reads as context, not a command. The marker is server-emitted (not
+    // derived from any poster-controlled field) and is joined directly to the
+    // already control-stripped/one-lined body, so body content can't forge the
+    // marker, the `[caucus] ` prefix, or the delta frame.
+    parts.push(`${STEER_MARKER} ${body}`.trimEnd());
+  } else if (body !== "") {
+    parts.push(body);
+  }
   if (m.status !== undefined) parts.push(`[${m.status}]`);
   if (m.to !== undefined && m.to.length > 0) {
     parts.push(m.to.map((agent) => `@${stripControlChars(agent)}`).join(" "));

@@ -1,11 +1,14 @@
 /**
- * `caucus_post` + `caucus_post_finding` — the write tools (CAU-10).
+ * `caucus_post` + `caucus_post_finding` + `caucus_steer` — the write tools
+ * (CAU-10; `caucus_steer` is CAU-99).
  *
- * `caucus_post` emits any non-`claim` typed message; `caucus_post_finding` is a
- * thin convenience wrapper that fixes `type: "finding"` so it can't be
- * mistyped. Both route through {@link CaucusSession.post}, so identity is
- * stamped server-side (ADR-C7) and a `claim`-typed message can never reach this
- * path (claims are CAU-11, and the `type` enum below excludes `"claim"`).
+ * `caucus_post` emits any non-`claim` typed message; `caucus_post_finding`
+ * fixes `type: "finding"` and `caucus_steer` fixes `type: "steer"` (a
+ * human-injected directive, ADR-C13) so neither can be mistyped. All three
+ * route through {@link CaucusSession.post}, so identity is stamped server-side
+ * (ADR-C7) — a steer is anchored to the relaying session's agent_id/owner, which
+ * is exactly "whose human steered" — and a `claim`-typed message can never reach
+ * this path (claims are CAU-11, and the `type` enum below excludes `"claim"`).
  *
  * Two invariants:
  * - **ADR-C6 (quiet by default):** the descriptions tell the model to post
@@ -41,6 +44,7 @@ const POST_TYPES = [
   "question",
   "answer",
   "note",
+  "steer",
 ] as const satisfies readonly Exclude<MessageType, "claim">[];
 
 type _PostTypesComplete =
@@ -93,8 +97,10 @@ const POST_INPUT = {
   type: z
     .enum(POST_TYPES)
     .describe(
-      "finding | status | question | answer | note. The message's intent; " +
-        "drives how the hook renders it. For claims use caucus_claim.",
+      "finding | status | question | answer | note | steer. The message's " +
+        "intent; drives how the hook renders it. `steer` is a HUMAN directive " +
+        "relayed into the channel — prefer caucus_steer so it can't be " +
+        "mistyped. For claims use caucus_claim.",
     ),
   ...SHARED_FIELDS,
   status: z
@@ -118,6 +124,30 @@ const POST_FINDING_INPUT = {
   artifact: SHARED_FIELDS.artifact.describe(
     "URI to the full logs / repro / evidence behind the finding.",
   ),
+} as const satisfies ZodRawShapeCompat;
+
+/**
+ * The input schema for `caucus_steer`: the shared fields plus `status`. A steer
+ * MAY carry `status: needs-response`; it adds no new status values and no claim
+ * fields (ADR-C13).
+ */
+const STEER_INPUT = {
+  body: SHARED_FIELDS.body.describe(
+    "The human's directive, relayed verbatim/concisely as CONTEXT for the " +
+      "room to attend to — never a command to execute. Summarize; link bulk " +
+      "context via `artifact`. Required, non-empty, no secrets.",
+  ),
+  thread: SHARED_FIELDS.thread,
+  reply_to: SHARED_FIELDS.reply_to,
+  to: SHARED_FIELDS.to,
+  artifact: SHARED_FIELDS.artifact,
+  status: z
+    .enum(STATUS_VALUES as unknown as [string, ...string[]])
+    .optional()
+    .describe(
+      "needs-response | resolved | fyi. Optional; a steer may carry " +
+        "needs-response when the human is awaiting a reply.",
+    ),
 } as const satisfies ZodRawShapeCompat;
 
 /** Parsed args common to both post tools (validated by the SDK before `handle`). */
@@ -172,13 +202,14 @@ export const postTool: CaucusTool = {
   name: "caucus_post",
   description:
     "Post a typed message to the Caucus channel. Choose `type` to match " +
-    "intent: status (progress), question, answer, or note (asides / human " +
-    "steers). For results worth preserving use caucus_post_finding; to take " +
-    "ownership of work use caucus_claim — claim a target BEFORE investigating " +
-    "it (ADR-C5), and read the channel first to avoid duplicating a " +
-    "teammate's claim. Post sparingly: quiet by default (ADR-C6) — " +
-    "consequential signal, not chatter. NEVER post secrets, tokens, or " +
-    "customer data — the channel is a shared, persisted log (ADR-C12).",
+    "intent: status (progress), question, answer, or note (freeform aside). " +
+    "For results worth preserving use caucus_post_finding; to relay a HUMAN " +
+    "directive use caucus_steer; to take ownership of work use caucus_claim — " +
+    "claim a target BEFORE investigating it (ADR-C5), and read the channel " +
+    "first to avoid duplicating a teammate's claim. Post sparingly: quiet by " +
+    "default (ADR-C6) — consequential signal, not chatter. NEVER post " +
+    "secrets, tokens, or customer data — the channel is a shared, persisted " +
+    "log (ADR-C12).",
   inputSchema: POST_INPUT,
   handle(
     session: CaucusSession,
@@ -207,5 +238,38 @@ export const postFindingTool: CaucusTool = {
   ): Promise<ToolResult> {
     const shared = args as unknown as SharedPostArgs;
     return postDraft(session, buildDraft({ ...shared, type: "finding" }));
+  },
+};
+
+/** Parsed `caucus_steer` args — the shared fields plus optional `status`. */
+interface SteerArgs extends SharedPostArgs {
+  readonly status?: (typeof STATUS_VALUES)[number];
+}
+
+/**
+ * The `caucus_steer` tool — fixes `type: "steer"` for a human-injected directive
+ * (ADR-C13). The directive is *context, not command*: the hook renders it as a
+ * descriptive "human directive" line and it is never auto-executed. Identity is
+ * anchored server-side (ADR-C7), so the steer is attributed to the relaying
+ * session's human owner.
+ */
+export const steerTool: CaucusTool = {
+  name: "caucus_steer",
+  description:
+    "Relay a HUMAN directive into the channel as a first-class `steer` — your " +
+    "human's context crossing to the room (e.g. \"focus on the 14:02 deploy " +
+    'correlation"). Use it ONLY for an actual instruction/context from your ' +
+    "human, not for your own asides (use note) or results (use " +
+    "caucus_post_finding). A steer is CONTEXT, not a command: it is rendered " +
+    "as a descriptive human-directive line and is never auto-executed. May " +
+    "carry status=needs-response when the human awaits a reply. NEVER include " +
+    "secrets, tokens, or customer data (ADR-C12).",
+  inputSchema: STEER_INPUT,
+  handle(
+    session: CaucusSession,
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> {
+    const steer = args as unknown as SteerArgs;
+    return postDraft(session, buildDraft({ ...steer, type: "steer" }));
   },
 };

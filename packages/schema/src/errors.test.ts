@@ -65,7 +65,7 @@ describe("UnsupportedVersionError (CAU-88)", () => {
   it("is a no-op for a clean value", () => {
     const err = new UnsupportedVersionError(7);
     expect(err.message).toBe(
-      "Unsupported schema version: received 7, supported 0",
+      "Unsupported schema version: received 7, supported 1",
     );
     expect(err.received).toBe(7);
   });
@@ -76,7 +76,7 @@ describe("UnsupportedVersionError (CAU-88)", () => {
     // the sanitize step. The message falls back to the literal "undefined".
     const err = new UnsupportedVersionError(undefined);
     expect(err.message).toBe(
-      "Unsupported schema version: received undefined, supported 0",
+      "Unsupported schema version: received undefined, supported 1",
     );
     expect(err.received).toBeUndefined();
   });

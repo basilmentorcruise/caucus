@@ -7,7 +7,7 @@ import * as schema from "./index.js";
  */
 describe("@caucus/schema public API", () => {
   it("re-exports the documented constants", () => {
-    expect(schema.SCHEMA_VERSION).toBe(0);
+    expect(schema.SCHEMA_VERSION).toBe(1);
     expect(schema.MESSAGE_TYPES).toContain("claim");
     expect(schema.STATUS_VALUES).toContain("resolved");
     expect(schema.INJECTED_DELTA_CAP_CHARS).toBe(8000);
@@ -35,7 +35,7 @@ describe("@caucus/schema public API", () => {
         body: "hello",
       }),
     );
-    expect(round.v).toBe(0);
+    expect(round.v).toBe(1);
     expect(round.type).toBe("note");
   });
 });
