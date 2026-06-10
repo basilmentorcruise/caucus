@@ -242,9 +242,11 @@ defend against any of the following:
   (`MAX_RECIPIENTS` = 32), the per-`to[]`-entry char cap, the claim `target`, the channel
   `purpose`, and — closing the last gaps the count cap alone left open — `agent_id`, `owner`, and
   `artifact`, all at `MAX_FIELD_CHARS` = 1 024 chars. The exhaustive per-message non-body bound is
-  therefore `(MAX_RECIPIENTS × MAX_FIELD_CHARS) + (3 × MAX_FIELD_CHARS)` for the three identity/
-  pointer fields = (32 + 3) × 1 024 ≈ 36 K chars ≈ ~70 KB (× 2 bytes/char), on top of the
-  16k-char (`MAX_BODY_CHARS`) body. The body term still dominates by ~225×, so the body-only
+  therefore `(MAX_RECIPIENTS × MAX_FIELD_CHARS) + (4 × MAX_FIELD_CHARS)` for the four capped
+  variable-length non-body fields (`agent_id`, `owner`, `artifact`, claim `target`) = (32 + 4) ×
+  1 024 ≈ 37 K chars ≈ ~72 KB (× 2 bytes/char), plus O(tens of bytes) of fixed-size fields
+  (`msg_id` ULID, `type`/`status` enums, JSON keys), on top of the
+  16k-char (`MAX_BODY_CHARS`) body. The body term still dominates by ~220×, so the body-only
   residency formula above holds with comfortable headroom — and, crucially, it now holds for the
   **in-process** embedder too (which has no `MAX_BODY_BYTES` HTTP bound): no string field is left
   uncapped, so there is no remaining read-amplification lever and no false "upper bound" claim. On a
