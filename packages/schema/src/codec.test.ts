@@ -56,8 +56,16 @@ const inputs: Record<string, MessageInput> = {
     agent_id: "sess-C",
     owner: "carol",
     msg_id: MSG_ID,
-    body: "Human steer: check the 14:02 deploy.",
+    body: "Aside: the 14:02 deploy log is in #ops.",
     to: ["sess-A", "sess-B"],
+  },
+  steer: {
+    type: "steer",
+    agent_id: "sess-C",
+    owner: "carol",
+    msg_id: MSG_ID,
+    body: "Human directive: check whether the 14:02 deploy correlates.",
+    status: "needs-response",
   },
 };
 
