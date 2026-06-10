@@ -234,24 +234,27 @@ defend against any of the following:
 
   **Byte-bound decision (CAU-83): operator guidance, not a cap.** v1 ships no per-channel byte
   cap (sum of body lengths); the bound on resident bytes is sized by the count caps the operator
-  configures. Size your host with: **resident upper bound ≈ `maxChannels` ×
+  configures. Quick estimate (body-dominated): **≈ `maxChannels` ×
   `maxMessagesPerChannel` × `MAX_BODY_CHARS` × 2 bytes/char** (JS strings are UTF-16; defaults
-  give 1 000 × 10 000 × 16 000 × 2 ≈ ~320 GB theoretical, reached only at full caps after days of
-  max-rate ingest). The body-only formula is a **true upper bound** because, after CAU-90, *every*
-  length-unbounded string field is now capped: the `to[]` recipient-count cap
-  (`MAX_RECIPIENTS` = 32), the per-`to[]`-entry char cap, the claim `target`, the channel
-  `purpose`, and — closing the last gaps the count cap alone left open — `agent_id`, `owner`, and
-  `artifact`, all at `MAX_FIELD_CHARS` = 1 024 chars. The exhaustive per-message non-body bound is
-  therefore `(MAX_RECIPIENTS × MAX_FIELD_CHARS) + (4 × MAX_FIELD_CHARS)` for the four capped
+  give 1 000 × 10 000 × 16 000 × 2 ≈ ~320 GB, reached only at full caps after days of
+  max-rate ingest). This body-only term is **not** the worst case, but every field that contributes
+  is now bounded — after CAU-90 *every* length-unbounded string field is capped: the `to[]`
+  recipient-count cap (`MAX_RECIPIENTS` = 32), the per-`to[]`-entry char cap, the claim `target`,
+  the channel `purpose`, and — closing the last gaps the count cap alone left open — `agent_id`,
+  `owner`, and `artifact`, all at `MAX_FIELD_CHARS` = 1 024 chars. The exhaustive per-message
+  non-body bound is `(MAX_RECIPIENTS × MAX_FIELD_CHARS) + (4 × MAX_FIELD_CHARS)` for the four capped
   variable-length non-body fields (`agent_id`, `owner`, `artifact`, claim `target`) = (32 + 4) ×
   1 024 ≈ 37 K chars ≈ ~72 KB (× 2 bytes/char), plus O(tens of bytes) of fixed-size fields
-  (`msg_id` ULID, `type`/`status` enums, JSON keys), on top of the
-  16k-char (`MAX_BODY_CHARS`) body. The body term still dominates by ~220×, so the body-only
-  residency formula above holds with comfortable headroom — and, crucially, it now holds for the
-  **in-process** embedder too (which has no `MAX_BODY_BYTES` HTTP bound): no string field is left
-  uncapped, so there is no remaining read-amplification lever and no false "upper bound" claim. On a
+  (`msg_id` ULID, `type`/`status` enums, JSON keys). At maximal `to[]` fan-out this non-body term is
+  ~2.3× the 16k-char (`MAX_BODY_CHARS`) body, so a **true** resident upper bound is
+  `maxChannels × maxMessagesPerChannel × (MAX_BODY_CHARS + ~37 K) × 2 bytes/char` ≈ **~1 TB** at
+  defaults — ~3.3× the body-only estimate. Typical traffic (few or no recipients) lands near the
+  ~320 GB body-dominated figure; size to the ~1 TB bound only if you expect every message to fan out
+  to the recipient cap. Both hold for the **in-process** embedder too (no `MAX_BODY_BYTES` HTTP
+  bound): no string field is left uncapped, so there is no remaining read-amplification lever. On a
   memory-constrained host, lower `maxMessagesPerChannel` and/or
-  `maxChannels` accordingly (e.g. 100 channels × 1 000 messages bounds residency at ~3.2 GB). The
+  `maxChannels` accordingly (e.g. 100 channels × 1 000 messages bounds the body term at ~3.2 GB,
+  the full bound at ~10.6 GB). The
   honest caveat: these caps are **constructor knobs** (`InMemoryBackboneOptions` — embedders
   passing `maxMessagesPerChannel`/`maxChannels`/`maxReadLimit` to `InMemoryBackbone`/`startServer`);
   the stock
