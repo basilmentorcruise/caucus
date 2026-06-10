@@ -19,6 +19,7 @@
 import {
   containsControlChars,
   containsControlCharsExceptWhitespace,
+  INJECTED_DELTA_CAP_CHARS,
   MalformedMessageError,
   type CaucusMessage,
   MAX_FIELD_CHARS,
@@ -28,6 +29,7 @@ import {
   validate,
 } from "@caucus/schema";
 
+import { DEFAULT_RENDER_BUDGET_CHARS } from "./contract.js";
 import type {
   AppendedMessage,
   AppendResult,
@@ -139,6 +141,7 @@ interface ChannelState {
     kind: "ephemeral";
     purpose: string;
     verbosity: Verbosity;
+    renderBudgetChars: number;
     created_by: string;
     created_ts: string;
     head: Cursor;
@@ -354,6 +357,23 @@ export class InMemoryBackbone implements Backbone {
         ]);
       }
     }
+    // CAU-94: the per-message render budget is an integer clamped to
+    // [1, INJECTED_DELTA_CAP_CHARS]. A present-but-invalid value (reachable via
+    // an untyped HTTP body) is rejected OUTRIGHT rather than coerced, so the
+    // descriptor always carries a sane budget for the hook to thread. Absent
+    // ⇒ the calm default (set below, mirroring `verbosity`).
+    if (opts.renderBudgetChars !== undefined) {
+      if (
+        typeof opts.renderBudgetChars !== "number" ||
+        !Number.isInteger(opts.renderBudgetChars) ||
+        opts.renderBudgetChars < 1 ||
+        opts.renderBudgetChars > INJECTED_DELTA_CAP_CHARS
+      ) {
+        throw new InvalidMessageError([
+          `renderBudgetChars must be an integer in [1, ${INJECTED_DELTA_CAP_CHARS}]`,
+        ]);
+      }
+    }
     // CAU-74 resource gates, deliberately LAST — after the slug check, the
     // ChannelExistsError check (a warm demo rerun must never touch the create
     // budget), and the field validation above, so a rejected create consumes
@@ -378,6 +398,7 @@ export class InMemoryBackbone implements Backbone {
         kind: "ephemeral",
         purpose: opts.purpose,
         verbosity: opts.verbosity ?? "quiet",
+        renderBudgetChars: opts.renderBudgetChars ?? DEFAULT_RENDER_BUDGET_CHARS,
         created_by: opts.created_by,
         created_ts: this.#stamp(),
         head: 0,

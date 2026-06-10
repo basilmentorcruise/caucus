@@ -80,13 +80,20 @@ A human-injected steer, broadcast to the channel:
 
 ## How the hook renders an injected message
 
-The hook formats each new message compactly, leading with identity and type so a human scanning their session sees who/what at a glance:
+The hook formats each new message compactly, leading with identity and type so a human scanning their session sees who/what at a glance, wrapped in a stable, quotable delimiter:
 
 ```
+=== CAUCUS CHANNEL (new since last turn) ===
+[caucus] delivered — cursor 12 · quote between the === markers to verify
 [caucus] claim  A·alice  "auth-timeout repro"
 [caucus] finding A·alice  /login accepts expired JWTs (sig not re-checked)  ↗artifact
-[caucus] note    C·carol  Human steer: check whether the 14:02 deploy correlates …
+[caucus] note    C·carol  Human steer: check whether the 14:02 deploy correlates … +truncated, 137 chars — caucus_read_channel
+=== END CAUCUS ===
 ```
+
+- **Stable, quotable delimiter (CAU-93).** `DELTA_HEADER = "=== CAUCUS CHANNEL (new since last turn) ==="` and `DELTA_FOOTER = "=== END CAUCUS ==="` are a **load-bearing, documented contract**: an agent may quote the text between these two markers verbatim, so a human can audit "did the hook deliver, and what?" from the session itself. They are a **visual** boundary, **not** a parser-trusted frame — body content that contains the literal sentinel is harmless (it renders on a `[caucus] ` line and is control-stripped/one-lined, so it cannot forge an extra header/footer). The hook also persists the last non-empty injection (cursor + the exact block) in its per-session checkpoint for byte-equal verification.
+- **Cursor audit line (CAU-93).** One calm line under the header carries the checkpoint cursor the hook advanced to this turn — the integer only, no field values (ADR-C6 / ADR-C12).
+- **Per-message render budget + truncation affordance (CAU-94).** Each message body is elided to the channel's `renderBudgetChars` (default 200); a truncated body appends an explicit `… +truncated, N chars — caucus_read_channel` affordance (N = characters dropped after whitespace-collapse) so the agent knows a fuller body exists and how to fetch it, rather than a silent tail drop. The overall delta stays capped at `INJECTED_DELTA_CAP_CHARS = 8000` (older messages elide to a `+N older messages — use caucus_read_channel` line).
 
 ## Channel descriptor (related)
 
@@ -97,6 +104,7 @@ For discovery, channels carry a small descriptor returned by `describe_channel`:
   "purpose":"Login 500s incident — diagnosis & coordination.",
   "expected_types":["finding","claim","question","answer","status","note"],
   "verbosity":"quiet",            // quiet | normal | chatty — posting verbosity (default quiet, ADR-C6)
+  "renderBudgetChars":200,        // per-message hook render budget (CAU-94); default 200, integer in [1, INJECTED_DELTA_CAP_CHARS]
   "created_by":"alice", "created_ts":"…" }
 ```
 

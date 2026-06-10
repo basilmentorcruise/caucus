@@ -18,6 +18,7 @@ export type {
   ReadResult,
   Verbosity,
 } from "./contract.js";
+export { DEFAULT_RENDER_BUDGET_CHARS } from "./contract.js";
 export {
   BackboneError,
   ChannelExistsError,

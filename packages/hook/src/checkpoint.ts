@@ -20,15 +20,40 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-/** On-disk checkpoint format. `v` lets the format evolve without misreads. */
+/**
+ * A record of the last NON-EMPTY delta this session+channel injected (CAU-93):
+ * the checkpoint `cursor` after that injection, the EXACT `block` string the hook
+ * wrapped into `additionalContext` (byte-equal to what the agent saw — A3), and
+ * the wall-clock `ts` it was written. Persisted so "did the hook deliver, and
+ * what?" is answerable from the hook's own state via {@link readLastInjection},
+ * without an MCP round-trip (the MCP server has no Claude Code session_id, so it
+ * cannot key "this session's" injection — a `caucus_last_injection` MCP tool is a
+ * possible follow-up, out of scope here).
+ */
+export interface LastInjection {
+  readonly cursor: number;
+  readonly block: string;
+  readonly ts: string;
+}
+
+/**
+ * On-disk checkpoint format. `v` lets the format evolve without misreads.
+ *
+ * v0 (CAU-14) had only `{ cursor, channel, v: 0 }`. v1 (CAU-93) adds an optional
+ * {@link LastInjection}. The read path stays forgiving and BACKWARD-COMPATIBLE: a
+ * v0 file (no `lastInjection`) still yields a valid cursor; `lastInjection` is
+ * read defensively and any malformed/absent value simply reads back as
+ * `undefined` from {@link readLastInjection} without affecting the cursor.
+ */
 interface CheckpointFile {
   readonly cursor: number;
   readonly channel: string;
-  readonly v: 0;
+  readonly v: 0 | 1;
+  readonly lastInjection?: LastInjection;
 }
 
-/** Current checkpoint format version. */
-const CHECKPOINT_VERSION = 0 as const;
+/** Current checkpoint format version (v0 → v1 added `lastInjection`, CAU-93). */
+const CHECKPOINT_VERSION = 1 as const;
 
 /**
  * Reduce a key part to a filename-safe token: collapse any run of characters
@@ -62,17 +87,18 @@ export function checkpointPath(
 }
 
 /**
- * Read the checkpoint cursor at `path`, requiring it to match `channel`.
- *
- * Returns a non-negative integer cursor, or `undefined` when there is no usable
- * checkpoint: file missing, unreadable, non-JSON, wrong shape, a `channel` that
- * doesn't match, a non-integer or negative `cursor`. The caller treats
- * `undefined` as "first run for this session+channel".
+ * Read and channel-validate the checkpoint file at `path`. Shared by
+ * {@link readCheckpoint} and {@link readLastInjection}: any problem (missing /
+ * unreadable file, non-JSON, wrong shape, a `channel` that doesn't match) yields
+ * `undefined` so both accessors stay TOTAL and forgiving. This deliberately does
+ * NOT validate `cursor` or `lastInjection` — each accessor validates the field
+ * it returns, so a v0 file (no `lastInjection`) still yields a cursor and a file
+ * with a garbled `lastInjection` still yields its cursor.
  */
-export async function readCheckpoint(
+async function readCheckpointFile(
   path: string,
   channel: string,
-): Promise<number | undefined> {
+): Promise<Partial<CheckpointFile> | undefined> {
   let raw: string;
   try {
     raw = await readFile(path, "utf8");
@@ -96,6 +122,24 @@ export async function readCheckpoint(
   // filename collision (two channels that sanitize the same) would silently
   // cross the streams. Mismatch ⇒ no usable checkpoint.
   if (obj.channel !== channel) return undefined;
+  return obj;
+}
+
+/**
+ * Read the checkpoint cursor at `path`, requiring it to match `channel`.
+ *
+ * Returns a non-negative integer cursor, or `undefined` when there is no usable
+ * checkpoint: file missing, unreadable, non-JSON, wrong shape, a `channel` that
+ * doesn't match, a non-integer or negative `cursor`. The caller treats
+ * `undefined` as "first run for this session+channel". v0 and v1 files both read
+ * back the same way (the v1 `lastInjection` field never affects the cursor).
+ */
+export async function readCheckpoint(
+  path: string,
+  channel: string,
+): Promise<number | undefined> {
+  const obj = await readCheckpointFile(path, channel);
+  if (obj === undefined) return undefined;
 
   const cursor = obj.cursor;
   if (typeof cursor !== "number" || !Number.isInteger(cursor) || cursor < 0) {
@@ -105,19 +149,54 @@ export async function readCheckpoint(
 }
 
 /**
- * Atomically write `cursor` for `channel` to `path`. Creates the parent
- * directory if needed, writes a temp file, then renames it over the target so a
- * reader never observes a partially-written file.
+ * Read the last NON-EMPTY injection recorded for `(path, channel)` (CAU-93), or
+ * `undefined` when there is none: a v0 file (no `lastInjection`), a file whose
+ * `lastInjection` is missing/malformed (non-object, non-integer/negative
+ * `cursor`, non-string `block`/`ts`), or any unreadable/corrupt file. TOTAL and
+ * forgiving like {@link readCheckpoint}; a present, well-formed record carries
+ * the EXACT `block` byte-string the hook injected (A3), so an audit can compare
+ * it against what the agent quoted.
+ */
+export async function readLastInjection(
+  path: string,
+  channel: string,
+): Promise<LastInjection | undefined> {
+  const obj = await readCheckpointFile(path, channel);
+  if (obj === undefined) return undefined;
+
+  const li = obj.lastInjection;
+  if (li === null || typeof li !== "object") return undefined;
+  const { cursor, block, ts } = li as Partial<LastInjection>;
+  if (typeof cursor !== "number" || !Number.isInteger(cursor) || cursor < 0) {
+    return undefined;
+  }
+  if (typeof block !== "string" || typeof ts !== "string") return undefined;
+  return { cursor, block, ts };
+}
+
+/**
+ * Atomically write `cursor` for `channel` to `path`, optionally recording the
+ * last injection (CAU-93). Creates the parent directory if needed, writes a temp
+ * file, then renames it over the target so a reader never observes a
+ * partially-written file. When `lastInjection` is omitted, only the cursor is
+ * persisted (mint / self-heal / empty delta) — an existing record is NOT carried
+ * forward, matching the "what did we inject THIS turn" semantics.
  */
 export async function writeCheckpoint(
   path: string,
   cursor: number,
   channel: string,
+  lastInjection?: LastInjection,
 ): Promise<void> {
   const dir = dirname(path);
   await mkdir(dir, { recursive: true });
 
-  const payload: CheckpointFile = { cursor, channel, v: CHECKPOINT_VERSION };
+  const payload: CheckpointFile = {
+    cursor,
+    channel,
+    v: CHECKPOINT_VERSION,
+    ...(lastInjection !== undefined ? { lastInjection } : {}),
+  };
   // A per-process temp name so concurrent writers (e.g. two sessions) don't
   // collide on the temp file before the atomic rename.
   const tmp = `${path}.${process.pid}.tmp`;

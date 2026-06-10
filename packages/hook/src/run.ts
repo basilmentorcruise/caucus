@@ -34,6 +34,7 @@
 import {
   type Backbone,
   type Cursor,
+  DEFAULT_RENDER_BUDGET_CHARS,
   InvalidCursorError,
   UnknownChannelError,
 } from "@caucus/backbone";
@@ -219,11 +220,50 @@ export async function runHook(deps: RunHookDeps): Promise<string> {
       backbone.readSince(channel, checkpoint),
       timeoutMs,
     );
-    // Persist the cursor the backbone RETURNED — never compute it ourselves.
-    await writeCheckpoint(path, result.cursor, channel);
 
-    const block = renderDelta(result.messages);
-    if (block === "") return "";
+    // CAU-94: fetch the channel's per-message render budget. CRITICAL — this is
+    // FAIL-OPEN and NEVER blocks the turn: a describe error/timeout falls back
+    // to DEFAULT_RENDER_BUDGET_CHARS (the byte-identical calm default) rather
+    // than throwing into the outer catch, so a describe outage degrades the
+    // budget knob but the delta still renders and injects. describe is NOT a
+    // hard dependency, and this lives AFTER readSince so it cannot perturb the
+    // CAU-72 self-heal path (a stale-checkpoint readSince still throws first and
+    // self-heals exactly as before).
+    let budget: number = DEFAULT_RENDER_BUDGET_CHARS;
+    try {
+      const descriptor = await withTimeout(
+        backbone.describeChannel(channel),
+        timeoutMs,
+      );
+      budget = descriptor.renderBudgetChars;
+    } catch {
+      // Quiet, value-free: keep the default budget and carry on.
+      stderr("caucus-hook: render budget unavailable, using default\n");
+    }
+
+    const block = renderDelta(result.messages, result.cursor, budget);
+    if (block === "") {
+      // Empty delta (no new messages): the cursor did NOT advance, so there is
+      // nothing to persist — and we must NOT rewrite the checkpoint, because
+      // that would wipe the `lastInjection` audit record from the previous
+      // injecting turn. CAU-93 is about DURABLE session-level auditability: a
+      // quiet ADR-C6 channel's common "Continue." turn (empty delta) must
+      // preserve "what did the hook last deliver" rather than erase it after a
+      // single turn. (Defensive: if the cursor somehow advanced under an empty
+      // render, persist the advance — there is no injection to record.)
+      if (result.cursor !== checkpoint) {
+        await writeCheckpoint(path, result.cursor, channel);
+      }
+      return "";
+    }
+    // Persist the cursor the backbone RETURNED — never compute it ourselves —
+    // alongside the EXACT block we're about to inject (CAU-93, A3: byte-equal),
+    // so an audit can verify delivery from the hook's own state.
+    await writeCheckpoint(path, result.cursor, channel, {
+      cursor: result.cursor,
+      block,
+      ts: new Date().toISOString(),
+    });
     return injectionEnvelope(block);
   } catch (err) {
     // A STALE checkpoint (cursor past a restarted ephemeral backbone's head, or

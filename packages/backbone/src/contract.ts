@@ -16,6 +16,17 @@
 import type { CaucusMessage, MessageInput } from "@caucus/schema";
 
 /**
+ * Default per-message body render budget for a channel's injected delta (CAU-94).
+ * The hook (`@caucus/hook`'s `renderBody`) elides each message body to this many
+ * characters and appends a `+truncated, N chars — caucus_read_channel`
+ * affordance. It is the value of `200` the hook previously hard-coded as
+ * `BODY_TRUNCATE_CHARS`, kept as the default so the calm feed (ADR-C6) is
+ * byte-identical to before; a channel may raise it via
+ * {@link CreateChannelOptions.renderBudgetChars} up to the overall delta cap.
+ */
+export const DEFAULT_RENDER_BUDGET_CHARS = 200 as const;
+
+/**
  * An opaque, monotonically non-decreasing position in a channel's append-only
  * log. Clients carry it across discrete request/response calls; the backbone is
  * stateless about it (a subscription is just a minted cursor — see
@@ -118,6 +129,14 @@ export interface ChannelDescriptor {
   readonly purpose: string;
   /** Posting verbosity policy (ADR-C6). */
   readonly verbosity: Verbosity;
+  /**
+   * Per-message body render budget for the injected hook delta (CAU-94):
+   * the hook elides each message body to this many characters and appends a
+   * `+truncated, N chars — caucus_read_channel` affordance. Defaults to
+   * {@link DEFAULT_RENDER_BUDGET_CHARS} (the calm-feed default, ADR-C6); raising
+   * it lets evidence-heavy channels surface more body inline.
+   */
+  readonly renderBudgetChars: number;
   /** The `owner` (human) on whose behalf the channel was created. */
   readonly created_by: string;
   /** Server-stamped creation time (ISO-8601, server-monotonic). */
@@ -136,6 +155,12 @@ export interface CreateChannelOptions {
   readonly created_by: string;
   /** Posting verbosity; defaults to `quiet` when omitted (ADR-C6). */
   readonly verbosity?: Verbosity;
+  /**
+   * Per-message body render budget for the injected hook delta (CAU-94). Omitted
+   * ⇒ {@link DEFAULT_RENDER_BUDGET_CHARS}. Validated as an integer clamped to
+   * `[1, INJECTED_DELTA_CAP_CHARS]`.
+   */
+  readonly renderBudgetChars?: number;
 }
 
 /**

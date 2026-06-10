@@ -8,9 +8,11 @@ Caucus ships in vertical slices — each milestone is something you can *run*. M
 
 | Milestone | Theme | Outcome | Status |
 |-----------|-------|---------|--------|
-| **M0** | Validation & foundations | **Demand probes pass**, hook & substrate spikes pass, repo + CI (with coverage gate), schema v0, backbone interface | ▶ Active |
-| **M1** | War-room MVP demo | The two-terminal claim handoff runs end-to-end from the README | Planned |
-| **M2+** | Reach & durability | Native SDK, observability surface, claim lifecycle (lease/TTL), digests, identity→federation | Future |
+| **M0** | Validation & foundations | Demand validated by the **CAU-85 dogfood verdict (GO, owner-ratified)** — the ADR-C11 amendment replaced the waived probes with dogfooding the MVP; hook & substrate spikes pass, repo + CI (with coverage gate), schema v0, backbone interface | ✅ Done |
+| **M1** | War-room MVP demo | The two-terminal claim handoff runs end-to-end from the README; shipped with the full hardening + audit tail (zero known security/quality findings open) | ✅ Done |
+| **M2+** | Reach & durability | Native SDK, observability surface, claim lifecycle (lease/TTL), digests, identity→federation, hook legibility, evidence store, typed steer | ▶ Active |
+
+> **Status (2026-06-10):** M0 and M1 milestones are closed. M2+ is unfrozen and active following the owner-ratified CAU-85 GO verdict. The M2 sequence is recorded on the pinned coordinator brief (board issue #86). CAU-16 (real-time SDK) and federation stay deferred (ADR-C4 / ADR-C9).
 
 ---
 

@@ -9,6 +9,7 @@
   "references": [
     { "path": "../schema" },
     { "path": "../backbone" },
-    { "path": "../backbone-server" }
+    { "path": "../backbone-server" },
+    { "path": "../hook" }
   ]
 }
