@@ -13,6 +13,28 @@
  * `MalformedMessageError` is caught at the boundary and re-thrown as an
  * {@link InvalidMessageError} carrying the same `.issues`.
  */
+import { stripControlChars } from "@caucus/schema";
+
+/**
+ * Render a (possibly attacker-supplied) channel name for embedding in an error
+ * message: strip C0/DEL/C1 control bytes, then quote.
+ *
+ * Error messages are a *display/serialization surface* — they travel verbatim
+ * over the HTTP wire (`wire-errors.ts`) into the requester's context or TTY,
+ * and a dirty name is reachable WITHOUT a token via a percent-encoded URL path
+ * (`GET /channels/%C2%9B…`). `JSON.stringify` alone is not enough: it escapes
+ * C0 but NOT DEL (`\x7f`) or the C1 range (`\x80–\x9f`), so quoting alone would
+ * let raw C1 bytes ride the message (CAU-81; same gap as CAU-73's read-layer
+ * fix). Stripping is the codebase's established discipline (ADR-C12 /
+ * `@caucus/schema` `sanitize.ts`), and it is a no-op for every VALID slug
+ * (`^[a-z0-9][a-z0-9-]{0,63}$` admits no control byte), so the client-side
+ * best-effort `extractChannel` reconstruction stays faithful wherever it
+ * matters. The structured `.channel` property keeps the name as supplied —
+ * consumers must sanitize it before display, like any untrusted field.
+ */
+function quoteChannelForMessage(channel: string): string {
+  return JSON.stringify(stripControlChars(channel));
+}
 
 /** Base class for every error the backbone throws. */
 export class BackboneError extends Error {
@@ -31,12 +53,15 @@ export class BackboneError extends Error {
  * (`^[a-z0-9][a-z0-9-]{0,63}$`). Surfaces before any channel lookup.
  */
 export class InvalidChannelNameError extends BackboneError {
-  /** The rejected channel name (as supplied, untrimmed). */
+  /**
+   * The rejected channel name (as supplied, untrimmed — may carry control
+   * bytes; sanitize before displaying). The `.message` is already stripped.
+   */
   readonly channel: string;
 
   constructor(channel: string) {
     super(
-      `Invalid channel name: ${JSON.stringify(channel)} (must match ^[a-z0-9][a-z0-9-]{0,63}$)`,
+      `Invalid channel name: ${quoteChannelForMessage(channel)} (must match ^[a-z0-9][a-z0-9-]{0,63}$)`,
       "invalid_channel_name",
     );
     this.name = "InvalidChannelNameError";
@@ -50,7 +75,7 @@ export class UnknownChannelError extends BackboneError {
   readonly channel: string;
 
   constructor(channel: string) {
-    super(`Unknown channel: ${JSON.stringify(channel)}`, "unknown_channel");
+    super(`Unknown channel: ${quoteChannelForMessage(channel)}`, "unknown_channel");
     this.name = "UnknownChannelError";
     this.channel = channel;
   }
@@ -62,7 +87,7 @@ export class ChannelExistsError extends BackboneError {
   readonly channel: string;
 
   constructor(channel: string) {
-    super(`Channel already exists: ${JSON.stringify(channel)}`, "channel_exists");
+    super(`Channel already exists: ${quoteChannelForMessage(channel)}`, "channel_exists");
     this.name = "ChannelExistsError";
     this.channel = channel;
   }
@@ -199,7 +224,7 @@ export class ChannelFullError extends BackboneError {
 
   constructor(channel: string, limit: number) {
     super(
-      `Channel is full: ${JSON.stringify(channel)} holds at most ${limit} ${limit === 1 ? "message" : "messages"}. Start a fresh channel to continue.`,
+      `Channel is full: ${quoteChannelForMessage(channel)} holds at most ${limit} ${limit === 1 ? "message" : "messages"}. Start a fresh channel to continue.`,
       "channel_full",
     );
     this.name = "ChannelFullError";

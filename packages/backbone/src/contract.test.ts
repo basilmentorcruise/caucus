@@ -19,6 +19,7 @@ import * as backbone from "./index.js";
 import {
   BackboneError,
   ChannelExistsError,
+  ChannelFullError,
   InMemoryBackbone,
   InvalidChannelNameError,
   InvalidCursorError,
@@ -56,6 +57,61 @@ describe("index re-exports", () => {
     expect(new ChannelExistsError("x").code).toBe("channel_exists");
     expect(new InvalidCursorError("nope", -1).code).toBe("invalid_cursor");
     expect(new InvalidMessageError(["bad"]).code).toBe("invalid_message");
+  });
+});
+
+describe("channel-name errors never echo control bytes (CAU-81)", () => {
+  /** Any C0, DEL, or C1 byte \u2014 the set `stripControlChars` neutralizes. */
+  // eslint-disable-next-line no-control-regex -- intentionally matching control bytes
+  const CONTROL = /[\x00-\x1f\x7f-\x9f]/;
+
+  /**
+   * Dirty names a tokenless caller can reach via a percent-encoded URL path:
+   * `\u009b` is the C1 CSI byte (`GET /channels/%C2%9B\u2026` decodes to it) \u2014
+   * the byte `JSON.stringify` does NOT escape; `\x7f` is DEL (also unescaped);
+   * `\x1b` is C0 ESC (escaped by stringify, but must not survive either).
+   * Written with escapes so the source stays plain ASCII.
+   */
+  const DIRTY_NAMES = [
+    "\u009b31mevil", // C1 CSI \u2014 what %C2%9B decodes to
+    "del\x7fname", // DEL
+    "esc\x1b[2Jname", // C0 ESC
+    "\u0080\u0090\u009f", // assorted C1, nothing printable left
+  ];
+
+  it.each(DIRTY_NAMES)("InvalidChannelNameError message is clean for %j", (name) => {
+    const err = new InvalidChannelNameError(name);
+    expect(err.message).not.toMatch(CONTROL);
+    // The structured field keeps the supplied value (documented as untrusted).
+    expect(err.channel).toBe(name);
+  });
+
+  it.each(DIRTY_NAMES)("UnknownChannelError message is clean for %j", (name) => {
+    const err = new UnknownChannelError(name);
+    expect(err.message).not.toMatch(CONTROL);
+    expect(err.channel).toBe(name);
+  });
+
+  it.each(DIRTY_NAMES)("ChannelExistsError message is clean for %j", (name) => {
+    const err = new ChannelExistsError(name);
+    expect(err.message).not.toMatch(CONTROL);
+    expect(err.channel).toBe(name);
+  });
+
+  it.each(DIRTY_NAMES)("ChannelFullError message is clean for %j", (name) => {
+    const err = new ChannelFullError(name, 5);
+    expect(err.message).not.toMatch(CONTROL);
+    expect(err.channel).toBe(name);
+  });
+
+  it("keeps the printable residue so the message stays diagnosable", () => {
+    const err = new InvalidChannelNameError("del\x7fname");
+    expect(err.message).toContain('"delname"');
+    expect(err.message).toContain("must match");
+  });
+
+  it("is a no-op for a valid slug (message still names it exactly)", () => {
+    expect(new UnknownChannelError("incident-42").message).toContain('"incident-42"');
   });
 });
 
