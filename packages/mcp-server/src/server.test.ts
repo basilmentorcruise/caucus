@@ -548,8 +548,11 @@ describe("CAU-12 — channel tools are listed with convention-bearing descriptio
     expect(create?.description).toMatch(/ephemeral/i);
     expect(create?.description).toMatch(/\[a-z0-9\]/);
     expect(create?.description).toMatch(/secret/i);
-    // join explains the read-cursor-only semantics honestly.
+    // join explains the read-cursor-only semantics honestly, as a deliberate
+    // M1 design choice (CAU-77 product decision: join = follow, read-only).
     expect(join?.description).toMatch(/CAUCUS_CHANNEL/);
     expect(join?.description).toMatch(/read cursor/i);
+    expect(join?.description).toMatch(/by design in M1/i);
+    expect(join?.description).toMatch(/does NOT change where you post/i);
   });
 });

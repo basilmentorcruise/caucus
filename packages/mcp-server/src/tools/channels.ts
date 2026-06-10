@@ -14,10 +14,10 @@
  *   CaucusSession.createChannel}, which anchors `created_by` to the session
  *   owner server-side — a tool cannot forge attribution because there is no
  *   `created_by` argument to forge (ADR-C7).
- * - `caucus_join_channel` is read-only: "joining" a room == minting a cursor on
- *   it. The session's POSTING channel is fixed by `CAUCUS_CHANNEL`; join only
- *   yields a read cursor on another room (switching the posting channel is out
- *   of scope for M1).
+ * - `caucus_join_channel` is read-only BY DESIGN in M1: "joining" a room ==
+ *   minting a cursor on it. The session's POSTING channel is fixed by
+ *   `CAUCUS_CHANNEL`; join only yields a read cursor on another room
+ *   (switching the posting channel is an M2 capability — CAU-92).
  *
  * Unknown-channel handling DIFFERS per tool on purpose: describe and join let
  * {@link UnknownChannelError} propagate (a missing room is the answer to "does
@@ -210,13 +210,13 @@ interface JoinChannelArgs {
 export const joinChannelTool: CaucusTool = {
   name: "caucus_join_channel",
   description:
-    "Join an existing Caucus war room: verifies it exists and mints a read " +
+    "Follow an existing Caucus war room: verifies it exists and mints a read " +
     "cursor at its current head, returning {channel, cursor, head}. Read-only: " +
-    "posts nothing (ADR-C6). IMPORTANT: your POSTING channel is fixed by " +
-    "CAUCUS_CHANNEL — join does NOT switch where you post; it only gives you a " +
-    "read cursor on another room. To follow it, call caucus_read_channel " +
-    "with `channel` set to the room and the returned `cursor` as `since`. " +
-    "Joining a non-existent room is an error.",
+    "posts nothing (ADR-C6). By design in M1, joining does NOT change where " +
+    "you post — your posting channel is fixed for the session by " +
+    "CAUCUS_CHANNEL. Join lets you FOLLOW another room: call " +
+    "caucus_read_channel with `channel` set to the room and the returned " +
+    "`cursor` as `since`. Joining a non-existent room is an error.",
   inputSchema: JOIN_CHANNEL_INPUT,
   async handle(
     session: CaucusSession,

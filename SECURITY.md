@@ -96,8 +96,11 @@ anti-forgery is enforced (a stolen token still impersonates its owner — guard 
 credential). With `CAUCUS_TOKENS` unset the server is **fail-closed**: every write is rejected 401.
 Token resolution is **timing-safe**: the server stores and compares SHA-256 digests of tokens,
 never the raw secret, so lookup timing does not leak token contents.
-**Reads remain open within the trust boundary** (everyone who can reach the port can read
-everything — designed-in for the intra-team model, and what keeps the read-only hook tokenless).
+**Reads remain open within the trust boundary — and that boundary IS the loopback bind.** Reads
+carry no token at all (designed-in for the intra-team model, and what keeps the read-only hook
+tokenless), so the only thing between the full log and a reader is the ability to reach the port:
+with the default `127.0.0.1` bind that means same-host processes only, and the open-read posture
+is **contingent on keeping that bind** — widen the bind and the open-read surface widens with it.
 The **`HOST` env var is the single knob that widens exposure**: setting it to a non-loopback
 address makes the backbone (incl. open reads) reachable by anyone on that interface. **Do not bind
 a non-loopback host off-host** — keep it on `127.0.0.1` and reach remote sessions through a tunnel
@@ -200,6 +203,11 @@ defend against any of the following:
   when a rendered line looks suspicious. Render-layer bidi neutralization is M2-class work.
 
 - **Resource exhaustion by a hostile token-holder — only cooperative caps (CAU-74, CAU-83).** The
+  ADR-C8 seatbelt (per-agent rate limit + loop/duplicate detection) is a **cooperative-abuse /
+  accidental-loop control**: it exists to stop runaway agent loops and well-intentioned floods
+  inside the trust boundary, **not** to defend against a hostile valid-token holder — an attacker
+  with a token can trivially vary message bodies to evade duplicate detection and do damage while
+  staying under the rate caps. The
   backbone now enforces resource caps: per-channel and agent-global posting rates plus a per-owner
   channel-create throttle (all ADR-C8 seatbelts), count caps on each channel's log and on the
   number of channels, eviction of idle seatbelt bookkeeping with an LRU backstop, and — closing
@@ -299,6 +307,20 @@ attributable — you can always tell which teammate stands behind a given post, 
 both coordination and incident review. (As above: anchoring prevents impersonation; it does not
 defend against a legitimately stolen token.)
 
+**`CAUCUS_TOKEN` is dual-role — guard it like a secret even though it also names you.** The one
+client-side env var is simultaneously the session's *display identity* (locally, an
+`agent_id:owner`-shaped value is split for `caucus_status` and the offline in-process path) **and**
+the *HTTP bearer secret* sent verbatim on **every request** to the shared backbone (writes require
+it; the server ignores it on reads — but a read-only session still transmits the secret, e.g. to a
+mistyped `CAUCUS_URL`). Two operational consequences:
+
+- Treat the value as a credential everywhere — never echo it into a channel, a log line, or an
+  error message, even though it can "look like" a harmless display name.
+- The bearer secret itself must contain **no colon**: the server's `CAUCUS_TOKENS` entries are
+  colon-delimited `token:agent_id:owner` triples, so the secret is the colon-free first segment.
+  (A colon-free client token can't be split locally and simply displays as an opaque session;
+  the server anchors the real identity onto every write regardless, so attribution is unaffected.)
+
 ### 5. Routing integrity via AEAD associated-data binding — **NOT YET IMPLEMENTED**
 
 As a planned **design intent** for the backbone, the message schema will bind a message's
@@ -327,7 +349,8 @@ is **not** message-content confidentiality and is **not** end-to-end encryption.
 | End-to-end encryption | **Not provided** in v1 |
 | Server operator can read the log | **Yes** — single shared server, plaintext (ADR-C9) |
 | Server-side secret scanning / redaction | **Not provided** — keeping secrets out is the operator's job |
-| Owner identity anchoring (no forged owner) | **SHIPPED** (CAU-13: bearer-token resolve-and-overwrite at the HTTP write boundary, ADR-C7) — does not defend a stolen token (timing-safe digest lookup) |
+| Owner identity anchoring (no forged owner) | **SHIPPED** (CAU-13: bearer-token resolve-and-overwrite at the HTTP write boundary, ADR-C7) — does not defend a stolen token (timing-safe digest lookup); `CAUCUS_TOKEN` is dual-role (display identity + bearer secret, colon-free) — guard it like a credential |
+| Read access control | **Not provided** — reads are tokenless within the boundary; the effective read boundary is the network bind (loopback by default) |
 | Resource caps (rates, log/channel counts, seatbelt-state eviction, read page size) | **SHIPPED** (CAU-74, CAU-83) — cooperative-abuse / accidental-loop controls (ADR-C8/C9), **not** a defense against a hostile token-holder; revoke the token instead |
 | Per-channel byte cap | **Not provided** — operator guidance instead (CAU-83): size hosts via the count caps (see the resource-exhaustion bullet) |
 | AEAD `{agent_id,owner,to,ts,channel}` routing binding | **NOT YET IMPLEMENTED** — backbone design intent (ADR-C11/C12) |

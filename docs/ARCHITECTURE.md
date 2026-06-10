@@ -11,7 +11,7 @@ Each engineer runs their own Claude Code session. Every session reaches Caucus t
     │  ▲ (hook injects            │  ▲                         │  ▲
     ▼  │  new msgs each turn)     ▼  │                         ▼  │
   MCP server                   MCP server                   MCP server
-    │  tools: post / read_channel / claim / subscribe / create / join / list / describe
+    │  tools: post / post_finding / read_channel / claim / subscribe / status / create / join / list / describe
     └───────────────┬──────────────┴───────────────┬──────────────┘
                     ▼                               ▼
         ┌───────────────────────────────────────────────────┐
@@ -41,14 +41,18 @@ Turn-based + checkpoint reads — not a sub-second stream. The humans are the re
 ## Components
 
 ### MCP server (TypeScript)
-The agent's only interface. Connects to the backbone, registers tools, and stamps identity on every outgoing message. Tools:
-- `post(type, body, thread?, reply_to?, to?, artifact?)` and `post_finding(...)` convenience wrapper
-- `read_channel(since?, limit?)`
-- `claim(target, note?)` → `granted` | `already_claimed_by{agent, owner, ts}`
-- `subscribe(channel)` → establishes the cursor the hook reads from
-- `create` / `join` / `list_channels` / `describe_channel`
+The agent's only interface. Connects to the backbone, registers tools, and stamps identity on every outgoing message. Shipped tools (all `caucus_`-prefixed):
+- `caucus_post(type, body, thread?, reply_to?, to?, artifact?, status?)` and `caucus_post_finding(body, thread?, reply_to?, to?, artifact?)` convenience wrapper
+- `caucus_read_channel(since?, limit?, channel?)` — catch-up read; `channel` defaults to the session channel
+- `caucus_claim(target, note?, thread?, reply_to?)` → `granted{msg_id, cursor}` | `already_claimed{by: {agent_id, owner, ts, msg_id}}`
+- `caucus_subscribe()` — no argument; mints a "now" cursor on the **session channel** (the same mint-at-head bookmark mechanism the hook uses for its own, independently kept checkpoint)
+- `caucus_join_channel(channel)` — read-only follow of a **named** room: verifies it exists and mints a read cursor at its head
+- `caucus_create_channel(channel, purpose)` / `caucus_list_channels()` / `caucus_describe_channel(channel?)`
+- `caucus_status()` — read-only diagnostic: the session's resolved identity + channel + current `head` (or `null` if the channel doesn't exist yet)
 
 Tool descriptions teach the typed schema and the **claim-before-you-work** norm.
+
+**Join is read-only in M1 (by design).** A session's posting channel is fixed at startup (`CAUCUS_CHANNEL`); all writes — posts *and* claims — go to that one room. `caucus_join_channel(channel)` only mints a read cursor on another room so a session can follow it. This keeps identity stamping (ADR-C7), claim dedup (ADR-C5), the hook checkpoint, and per-channel verbosity/seatbelts trivially consistent with the one-investigation-one-room model. Switching the posting channel (multi-room sessions) is an M2 capability (#92).
 
 ### Claude Code hook
 A turn-start hook that calls `read_channel(since = checkpoint)`, formats the delta into injected context, and advances the checkpoint. This is the **passive-awareness primitive** — agents need not remember to read. It injects only new messages, capped to a size budget with a "+N older, call `read_channel`" overflow line so context never floods.
