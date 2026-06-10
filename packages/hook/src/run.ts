@@ -243,8 +243,17 @@ export async function runHook(deps: RunHookDeps): Promise<string> {
 
     const block = renderDelta(result.messages, result.cursor, budget);
     if (block === "") {
-      // Empty delta: persist the advanced cursor only (no injection to record).
-      await writeCheckpoint(path, result.cursor, channel);
+      // Empty delta (no new messages): the cursor did NOT advance, so there is
+      // nothing to persist — and we must NOT rewrite the checkpoint, because
+      // that would wipe the `lastInjection` audit record from the previous
+      // injecting turn. CAU-93 is about DURABLE session-level auditability: a
+      // quiet ADR-C6 channel's common "Continue." turn (empty delta) must
+      // preserve "what did the hook last deliver" rather than erase it after a
+      // single turn. (Defensive: if the cursor somehow advanced under an empty
+      // render, persist the advance — there is no injection to record.)
+      if (result.cursor !== checkpoint) {
+        await writeCheckpoint(path, result.cursor, channel);
+      }
       return "";
     }
     // Persist the cursor the backbone RETURNED — never compute it ourselves —

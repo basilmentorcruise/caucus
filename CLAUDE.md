@@ -11,9 +11,9 @@ This project is delivered by a coordinator + specialist agent team. **Run `/coor
 
 ## Hard rules
 - **Testing/validation is a required gate.** Nothing reaches Done until tests cover the change, the CI coverage threshold is met, **every acceptance criterion is empirically validated** (run it, don't assume), and CI is green. See `docs/GITHUB_PROJECTS.md` → *Testing & validation gate*. Board flow: Backlog → Ready → In Progress → In Review → **Validating** → Done.
-- **Probes before backbone (ADR-C11):** the backbone build (CAU-4+) is gated on the two demand probes (CAU-22, CAU-23), which are **human-run**.
+- **Demand validated (ADR-C11, amended):** the original demand probes (CAU-22/23) were waived by the owner; demand was instead validated by the **CAU-85 dogfood verdict (GO, owner-ratified 2026-06-10)**. M0 and M1 have shipped; **M2+ is active** — see the pinned coordinator brief (board issue #86) for the M2 sequence.
 - **`main` is protected** — all changes via PR; branch `cau-<n>-<slug>`; PR body uses the template with `Closes #<n>`.
-- Respect every ADR; don't introduce architecture without an ADR change. Keep MVP scope tight (no M2 features).
+- Respect every ADR; don't introduce architecture without an ADR change. **M2 features that expand architecture or the message schema (e.g. evidence store, typed steer, token-issuer, federation) require an ADR (or schema-version) change first** — propose it, don't silently diverge. CAU-16 (real-time SDK) and federation stay deferred (ADR-C4 / ADR-C9).
 - Posting is **quiet by default** (ADR-C6); the channel is a shared persisted log — **never post secrets** (ADR-C12).
 
 ## Tech

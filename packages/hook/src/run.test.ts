@@ -504,6 +504,27 @@ describe("runHook — persists the last injection byte-equal (CAU-93)", () => {
     expect(Number.isNaN(Date.parse(li!.ts))).toBe(false);
   });
 
+  it("PRESERVES the lastInjection audit record across a later empty turn", async () => {
+    // Regression for the durable-auditability gap: a quiet channel's common
+    // "Continue." turn (empty delta) must NOT wipe what the hook last delivered.
+    const bb = new FakeBackbone();
+    const env = { CAUCUS_CHANNEL: CHANNEL };
+    const path = checkpointPath(SESSION, CHANNEL, home);
+
+    await runHook(deps(bb, env)); // mint at head 0
+    bb.push(appended("login accepts expired JWTs", { type: "finding" }));
+    const out = await runHook(deps(bb, env)); // injecting turn → records audit
+    const injected = injectedContext(out);
+    const afterInject = await readLastInjection(path, CHANNEL);
+    expect(afterInject?.block).toBe(injected);
+
+    // A subsequent empty "Continue." turn injects nothing...
+    expect(await runHook(deps(bb, env))).toBe("");
+    // ...and the audit record from the previous injection is still intact.
+    const afterEmpty = await readLastInjection(path, CHANNEL);
+    expect(afterEmpty).toEqual(afterInject);
+  });
+
   it("does NOT record a lastInjection on an empty delta (cursor still advances)", async () => {
     const bb = new FakeBackbone();
     const env = { CAUCUS_CHANNEL: CHANNEL };
