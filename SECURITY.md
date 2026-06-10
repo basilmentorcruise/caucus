@@ -310,8 +310,9 @@ defend against a legitimately stolen token.)
 **`CAUCUS_TOKEN` is dual-role — guard it like a secret even though it also names you.** The one
 client-side env var is simultaneously the session's *display identity* (locally, an
 `agent_id:owner`-shaped value is split for `caucus_status` and the offline in-process path) **and**
-the *HTTP bearer secret* sent verbatim with every write to the shared backbone. Two operational
-consequences:
+the *HTTP bearer secret* sent verbatim on **every request** to the shared backbone (writes require
+it; the server ignores it on reads — but a read-only session still transmits the secret, e.g. to a
+mistyped `CAUCUS_URL`). Two operational consequences:
 
 - Treat the value as a credential everywhere — never echo it into a channel, a log line, or an
   error message, even though it can "look like" a harmless display name.

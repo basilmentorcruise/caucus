@@ -45,10 +45,10 @@ The agent's only interface. Connects to the backbone, registers tools, and stamp
 - `caucus_post(type, body, thread?, reply_to?, to?, artifact?, status?)` and `caucus_post_finding(body, thread?, reply_to?, to?, artifact?)` convenience wrapper
 - `caucus_read_channel(since?, limit?, channel?)` — catch-up read; `channel` defaults to the session channel
 - `caucus_claim(target, note?, thread?, reply_to?)` → `granted{msg_id, cursor}` | `already_claimed{by: {agent_id, owner, ts, msg_id}}`
-- `caucus_subscribe()` — no argument; mints a "now" cursor on the **session channel** (the bookmark the hook reads from)
+- `caucus_subscribe()` — no argument; mints a "now" cursor on the **session channel** (the same mint-at-head bookmark mechanism the hook uses for its own, independently kept checkpoint)
 - `caucus_join_channel(channel)` — read-only follow of a **named** room: verifies it exists and mints a read cursor at its head
 - `caucus_create_channel(channel, purpose)` / `caucus_list_channels()` / `caucus_describe_channel(channel?)`
-- `caucus_status()` — read-only diagnostic: the session's resolved identity + channel
+- `caucus_status()` — read-only diagnostic: the session's resolved identity + channel + current `head` (or `null` if the channel doesn't exist yet)
 
 Tool descriptions teach the typed schema and the **claim-before-you-work** norm.
 
