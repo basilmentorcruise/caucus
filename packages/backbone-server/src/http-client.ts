@@ -23,6 +23,7 @@ import type {
   ClaimResult,
   CreateChannelOptions,
   Cursor,
+  PutArtifactResult,
   ReadResult,
 } from "@caucus/backbone";
 import { BackboneError } from "@caucus/backbone";
@@ -187,5 +188,96 @@ export class HttpBackbone implements Backbone {
       `/channels/${encodeURIComponent(channel)}/subscribe`,
     )) as { cursor: Cursor };
     return json.cursor;
+  }
+
+  /**
+   * Upload an opaque blob to a channel's ephemeral evidence store (ADR-C14).
+   * Sends the RAW bytes as `application/octet-stream` to
+   * `PUT /channels/:channel/artifacts/:sha256` — NOT through the JSON `#request`
+   * path (the body is binary, not JSON). Token-gated server-side like `append`;
+   * the bearer is attached here. The server verifies `sha256(body)` and answers
+   * 201 (new) / 200 (dedup) with the `{uri,sha256,size}` envelope. A non-2xx is
+   * reconstructed into the real {@link BackboneError} (e.g. 413 →
+   * `ArtifactTooLargeError`, 400 → `ArtifactIntegrityError`).
+   *
+   * The `deduplicated` flag is recovered from the response STATUS (200 = dedup,
+   * 201 = new), since the success envelope carries only `{uri,sha256,size}`.
+   */
+  async putArtifact(
+    channel: string,
+    sha256: string,
+    bytes: Uint8Array,
+  ): Promise<PutArtifactResult> {
+    const headers: Record<string, string> = {
+      "content-type": "application/octet-stream",
+    };
+    if (this.#token !== undefined && this.#token !== "") {
+      headers.authorization = `Bearer ${this.#token}`;
+    }
+    const res = await this.#fetch(
+      this.#url(
+        `/channels/${encodeURIComponent(channel)}/artifacts/${encodeURIComponent(sha256)}`,
+      ),
+      {
+        method: "PUT",
+        redirect: "error",
+        headers,
+        // A Uint8Array is a valid BodyInit; the bytes ride verbatim, no encoding.
+        body: bytes,
+      },
+    );
+    if (!res.ok) {
+      throw await this.#errorFromResponse(res);
+    }
+    const json = (await res.json()) as {
+      uri: string;
+      sha256: string;
+      size: number;
+    };
+    return { ...json, deduplicated: res.status === 200 };
+  }
+
+  /**
+   * Fetch an opaque blob from a channel's ephemeral evidence store (ADR-C14) via
+   * `GET /channels/:channel/artifacts/:sha256` (tokenless within the boundary,
+   * like `readSince`). Returns the raw bytes, or `undefined` on a 404 (missing
+   * channel OR missing blob — both surface as a not-found here). Other non-2xx
+   * responses reconstruct the real {@link BackboneError}.
+   */
+  async getArtifact(
+    channel: string,
+    sha256: string,
+  ): Promise<Uint8Array | undefined> {
+    const res = await this.#fetch(
+      this.#url(
+        `/channels/${encodeURIComponent(channel)}/artifacts/${encodeURIComponent(sha256)}`,
+      ),
+      { method: "GET", redirect: "error" },
+    );
+    if (res.status === 404) return undefined;
+    if (!res.ok) {
+      throw await this.#errorFromResponse(res);
+    }
+    return new Uint8Array(await res.arrayBuffer());
+  }
+
+  /**
+   * Reconstruct the real {@link BackboneError} from a non-2xx artifact response
+   * (the raw-bytes routes don't go through {@link #request}, so they reuse this
+   * shared mapping). Parses the `{ error: { code, … } }` envelope defensively;
+   * an unparseable body becomes a generic `http_error`.
+   */
+  async #errorFromResponse(res: Response): Promise<BackboneError> {
+    const text = await res.text();
+    let parsed: unknown;
+    try {
+      parsed = text.length > 0 ? JSON.parse(text) : undefined;
+    } catch {
+      parsed = undefined;
+    }
+    if (isWireErrorBody(parsed)) {
+      return backboneErrorFromWire(parsed);
+    }
+    return new BackboneError(`backbone HTTP ${res.status}`, "http_error");
   }
 }

@@ -15,6 +15,7 @@ import {
   type ClaimResult,
 } from "@caucus/backbone";
 import { newMsgId } from "@caucus/schema";
+import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { HttpBackbone } from "./http-client.js";
@@ -400,6 +401,104 @@ describe("HttpBackbone end-to-end with a server over a shared backbone instance"
       // The server's backbone now has the channel — observe it directly.
       const direct = await shared.describeChannel("e2e");
       expect(direct.channel).toBe("e2e");
+    } finally {
+      await srv.close();
+    }
+  });
+});
+
+describe("HttpBackbone — artifact put/get round-trips (ADR-C14 / CAU-100)", () => {
+  function sha(bytes: Uint8Array): string {
+    return createHash("sha256").update(bytes).digest("hex");
+  }
+
+  it("putArtifact new → deduplicated:false; re-put → deduplicated:true; getArtifact round-trips bytes", async () => {
+    const shared = new InMemoryBackbone();
+    const srv = await startServer({ port: 0, backbone: shared, tokens: TOKENS });
+    try {
+      const c = new HttpBackbone(srv.url, { token: TOKEN });
+      await c.createChannel({ channel: "art", purpose: "p", created_by: "a" });
+      const bytes = new Uint8Array([0, 1, 2, 255, 127, 128]); // binary-safe
+      const digest = sha(bytes);
+
+      const first = await c.putArtifact("art", digest, bytes);
+      expect(first.deduplicated).toBe(false);
+      expect(first.sha256).toBe(digest);
+      expect(first.size).toBe(bytes.length);
+      expect(first.uri).toBe(`caucus://artifact/art/${digest}`);
+
+      const second = await c.putArtifact("art", digest, bytes);
+      expect(second.deduplicated).toBe(true);
+
+      const got = await c.getArtifact("art", digest);
+      expect(got).toBeInstanceOf(Uint8Array);
+      expect(Buffer.from(got as Uint8Array).equals(Buffer.from(bytes))).toBe(true);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it("getArtifact of a missing blob returns undefined (404 → undefined)", async () => {
+    const shared = new InMemoryBackbone();
+    const srv = await startServer({ port: 0, backbone: shared, tokens: TOKENS });
+    try {
+      const c = new HttpBackbone(srv.url, { token: TOKEN });
+      await c.createChannel({ channel: "art2", purpose: "p", created_by: "a" });
+      expect(await c.getArtifact("art2", "0".repeat(64))).toBeUndefined();
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it("putArtifact reconstructs ArtifactIntegrityError on a 400 mismatch", async () => {
+    const shared = new InMemoryBackbone();
+    const srv = await startServer({ port: 0, backbone: shared, tokens: TOKENS });
+    try {
+      const c = new HttpBackbone(srv.url, { token: TOKEN });
+      await c.createChannel({ channel: "art3", purpose: "p", created_by: "a" });
+      const bytes = new Uint8Array(Buffer.from("real", "utf8"));
+      const wrong = sha(new Uint8Array(Buffer.from("nope", "utf8")));
+      const { ArtifactIntegrityError } = await import("@caucus/backbone");
+      await expect(c.putArtifact("art3", wrong, bytes)).rejects.toBeInstanceOf(
+        ArtifactIntegrityError,
+      );
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it("putArtifact reconstructs ArtifactTooLargeError (with scope) on a 413", async () => {
+    const { MAX_ARTIFACT_BYTES, ArtifactTooLargeError } = await import(
+      "@caucus/backbone"
+    );
+    const shared = new InMemoryBackbone();
+    const srv = await startServer({ port: 0, backbone: shared, tokens: TOKENS });
+    try {
+      const c = new HttpBackbone(srv.url, { token: TOKEN });
+      await c.createChannel({ channel: "art4", purpose: "p", created_by: "a" });
+      const bytes = new Uint8Array(MAX_ARTIFACT_BYTES + 1).fill(3);
+      const digest = sha(bytes);
+      let thrown: unknown;
+      await c.putArtifact("art4", digest, bytes).catch((e) => (thrown = e));
+      expect(thrown).toBeInstanceOf(ArtifactTooLargeError);
+      expect((thrown as InstanceType<typeof ArtifactTooLargeError>).scope).toBe(
+        "blob",
+      );
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it("putArtifact is fail-closed: an unknown/absent token → UnauthorizedError", async () => {
+    const shared = new InMemoryBackbone();
+    const srv = await startServer({ port: 0, backbone: shared, tokens: TOKENS });
+    try {
+      await shared.createChannel({ channel: "art5", purpose: "p", created_by: "a" });
+      const noTok = new HttpBackbone(srv.url); // no token
+      const bytes = new Uint8Array([1, 2, 3]);
+      await expect(
+        noTok.putArtifact("art5", sha(bytes), bytes),
+      ).rejects.toBeInstanceOf(UnauthorizedError);
     } finally {
       await srv.close();
     }

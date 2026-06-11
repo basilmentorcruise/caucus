@@ -24,6 +24,8 @@ import {
   createChannelTool,
   joinChannelTool,
 } from "./tools/channels.js";
+import { uploadArtifactTool } from "./tools/upload-artifact.js";
+import { fetchArtifactTool } from "./tools/fetch-artifact.js";
 
 /** Inputs to {@link createCaucusServer}. */
 export interface CreateCaucusServerOptions {
@@ -59,6 +61,8 @@ export function createCaucusServer({
     describeChannelTool,
     createChannelTool,
     joinChannelTool,
+    uploadArtifactTool,
+    fetchArtifactTool,
   ],
 }: CreateCaucusServerOptions): McpServer {
   const session = createSession(config, backbone);

@@ -6,6 +6,8 @@
  * subclasses.
  */
 import {
+  ArtifactIntegrityError,
+  ArtifactTooLargeError,
   BackboneError,
   ChannelExistsError,
   ChannelFullError,
@@ -98,6 +100,18 @@ describe("mapError — status mapping", () => {
     expect(m.status).toBe(400);
     expect(m.body.error.code).toBe("invalid_message");
     expect(m.body.error.issues).toEqual(["msg_id is not a ULID", "body too long"]);
+  });
+
+  it("artifact_too_large → 413 (ADR-C14)", () => {
+    const m = mapError(new ArtifactTooLargeError("channel", 16_777_216));
+    expect(m.status).toBe(413);
+    expect(m.body.error.code).toBe("artifact_too_large");
+  });
+
+  it("artifact_integrity → 400 (ADR-C14)", () => {
+    const m = mapError(new ArtifactIntegrityError());
+    expect(m.status).toBe(400);
+    expect(m.body.error.code).toBe("artifact_integrity");
   });
 
   it("unknown BackboneError code → 500 generic, no leak", () => {
@@ -277,5 +291,23 @@ describe("backboneErrorFromWire — reconstruction registry", () => {
       error: { code: "unknown_channel", message: "no quotes here" },
     });
     expect((err as UnknownChannelError).channel).toBe("no quotes here");
+  });
+
+  it("round-trips ArtifactIntegrityError (instanceof + code) (ADR-C14)", () => {
+    const wire = mapError(new ArtifactIntegrityError()).body;
+    const err = backboneErrorFromWire(wire);
+    expect(err).toBeInstanceOf(ArtifactIntegrityError);
+    expect(err.code).toBe("artifact_integrity");
+  });
+
+  it("round-trips ArtifactTooLargeError recovering scope + limit (ADR-C14)", () => {
+    for (const scope of ["blob", "channel", "global"] as const) {
+      const wire = mapError(new ArtifactTooLargeError(scope, 1_048_576)).body;
+      const err = backboneErrorFromWire(wire) as ArtifactTooLargeError;
+      expect(err).toBeInstanceOf(ArtifactTooLargeError);
+      expect(err.code).toBe("artifact_too_large");
+      expect(err.scope).toBe(scope);
+      expect(err.limit).toBe(1_048_576);
+    }
   });
 });

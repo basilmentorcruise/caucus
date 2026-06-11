@@ -171,6 +171,8 @@ describe("caucus_post", () => {
       post: () => Promise.reject(err),
       claim: () => Promise.reject(err),
       createChannel: () => Promise.reject(err),
+      uploadArtifact: () => Promise.reject(err),
+      fetchArtifact: () => Promise.reject(err),
     } as CaucusSession;
   }
 

@@ -40,6 +40,7 @@ import type {
   Backbone,
   ChannelDescriptor,
   ClaimResult,
+  PutArtifactResult,
 } from "@caucus/backbone";
 import type { SessionIdentity, ServerConfig } from "./config.js";
 import { stampIdentity, type ToolMessageDraft } from "./identity.js";
@@ -133,6 +134,37 @@ export interface CaucusSession {
   noteJoined(channel: string): void;
 
   /**
+   * Upload an opaque blob to a channel's ephemeral evidence store (ADR-C14) and
+   * return its content-addressed URI.
+   *
+   * `target` (CAU-92) routes the upload to a channel OTHER than home, gated by
+   * the SAME join-gate as {@link post}/{@link claim}: a non-home target must have
+   * been joined first, or this throws {@link NotJoinedError} before the backbone
+   * is touched. The bytes are opaque and identity-free (uploads aren't anchored —
+   * the leak boundary is the channel, not the principal; ADR-C12).
+   *
+   * @throws NotJoinedError if `target` is a non-home channel not yet joined.
+   */
+  uploadArtifact(
+    sha256: string,
+    bytes: Uint8Array,
+    target?: string,
+  ): Promise<PutArtifactResult>;
+
+  /**
+   * Fetch an opaque blob from a channel's ephemeral evidence store (ADR-C14).
+   * Returns the stored bytes, or `undefined` when absent.
+   *
+   * The `channel` is gated by the SAME join-gate as the write paths: a session
+   * may only fetch from its home channel or one it has joined — this is the SSRF
+   * guard by construction (ADR-C14), since the fetch resolves against the
+   * session's OWN backbone wiring and never a caller-supplied host.
+   *
+   * @throws NotJoinedError if `channel` is a non-home channel not yet joined.
+   */
+  fetchArtifact(channel: string, sha256: string): Promise<Uint8Array | undefined>;
+
+  /**
    * Create a new ephemeral channel, attributed to this session's owner.
    *
    * This is a SANCTIONED write — like {@link post}/{@link claim} — and lives on
@@ -207,6 +239,19 @@ export function createSession(
     async claim(draft, target) {
       const ch = resolveTarget(target);
       return backbone.claim(ch, stampIdentity(identity, draft));
+    },
+    async uploadArtifact(sha256, bytes, target) {
+      // Same join-gate as post/claim: a non-home target must have been joined.
+      const ch = resolveTarget(target);
+      return backbone.putArtifact(ch, sha256, bytes);
+    },
+    async fetchArtifact(channel, sha256) {
+      // SSRF guard by construction (ADR-C14): the fetch resolves against THIS
+      // session's own backbone wiring, and the channel must be home or joined —
+      // a foreign/unjoined channel is rejected here, BEFORE any backbone call,
+      // with the value-free NotJoinedError (never echoing the channel; ADR-C12).
+      const ch = resolveTarget(channel);
+      return backbone.getArtifact(ch, sha256);
     },
     createChannel({ channel: name, purpose }) {
       // `created_by` is server-anchored from the session identity — the caller

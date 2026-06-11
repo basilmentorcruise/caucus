@@ -27,6 +27,7 @@ import {
   type RunningServer,
 } from "./server.js";
 import { parseTokenMap } from "./tokens.js";
+import { createHash } from "node:crypto";
 
 /** Read a JSON response body as an arbitrary record (test-only convenience). */
 async function jsonBody(res: Response): Promise<Record<string, unknown>> {
@@ -976,5 +977,216 @@ describe("dispatch — CAU-74 resource caps over the wire", () => {
     expect((second.json as { error: { message: string } }).error.message).toContain(
       "channel creates/min per owner",
     );
+  });
+});
+
+describe("artifact routes — raw-bytes PUT/GET (ADR-C14 / CAU-100)", () => {
+  let running: RunningServer | undefined;
+
+  afterEach(async () => {
+    if (running) {
+      await running.close();
+      running = undefined;
+    }
+  });
+
+  /** lowercase-hex sha256 of bytes. */
+  function sha(bytes: Uint8Array): string {
+    return createHash("sha256").update(bytes).digest("hex");
+  }
+
+  async function startWithChannel(): Promise<RunningServer> {
+    const bb = new InMemoryBackbone();
+    await bb.createChannel({ channel: "c1", purpose: "p", created_by: "alice" });
+    return startServer({ port: 0, backbone: bb, tokens: TOKENS });
+  }
+
+  it("PUT is token-gated fail-closed: no token → 401, unknown token → identical 401 (no oracle)", async () => {
+    running = await startWithChannel();
+    const bytes = new Uint8Array(Buffer.from("evidence", "utf8"));
+    const digest = sha(bytes);
+    const url = `${running.url}/channels/c1/artifacts/${digest}`;
+
+    const noAuth = await fetch(url, { method: "PUT", body: bytes });
+    expect(noAuth.status).toBe(401);
+    const noAuthBody = await noAuth.json();
+
+    const badAuth = await fetch(url, {
+      method: "PUT",
+      headers: { authorization: "Bearer not-a-real-token" },
+      body: bytes,
+    });
+    expect(badAuth.status).toBe(401);
+    // Identical envelope for missing vs unknown — no oracle.
+    expect(await badAuth.json()).toEqual(noAuthBody);
+
+    // Nothing was stored (the GET is a 404).
+    const get = await fetch(url);
+    expect(get.status).toBe(404);
+  });
+
+  it("PUT new → 201 {uri,sha256,size}; identical re-PUT → 200 (idempotent dedup)", async () => {
+    running = await startWithChannel();
+    const bytes = new Uint8Array(Buffer.from("repro.sh contents", "utf8"));
+    const digest = sha(bytes);
+    const url = `${running.url}/channels/c1/artifacts/${digest}`;
+
+    const first = await fetch(url, {
+      method: "PUT",
+      headers: BEARER_A,
+      body: bytes,
+    });
+    expect(first.status).toBe(201);
+    expect(await first.json()).toEqual({
+      uri: `caucus://artifact/c1/${digest}`,
+      sha256: digest,
+      size: bytes.length,
+    });
+
+    const second = await fetch(url, {
+      method: "PUT",
+      headers: BEARER_A,
+      body: bytes,
+    });
+    expect(second.status).toBe(200); // dedup hit
+  });
+
+  it("GET is tokenless within the boundary and serves raw application/octet-stream", async () => {
+    running = await startWithChannel();
+    const bytes = new Uint8Array([0x00, 0x01, 0xff, 0x7f, 0x80, 0x9b]); // binary-safe
+    const digest = sha(bytes);
+    const url = `${running.url}/channels/c1/artifacts/${digest}`;
+    await fetch(url, { method: "PUT", headers: BEARER_A, body: bytes });
+
+    // No Authorization header on the GET.
+    const get = await fetch(url);
+    expect(get.status).toBe(200);
+    expect(get.headers.get("content-type")).toBe("application/octet-stream");
+    const got = new Uint8Array(await get.arrayBuffer());
+    expect(Buffer.from(got).equals(Buffer.from(bytes))).toBe(true);
+  });
+
+  it("integrity mismatch (sha256(body) ≠ :sha256) → 400 artifact_integrity", async () => {
+    running = await startWithChannel();
+    const bytes = new Uint8Array(Buffer.from("real bytes", "utf8"));
+    const wrong = sha(new Uint8Array(Buffer.from("other", "utf8")));
+    const res = await fetch(`${running.url}/channels/c1/artifacts/${wrong}`, {
+      method: "PUT",
+      headers: BEARER_A,
+      body: bytes,
+    });
+    expect(res.status).toBe(400);
+    expect((await jsonBody(res)).error).toMatchObject({
+      code: "artifact_integrity",
+    });
+  });
+
+  it("GET of a missing blob (or unknown channel) → 404", async () => {
+    running = await startWithChannel();
+    const missing = "0".repeat(64);
+    const known = await fetch(`${running.url}/channels/c1/artifacts/${missing}`);
+    expect(known.status).toBe(404);
+    const unknownChan = await fetch(
+      `${running.url}/channels/nope/artifacts/${missing}`,
+    );
+    expect(unknownChan.status).toBe(404);
+  });
+
+  it("the raw-bytes PUT does NOT JSON-parse: a non-JSON binary body is stored verbatim", async () => {
+    running = await startWithChannel();
+    // A body that is NOT valid JSON (the JSON path would 400 invalid_json).
+    const bytes = new Uint8Array(Buffer.from("{ not json at all \x00\xff", "binary"));
+    const digest = sha(bytes);
+    const put = await fetch(`${running.url}/channels/c1/artifacts/${digest}`, {
+      method: "PUT",
+      headers: BEARER_A,
+      body: bytes,
+    });
+    expect(put.status).toBe(201); // stored, never JSON-parsed
+    const got = new Uint8Array(
+      await (await fetch(`${running.url}/channels/c1/artifacts/${digest}`)).arrayBuffer(),
+    );
+    expect(Buffer.from(got).equals(Buffer.from(bytes))).toBe(true);
+  });
+
+  it("a JSON body well over MAX_BODY_BYTES but under MAX_ARTIFACT_BYTES is NOT clamped by the 256KB cap", async () => {
+    running = await startWithChannel();
+    // 512KB — twice the JSON MAX_BODY_BYTES, well under the 1MiB artifact cap.
+    const bytes = new Uint8Array(512 * 1024).fill(7);
+    expect(bytes.length).toBeGreaterThan(MAX_BODY_BYTES);
+    const digest = sha(bytes);
+    const res = await fetch(`${running.url}/channels/c1/artifacts/${digest}`, {
+      method: "PUT",
+      headers: BEARER_A,
+      body: bytes,
+    });
+    expect(res.status).toBe(201); // the JSON cap did not clamp the upload
+  });
+
+  it("an over-cap PUT is rejected MID-STREAM (413) with the socket destroyed, not fully buffered", async () => {
+    running = await startWithChannel();
+    const { port } = running;
+    // Stream far MORE than MAX_ARTIFACT_BYTES and assert: (a) the server responds
+    // 413 and (b) the request socket is destroyed before we finish sending — i.e.
+    // the body is NOT buffered in full. We drive raw http so we can observe the
+    // socket close and count bytes actually written.
+    const result = await new Promise<{ status?: number; destroyedEarly: boolean }>(
+      (resolve) => {
+        const chunk = Buffer.alloc(64 * 1024, 1); // 64KB chunks
+        // ~4 MiB total intended — 4x the cap.
+        const totalChunks = (4 * 1024 * 1024) / chunk.length;
+        let sent = 0;
+        let status: number | undefined;
+        let destroyedEarly = false;
+        const req = httpRequest(
+          {
+            host: "127.0.0.1",
+            port,
+            method: "PUT",
+            path: `/channels/c1/artifacts/${"0".repeat(64)}`,
+            headers: {
+              authorization: "Bearer tok-a",
+              "content-type": "application/octet-stream",
+            },
+          },
+          (res) => {
+            status = res.statusCode;
+            res.resume();
+          },
+        );
+        const pump = (): void => {
+          if (sent >= totalChunks) {
+            req.end();
+            return;
+          }
+          sent++;
+          // Once the server destroys the socket, further writes error out — which
+          // is exactly the mid-stream cut we want to observe.
+          const ok = req.write(chunk);
+          if (ok) setImmediate(pump);
+          else req.once("drain", pump);
+        };
+        req.on("error", () => {
+          // ECONNRESET / EPIPE: the server destroyed the connection mid-upload
+          // before we sent everything.
+          if (sent < totalChunks) destroyedEarly = true;
+          resolve({ status, destroyedEarly });
+        });
+        req.on("close", () => resolve({ status, destroyedEarly }));
+        pump();
+      },
+    );
+    // Either we observed the 413 response, or the socket was reset mid-stream
+    // (both prove the over-cap upload was cut off, not buffered in full).
+    expect(result.status === 413 || result.destroyedEarly).toBe(true);
+  });
+
+  it("a PUT over an UNKNOWN method on the artifact path → 405", async () => {
+    running = await startWithChannel();
+    const res = await fetch(
+      `${running.url}/channels/c1/artifacts/${"0".repeat(64)}`,
+      { method: "POST", headers: BEARER_A, body: new Uint8Array([1]) },
+    );
+    expect(res.status).toBe(405);
   });
 });
