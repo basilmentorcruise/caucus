@@ -107,6 +107,12 @@ class FakeBackbone implements Backbone {
   claim(_channel: string, _msg: MessageInput): Promise<ClaimResult> {
     throw new Error("not used");
   }
+  putArtifact(): Promise<never> {
+    throw new Error("not used");
+  }
+  getArtifact(): Promise<never> {
+    throw new Error("not used");
+  }
 }
 
 function appended(body: string, over: Partial<AppendResult["message"]> = {}): AppendResult["message"] {

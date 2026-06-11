@@ -264,6 +264,31 @@ defend against any of the following:
   hostile valid-token holder — the remedy for a hostile or compromised token is revocation, not
   the rate limiter.
 
+- **Ephemeral evidence store byte caps — cooperative bounds (CAU-100, ADR-C14).** The shared
+  ephemeral evidence store (a content-addressed, per-channel, in-memory blob store the `artifact`
+  URI may point into) adds a new byte surface, bounded by three caps the PUT route enforces (an
+  over-cap upload is rejected **`413` mid-stream** — the body is cut off, never buffered in full):
+
+  | Cap | Constant | Default |
+  | --- | --- | --- |
+  | Per-blob upload | `MAX_ARTIFACT_BYTES` | 1 MiB (1 048 576) |
+  | Per-channel total | `MAX_CHANNEL_ARTIFACT_BYTES` | 16 MiB |
+  | Backbone-wide total | `MAX_TOTAL_ARTIFACT_BYTES` | 128 MiB |
+
+  These bound the worst-case resident artifact memory at the global cap (128 MiB), independent of
+  the message-log bound above; blobs share the channel/process lifetime (no durability/GC). They are
+  **the same cooperative posture as the CAU-74/83 caps**: they protect a cooperating team from an
+  accidental large/runaway upload, **not** against a hostile valid-token holder, who can still
+  upload up to the caps or churn distinct blobs — the remedy for a hostile or compromised token is
+  revocation, not the caps. The global cap is **first-come with no per-channel fairness or
+  eviction**: one channel may consume the whole 128 MiB budget and `413` uploads in others until its
+  blobs are freed by process exit. Acceptable under the single-trusted-team loopback model; not a
+  multi-tenant fairness guarantee. The store is also subject to the same secret-leak boundary as the log:
+  an uploaded blob is the same shared, persisted surface as a message `body` (ADR-C12) — **never
+  upload secrets**. The blob is opaque and never rendered (the hook shows only `↗artifact`), and the
+  GET serves it as `application/octet-stream`. No read-amplification is introduced: a GET serves
+  exactly one blob and `readSince` carries only the bounded URI, never the bytes.
+
 This is the same posture as
 [VISION.md](docs/VISION.md)'s non-goal **"Not a safe place for secrets."** Caucus is a trusted-team
 coordination layer; it is not a vault, not a DLP system, and not a confidentiality boundary
@@ -387,6 +412,7 @@ is **not** message-content confidentiality and is **not** end-to-end encryption.
 | Read access control | **Not provided** — reads are tokenless within the boundary; the effective read boundary is the network bind (loopback by default) |
 | Resource caps (rates, log/channel counts, seatbelt-state eviction, read page size) | **SHIPPED** (CAU-74, CAU-83) — cooperative-abuse / accidental-loop controls (ADR-C8/C9), **not** a defense against a hostile token-holder; revoke the token instead |
 | Per-channel byte cap | **Not provided** — operator guidance instead (CAU-83): size hosts via the count caps (see the resource-exhaustion bullet) |
+| Ephemeral evidence store (artifact blobs) | **SHIPPED** (CAU-100, ADR-C14) — content-addressed, per-channel, in-memory, process-lifetime; cooperative byte caps (1 MiB blob / 16 MiB channel / 128 MiB global, `413` mid-stream); same "never post secrets" boundary as `body`; not a defense against a hostile token-holder |
 | AEAD `{agent_id,owner,to,ts,channel}` routing binding | **NOT YET IMPLEMENTED** — backbone design intent (ADR-C11/C12) |
 
 The honest one-liner: **Caucus coordinates a trusted team; it does not keep secrets from that

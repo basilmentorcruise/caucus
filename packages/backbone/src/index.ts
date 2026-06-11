@@ -15,11 +15,20 @@ export type {
   ClaimResult,
   CreateChannelOptions,
   Cursor,
+  PutArtifactResult,
   ReadResult,
   Verbosity,
 } from "./contract.js";
-export { DEFAULT_RENDER_BUDGET_CHARS } from "./contract.js";
 export {
+  DEFAULT_RENDER_BUDGET_CHARS,
+  MAX_ARTIFACT_BYTES,
+  MAX_CHANNEL_ARTIFACT_BYTES,
+  MAX_TOTAL_ARTIFACT_BYTES,
+} from "./contract.js";
+export {
+  type ArtifactCapScope,
+  ArtifactIntegrityError,
+  ArtifactTooLargeError,
   BackboneError,
   ChannelExistsError,
   ChannelFullError,

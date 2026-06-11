@@ -10,7 +10,11 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { InvalidMessageError } from "./errors.js";
+import {
+  ArtifactIntegrityError,
+  ArtifactTooLargeError,
+  InvalidMessageError,
+} from "./errors.js";
 import { stripControlChars } from "@caucus/schema";
 
 // Control bytes spelled with \x escapes so this source stays plain ASCII.
@@ -40,5 +44,37 @@ describe("InvalidMessageError (CAU-88)", () => {
     const err = new InvalidMessageError(issues);
     expect([...err.issues]).toEqual(issues);
     expect(err.message).toBe("Invalid message: body must be a non-empty string");
+  });
+});
+
+describe("artifact errors (ADR-C14 / CAU-100)", () => {
+  it("ArtifactTooLargeError carries scope + limit and a value-free message per scope", () => {
+    for (const scope of ["blob", "channel", "global"] as const) {
+      const err = new ArtifactTooLargeError(scope, 1234);
+      expect(err.code).toBe("artifact_too_large");
+      expect(err.scope).toBe(scope);
+      expect(err.limit).toBe(1234);
+      expect(err.message).toContain("1234 bytes");
+      // No control bytes, no caller content.
+      expect(err.message).not.toMatch(CONTROL_CHARS);
+    }
+    // The three scopes phrase the "where" distinctly so the client can recover
+    // the scope from the message.
+    expect(new ArtifactTooLargeError("channel", 1).message).toContain(
+      "channel's artifact store",
+    );
+    expect(new ArtifactTooLargeError("global", 1).message).toContain(
+      "backbone's artifact store",
+    );
+    expect(new ArtifactTooLargeError("blob", 1).message).toContain(
+      "a single artifact",
+    );
+  });
+
+  it("ArtifactIntegrityError is a fixed, value-free 400-class error", () => {
+    const err = new ArtifactIntegrityError();
+    expect(err.code).toBe("artifact_integrity");
+    expect(err.message).toContain("integrity check failed");
+    expect(err.message).not.toMatch(CONTROL_CHARS);
   });
 });

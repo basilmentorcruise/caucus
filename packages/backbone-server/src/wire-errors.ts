@@ -16,6 +16,9 @@
  * unmapped throw is reported as a generic `internal_error` with a fixed message.
  */
 import {
+  type ArtifactCapScope,
+  ArtifactIntegrityError,
+  ArtifactTooLargeError,
   BackboneError,
   ChannelExistsError,
   ChannelFullError,
@@ -83,9 +86,18 @@ function statusForCode(code: string): number {
     case "invalid_channel_name":
     case "invalid_message":
     case "invalid_cursor":
+    case "artifact_integrity":
+      // `artifact_integrity` (ADR-C14): bytes that don't match their content
+      // address are a client/transport integrity fault — 400, alongside the
+      // other bad-input cases.
       return 400;
     case "unauthorized":
       return 401;
+    // An over-cap artifact upload (ADR-C14) is rejected as 413 (payload too
+    // large) — the upload is a raw byte stream cut off mid-stream once a budget
+    // is exceeded, so 413 is the honest status (not the 409 the count caps use).
+    case "artifact_too_large":
+      return 413;
     case "unknown_channel":
       return 404;
     // channel_full / channel_limit (CAU-74) are capacity STATE conflicts
@@ -177,6 +189,17 @@ export function backboneErrorFromWire(body: WireErrorBody): BackboneError {
       return new ChannelLimitError(
         extractLimit(message, /at most (\d+) channels/),
       );
+    case "artifact_integrity":
+      // Fixed-message, value-free (ADR-C14): reconstructed identically.
+      return new ArtifactIntegrityError();
+    case "artifact_too_large":
+      // Recover the scope from the message wording so `instanceof` + `.code` +
+      // `.scope` stay faithful; the numeric limit is best-effort like the other
+      // capacity reconstructions.
+      return new ArtifactTooLargeError(
+        artifactCapScopeFromMessage(message),
+        extractLimit(message, /capped at (\d+) bytes/),
+      );
     case "unauthorized":
       // Fixed-message, value-free: reconstructed identically regardless of why
       // the token was rejected (missing vs unknown — no oracle).
@@ -215,6 +238,19 @@ function rateLimitedFromMessage(message: string): RateLimitedError {
       ? "create"
       : "channel";
   return new RateLimitedError(limitN, waitS * 1000, scope);
+}
+
+/**
+ * Recover the {@link ArtifactCapScope} from an {@link ArtifactTooLargeError}
+ * wire message (ADR-C14). The three scopes phrase the "where" differently
+ * ("this channel's artifact store" / "the backbone's artifact store" /
+ * "a single artifact"); default to `"blob"` when unrecognized. `.code` +
+ * `instanceof` stay exact regardless.
+ */
+function artifactCapScopeFromMessage(message: string): ArtifactCapScope {
+  if (message.includes("channel's artifact store")) return "channel";
+  if (message.includes("backbone's artifact store")) return "global";
+  return "blob";
 }
 
 /**

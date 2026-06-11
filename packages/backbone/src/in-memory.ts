@@ -29,7 +29,14 @@ import {
   validate,
 } from "@caucus/schema";
 
-import { DEFAULT_RENDER_BUDGET_CHARS } from "./contract.js";
+import { createHash } from "node:crypto";
+
+import {
+  DEFAULT_RENDER_BUDGET_CHARS,
+  MAX_ARTIFACT_BYTES,
+  MAX_CHANNEL_ARTIFACT_BYTES,
+  MAX_TOTAL_ARTIFACT_BYTES,
+} from "./contract.js";
 import type {
   AppendedMessage,
   AppendResult,
@@ -38,10 +45,13 @@ import type {
   ClaimResult,
   CreateChannelOptions,
   Cursor,
+  PutArtifactResult,
   ReadResult,
   Verbosity,
 } from "./contract.js";
 import {
+  ArtifactIntegrityError,
+  ArtifactTooLargeError,
   ChannelExistsError,
   ChannelFullError,
   ChannelLimitError,
@@ -126,6 +136,18 @@ function deepFreeze<T>(value: T): T {
 /** Channel slug grammar (lowercase alnum, internal hyphens, 1–64 chars). */
 const CHANNEL_NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
+/** A lowercase-hex SHA-256 content address: exactly 64 hex digits (ADR-C14). */
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+
+/**
+ * Build the logical, host-agnostic artifact URI (ADR-C14). It carries NO host —
+ * the MCP client resolves it against its OWN validated `CAUCUS_URL` at fetch
+ * time, so the backbone never embeds a dialable host (no SSRF surface).
+ */
+function artifactUri(channel: string, sha256: string): string {
+  return `caucus://artifact/${channel}/${sha256}`;
+}
+
 /** A ledger entry recording who won a given normalized target. */
 interface ClaimRecord {
   readonly agent_id: string;
@@ -148,6 +170,20 @@ interface ChannelState {
   };
   readonly log: AppendedMessage[];
   readonly claimLedger: Map<string, ClaimRecord>;
+  /**
+   * The ephemeral evidence store (ADR-C14): a content-addressed `sha256 → bytes`
+   * map. Lives exactly as long as this `ChannelState` (channel = process exit) —
+   * no durability, no GC, no explicit delete. Bytes are opaque and binary-safe;
+   * they are never validated, parsed, or rendered.
+   */
+  readonly artifacts: Map<string, Uint8Array>;
+  /**
+   * Running total of the DISTINCT blob bytes stored against this channel
+   * (CAU-74-style accounting): the sum of `artifacts`' value lengths. Maintained
+   * incrementally on each non-dedup store so the per-channel cap can be checked
+   * in O(1).
+   */
+  artifactBytes: number;
 }
 
 export class InMemoryBackbone implements Backbone {
@@ -170,6 +206,13 @@ export class InMemoryBackbone implements Backbone {
 
   /** `readSince` max page size (CAU-83). */
   readonly #maxReadLimit: number;
+
+  /**
+   * Running total of the DISTINCT artifact bytes stored across ALL channels
+   * (ADR-C14). Maintained incrementally alongside each channel's
+   * `artifactBytes` so the backbone-wide cap is an O(1) check on every PUT.
+   */
+  #totalArtifactBytes = 0;
 
   /**
    * @param opts seatbelt tunables (caps / window / clock) plus the CAU-74
@@ -405,6 +448,8 @@ export class InMemoryBackbone implements Backbone {
       },
       log: [],
       claimLedger: new Map(),
+      artifacts: new Map(),
+      artifactBytes: 0,
     };
     this.#channels.set(opts.channel, state);
     return this.#snapshot(state);
@@ -556,5 +601,74 @@ export class InMemoryBackbone implements Backbone {
 
   async subscribe(channel: string): Promise<Cursor> {
     return this.#requireChannel(channel).descriptor.head;
+  }
+
+  async putArtifact(
+    channel: string,
+    sha256: string,
+    bytes: Uint8Array,
+  ): Promise<PutArtifactResult> {
+    const state = this.#requireChannel(channel);
+    // The supplied address must be a syntactically valid SHA-256 hex digest;
+    // anything else can never equal `sha256(bytes)`, so reject it as an
+    // integrity failure (a malformed `:sha256` path segment over the wire). No
+    // content is echoed (ADR-C12).
+    if (typeof sha256 !== "string" || !SHA256_HEX_RE.test(sha256)) {
+      throw new ArtifactIntegrityError();
+    }
+    // Per-blob cap (ADR-C14). The HTTP edge already rejects mid-stream, but the
+    // backbone is the single in-process authority and an in-process caller (a
+    // test/demo) reaches here directly, so re-check on the assembled buffer.
+    if (bytes.length > MAX_ARTIFACT_BYTES) {
+      throw new ArtifactTooLargeError("blob", MAX_ARTIFACT_BYTES);
+    }
+    // Integrity: the bytes MUST hash to the address they're stored under
+    // (content-addressing is only meaningful if verified). Compute once.
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    if (digest !== sha256) {
+      throw new ArtifactIntegrityError();
+    }
+    // Dedup + idempotent: identical bytes already stored for this channel are a
+    // no-op that does NOT re-charge either byte budget (the blob counts once).
+    if (state.artifacts.has(sha256)) {
+      return {
+        uri: artifactUri(channel, sha256),
+        sha256,
+        size: bytes.length,
+        deduplicated: true,
+      };
+    }
+    // Running-total cap checks BEFORE storing (cheap O(1)): per-channel first,
+    // then global. A rejected store mutates nothing — the byte totals only move
+    // on the success path below.
+    if (state.artifactBytes + bytes.length > MAX_CHANNEL_ARTIFACT_BYTES) {
+      throw new ArtifactTooLargeError("channel", MAX_CHANNEL_ARTIFACT_BYTES);
+    }
+    if (this.#totalArtifactBytes + bytes.length > MAX_TOTAL_ARTIFACT_BYTES) {
+      throw new ArtifactTooLargeError("global", MAX_TOTAL_ARTIFACT_BYTES);
+    }
+    // Copy the bytes so a caller mutating its buffer afterwards can't alter the
+    // stored, content-addressed blob (the address would no longer match).
+    state.artifacts.set(sha256, Uint8Array.from(bytes));
+    state.artifactBytes += bytes.length;
+    this.#totalArtifactBytes += bytes.length;
+    return {
+      uri: artifactUri(channel, sha256),
+      sha256,
+      size: bytes.length,
+      deduplicated: false,
+    };
+  }
+
+  async getArtifact(
+    channel: string,
+    sha256: string,
+  ): Promise<Uint8Array | undefined> {
+    // Unknown CHANNEL throws (UnknownChannelError → 404 at the edge); a known
+    // channel with no blob at that address returns undefined (also → 404, but a
+    // distinct in-process signal). A malformed address simply never matches, so
+    // it is an ordinary miss — no special error.
+    const state = this.#requireChannel(channel);
+    return state.artifacts.get(sha256);
   }
 }

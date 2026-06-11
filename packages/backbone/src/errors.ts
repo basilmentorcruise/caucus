@@ -257,3 +257,66 @@ export class ChannelLimitError extends BackboneError {
     this.limit = limit;
   }
 }
+
+/**
+ * Which artifact byte budget a {@link ArtifactTooLargeError} bound on (ADR-C14):
+ * - `"blob"` — the per-blob 1 MiB upload cap;
+ * - `"channel"` — the per-channel 16 MiB total;
+ * - `"global"` — the backbone-wide 128 MiB total.
+ */
+export type ArtifactCapScope = "blob" | "channel" | "global";
+
+/**
+ * Thrown when an artifact upload would exceed one of the three cooperative byte
+ * caps of the ephemeral evidence store (ADR-C14): the per-blob, per-channel, or
+ * global budget. Capacity, not pacing — but unlike {@link ChannelFullError} the
+ * HTTP edge maps this to **413** (payload too large), since the upload is a raw
+ * byte stream rejected mid-stream once a budget is exceeded. The message states
+ * only the cap and the scope — it never echoes any blob content (ADR-C12).
+ */
+export class ArtifactTooLargeError extends BackboneError {
+  /** Which budget was exceeded. */
+  readonly scope: ArtifactCapScope;
+
+  /** The cap (bytes) that was exceeded. */
+  readonly limit: number;
+
+  constructor(scope: ArtifactCapScope, limit: number) {
+    let where: string;
+    switch (scope) {
+      case "channel":
+        where = "this channel's artifact store";
+        break;
+      case "global":
+        where = "the backbone's artifact store";
+        break;
+      default:
+        where = "a single artifact";
+    }
+    super(
+      `Artifact too large: ${where} is capped at ${limit} bytes.`,
+      "artifact_too_large",
+    );
+    this.name = "ArtifactTooLargeError";
+    this.scope = scope;
+    this.limit = limit;
+  }
+}
+
+/**
+ * Thrown by {@link import("./contract.js").Backbone.putArtifact} when the
+ * uploaded bytes do not hash to the content address they were stored under —
+ * `sha256(bytes)` ≠ the supplied `:sha256` (ADR-C14). A client/transport
+ * integrity fault, mapped to **400** at the HTTP edge. The message names neither
+ * digest verbatim beyond the fixed phrasing and never echoes blob content
+ * (ADR-C12).
+ */
+export class ArtifactIntegrityError extends BackboneError {
+  constructor() {
+    super(
+      "Artifact integrity check failed: the uploaded bytes do not match the supplied content address (sha256).",
+      "artifact_integrity",
+    );
+    this.name = "ArtifactIntegrityError";
+  }
+}

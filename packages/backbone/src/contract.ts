@@ -27,6 +27,54 @@ import type { CaucusMessage, MessageInput } from "@caucus/schema";
 export const DEFAULT_RENDER_BUDGET_CHARS = 200 as const;
 
 /**
+ * Per-blob upload cap for the ephemeral evidence store (ADR-C14): a single
+ * artifact PUT may carry at most 1 MiB of bytes. The HTTP edge enforces this
+ * INCREMENTALLY (overflow-and-destroy → `413` mid-stream, mirroring the JSON
+ * `MAX_BODY_BYTES` pattern) so a hostile/accidental gigabyte upload is never
+ * fully buffered; {@link Backbone.putArtifact} enforces it again on the
+ * assembled buffer as the single in-process authority. A cooperative bound, not
+ * a defense against a hostile valid-token holder (see SECURITY.md / CAU-74/83).
+ */
+export const MAX_ARTIFACT_BYTES = 1_048_576 as const;
+
+/**
+ * Per-channel total cap for the ephemeral evidence store (ADR-C14): the sum of
+ * all DISTINCT blob sizes stored against one channel may not exceed 16 MiB.
+ * Dedup means re-uploading identical bytes does not re-charge this budget. A
+ * cooperative bound (CAU-74/83); over-cap PUT → `413`.
+ */
+export const MAX_CHANNEL_ARTIFACT_BYTES = 16_777_216 as const;
+
+/**
+ * Backbone-wide total cap for the ephemeral evidence store (ADR-C14): the sum of
+ * all DISTINCT blob sizes across every channel may not exceed 128 MiB. Dedup
+ * (per-channel) means a blob counts once per channel it is stored in. A
+ * cooperative bound (CAU-74/83); over-cap PUT → `413`.
+ */
+export const MAX_TOTAL_ARTIFACT_BYTES = 134_217_728 as const;
+
+/** The result of a successful {@link Backbone.putArtifact}. */
+export interface PutArtifactResult {
+  /**
+   * The logical, host-agnostic artifact URI `caucus://artifact/<channel>/<sha256>`
+   * suitable for the `artifact` field of a message. Resolved CLIENT-SIDE to the
+   * fetcher's own validated `CAUCUS_URL` at fetch time — never a caller-supplied
+   * host (ADR-C14, no new SSRF surface).
+   */
+  readonly uri: string;
+  /** The content address (lowercase hex SHA-256 of the bytes). */
+  readonly sha256: string;
+  /** The blob size in bytes. */
+  readonly size: number;
+  /**
+   * `true` when these exact bytes were already stored for this channel (dedup):
+   * the store was a no-op and the byte totals did not move. `false` when this
+   * call stored a new blob. The HTTP edge maps `false → 201`, `true → 200`.
+   */
+  readonly deduplicated: boolean;
+}
+
+/**
  * An opaque, monotonically non-decreasing position in a channel's append-only
  * log. Clients carry it across discrete request/response calls; the backbone is
  * stateless about it (a subscription is just a minted cursor — see
@@ -259,4 +307,45 @@ export interface Backbone {
    * @throws UnknownChannelError if no such channel exists.
    */
   subscribe(channel: string): Promise<Cursor>;
+
+  /**
+   * Store an opaque blob in a channel's ephemeral evidence store (ADR-C14),
+   * content-addressed by SHA-256.
+   *
+   * The store is per-channel and in-memory: blobs live exactly as long as the
+   * channel / process does (no durability, no GC, no explicit delete). The bytes
+   * are OPAQUE and binary-safe — they are never validated, parsed, or rendered;
+   * they are the same shared-log leak surface as a message body, under the same
+   * "never post secrets" boundary (ADR-C12).
+   *
+   * Behaviour:
+   * - Verifies `sha256(bytes)` equals the supplied `sha256` (lowercase hex);
+   *   a mismatch throws {@link ArtifactIntegrityError}.
+   * - Dedup + idempotent: storing bytes already present for this channel is a
+   *   no-op that does NOT re-charge the byte budgets; the result's
+   *   `deduplicated` is `true`.
+   * - Enforces the three cooperative caps ({@link MAX_ARTIFACT_BYTES},
+   *   {@link MAX_CHANNEL_ARTIFACT_BYTES}, {@link MAX_TOTAL_ARTIFACT_BYTES}),
+   *   throwing {@link ArtifactTooLargeError} at the first boundary exceeded.
+   *
+   * @throws InvalidChannelNameError if `channel` is not a valid slug.
+   * @throws UnknownChannelError if no such channel exists.
+   * @throws ArtifactIntegrityError if `sha256(bytes)` ≠ `sha256`.
+   * @throws ArtifactTooLargeError if any cap would be exceeded.
+   */
+  putArtifact(
+    channel: string,
+    sha256: string,
+    bytes: Uint8Array,
+  ): Promise<PutArtifactResult>;
+
+  /**
+   * Fetch an opaque blob from a channel's ephemeral evidence store (ADR-C14).
+   * Returns the stored bytes, or `undefined` when the channel exists but holds
+   * no blob at that address (the HTTP edge maps `undefined → 404`).
+   *
+   * @throws InvalidChannelNameError if `channel` is not a valid slug.
+   * @throws UnknownChannelError if no such channel exists.
+   */
+  getArtifact(channel: string, sha256: string): Promise<Uint8Array | undefined>;
 }

@@ -48,6 +48,7 @@ The agent's only interface. Connects to the backbone, registers tools, and stamp
 - `caucus_subscribe()` — no argument; mints a "now" cursor on the **session channel** (the same mint-at-head bookmark mechanism the hook uses for its own, independently kept checkpoint)
 - `caucus_join_channel(channel)` — join a **named** room: verifies it exists, mints a read cursor at its head, **and** authorizes posting into it (CAU-92)
 - `caucus_create_channel(channel, purpose)` / `caucus_list_channels()` / `caucus_describe_channel(channel?)`
+- `caucus_upload_artifact(path? | content?, channel?)` → `{uri, sha256, size}` and `caucus_fetch_artifact(uri, path?)` → `{path, size}` — share/retrieve a repro or evidence blob via the ephemeral evidence store (CAU-100, [ADR-C14](DECISIONS.md#adr-c14--shared-ephemeral-evidence-store-the-artifact-uri-may-point-at-a-backbone-hosted-payload-)); `channel` reuses the join-gate, and fetch only resolves a `caucus://` URI for a room the session is in (SSRF guard)
 - `caucus_status()` — read-only diagnostic: the session's resolved identity + channel + current `head` (or `null` if the channel doesn't exist yet)
 
 Tool descriptions teach the typed schema and the **claim-before-you-work** norm.
@@ -66,6 +67,7 @@ Holds the shared state behind one implementation-agnostic interface:
 - **Subscribe cursors** — per-session checkpoints that survive discrete MCP request/response calls.
 - **Seatbelts** — per-agent rate limit; loop/duplicate detection (drop near-identical consecutive posts).
 - **Identity** — a per-session join token maps to `agent-id` + `human owner`, anchored server-side so the owner can't be forged.
+- **Ephemeral evidence store (CAU-100, [ADR-C14](DECISIONS.md#adr-c14--shared-ephemeral-evidence-store-the-artifact-uri-may-point-at-a-backbone-hosted-payload-)).** A content-addressed `sha256 → bytes` blob map **per channel**, in-memory, sharing the channel lifecycle (= process exit; no durability/GC/delete). A message's `artifact` may carry a logical `caucus://artifact/<channel>/<sha256>` URI pointing into it, so a finding's repro/evidence travels with it and another session/machine can fetch and re-run it. Dedup + integrity-verified (`sha256(body)` checked on PUT). Cooperative byte caps (per-blob 1 MiB / per-channel 16 MiB / global 128 MiB; over-cap → `413` mid-stream). Same "never post secrets" boundary as `body` (ADR-C12); the blob is opaque and never rendered (the hook shows only `↗artifact`).
 
 Internal interface the MCP server depends on (the `Backbone` contract — full signatures + normative semantics in [BACKBONE_CONTRACT.md](BACKBONE_CONTRACT.md), types in `packages/backbone/src/contract.ts`):
 
@@ -77,6 +79,8 @@ append(channel, msg)              -> { message, cursor } (non-claim only)
 readSince(channel, cursor, limit?) -> { messages, cursor }
 claim(channel, msg)               -> granted{message,cursor} | already_claimed{by}
 subscribe(channel)                -> cursor               (stateless head-mint)
+putArtifact(channel, sha256, bytes) -> { uri, sha256, size, deduplicated }   (ADR-C14)
+getArtifact(channel, sha256)        -> bytes | undefined                     (ADR-C14)
 ```
 
 `claim()` is the only path that writes the ledger (`append` rejects `claim`-typed messages); a lost claim is the `already_claimed` result, not an error. Cursors are opaque and client-carried; a granted claim advances the head like any append. Errors are typed `BackboneError` subclasses with stable `.code`s; schema failures are wrapped as `InvalidMessageError`. See [BACKBONE_CONTRACT.md](BACKBONE_CONTRACT.md) for the CAS invariant and the full error taxonomy.

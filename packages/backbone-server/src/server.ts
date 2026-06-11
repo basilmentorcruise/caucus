@@ -25,11 +25,25 @@
  * `already_claimed` — as normal 200 results (the conflict is a value carrying
  * the holder, never an error envelope); the
  * {@link import("./http-client.js").HttpBackbone} client mirrors this.
+ *
+ * **Artifact routes (CAU-100, ADR-C14).** `PUT/GET
+ * /channels/:channel/artifacts/:sha256` carry RAW BYTES, not JSON, so they take
+ * a DEDICATED branch ({@link handleArtifactRoute}) BEFORE the JSON body
+ * buffering: the PUT (token-gated like `append`) buffers bytes with its own
+ * incremental {@link MAX_ARTIFACT_BYTES} cap (413 mid-stream, never the 256 KB
+ * JSON cap), and the GET (tokenless like `readSince`) serves the blob as opaque
+ * `application/octet-stream`. They never touch the JSON parser or the JSON
+ * `send` helper.
  */
-import { createServer as createHttpServer, type Server } from "node:http";
+import {
+  createServer as createHttpServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 
 import type { Backbone, Cursor } from "@caucus/backbone";
-import { InMemoryBackbone } from "@caucus/backbone";
+import { InMemoryBackbone, MAX_ARTIFACT_BYTES } from "@caucus/backbone";
 import type { MessageInput } from "@caucus/schema";
 import { sanitizeErrorFragment } from "@caucus/schema";
 
@@ -38,6 +52,12 @@ import { mapError, UnauthorizedError, type WireErrorBody } from "./wire-errors.j
 
 /** Max raw request body the server will buffer before rejecting with 413. */
 export const MAX_BODY_BYTES = 256 * 1024;
+
+// Re-export the per-blob artifact upload cap (ADR-C14) so the transport's own
+// incremental overflow-and-destroy branch and the `@caucus/backbone` authority
+// share ONE constant — the raw-bytes branch must NOT be clamped by the JSON
+// `MAX_BODY_BYTES`.
+export { MAX_ARTIFACT_BYTES };
 
 // Slowloris guard (CAU-75): the body cap alone does not bound TIME, so a client
 // trickling bytes could hold a connection open indefinitely. Every request here
@@ -158,6 +178,37 @@ function parseSegments(path: string): string[] {
     });
 }
 
+/**
+ * A recognized artifact route (ADR-C14): `/channels/:channel/artifacts/:sha256`.
+ * Returned by {@link matchArtifactRoute} so the socket-facing handler can take
+ * the RAW-BYTES branch (PUT/GET) instead of the JSON body-buffering path. The
+ * segments are already percent-decoded; the backbone validates `channel` and
+ * `sha256` (a bad sha256 is an integrity miss, a bad channel a 400/404).
+ */
+interface ArtifactRoute {
+  readonly channel: string;
+  readonly sha256: string;
+}
+
+/**
+ * Match `/channels/:channel/artifacts/:sha256` and return its decoded segments,
+ * or `undefined` for any other path. Throws {@link MalformedPathError} on bad
+ * percent-encoding (same handling as {@link parseSegments}), surfaced as a clean
+ * 400. Kept separate from {@link dispatch} because these routes carry RAW BYTES,
+ * not JSON, and must never traverse the JSON parser or the JSON `send()` helper.
+ */
+function matchArtifactRoute(path: string): ArtifactRoute | undefined {
+  const segments = parseSegments(path);
+  if (
+    segments.length === 4 &&
+    segments[0] === "channels" &&
+    segments[2] === "artifacts"
+  ) {
+    return { channel: segments[1] as string, sha256: segments[3] as string };
+  }
+  return undefined;
+}
+
 function notFound(): DispatchResult {
   const body: WireErrorBody = {
     error: { code: "not_found", message: "no such route" },
@@ -215,6 +266,146 @@ function requireIdentity(auth: AuthContext): TokenIdentity {
     throw new UnauthorizedError();
   }
   return identity;
+}
+
+/**
+ * Write a JSON body on the raw-bytes artifact path. The raw-bytes branch has its
+ * OWN serialization (the request handler's `send` is scoped inside
+ * {@link createServer}) — it is used for both the error envelopes and the small
+ * `{uri,sha256,size}` success body, never for the blob itself (which is written
+ * as `application/octet-stream`).
+ */
+function sendArtifactJson(res: ServerResponse, status: number, json: unknown): void {
+  if (res.writableEnded) return;
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(json));
+}
+
+/**
+ * Buffer a request's RAW bytes with an INCREMENTAL {@link MAX_ARTIFACT_BYTES}
+ * cap (ADR-C14), mirroring the JSON path's overflow-and-destroy pattern but with
+ * the artifact cap, NOT {@link MAX_BODY_BYTES}: a single 256 KB JSON cap must
+ * NOT clamp a ≤1 MiB upload, and an over-cap upload must be cut off MID-STREAM
+ * (`413` + socket destroyed) rather than buffered in full. Resolves with the
+ * assembled buffer, or `null` when it already responded 413 and destroyed the
+ * socket (the caller must then do nothing).
+ */
+function bufferArtifactBytes(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<Buffer | null> {
+  return new Promise<Buffer | null>((resolve) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let done = false;
+    req.on("data", (chunk: Buffer) => {
+      if (done) return;
+      size += chunk.length;
+      if (size > MAX_ARTIFACT_BYTES) {
+        // Mid-stream rejection: respond 413 and DESTROY the socket so the rest
+        // of a gigabyte body is never read into memory (no GB buffering).
+        done = true;
+        sendArtifactJson(res, 413, {
+          error: {
+            code: "artifact_too_large",
+            message: `artifact exceeds ${MAX_ARTIFACT_BYTES} bytes`,
+          },
+        });
+        req.destroy();
+        resolve(null);
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (done) return;
+      done = true;
+      resolve(Buffer.concat(chunks));
+    });
+    req.on("error", () => {
+      // A socket error mid-upload (e.g. the peer aborted): never resolve with a
+      // partial buffer. The outer handler's catch already covers a thrown path;
+      // here we simply stop — the socket is gone.
+      if (done) return;
+      done = true;
+      resolve(null);
+    });
+  });
+}
+
+/**
+ * Handle the two artifact routes (ADR-C14) on the RAW-BYTES branch — never JSON.
+ * `PUT` is token-gated like `append` (fail-closed); `GET` is tokenless within
+ * the trust boundary like `readSince`. Returns `true` when it handled the route
+ * (recognized method), `false` for an unsupported method on the artifact path
+ * (the caller then emits 405). The backbone is the single validation/integrity
+ * authority; thrown {@link import("@caucus/backbone").BackboneError}s flow
+ * through {@link mapError} to the same wire envelope as every other route.
+ */
+async function handleArtifactRoute(
+  backbone: Backbone,
+  route: ArtifactRoute,
+  req: IncomingMessage,
+  res: ServerResponse,
+  auth: AuthContext,
+): Promise<boolean> {
+  const method = req.method ?? "GET";
+  if (method === "PUT") {
+    // Fail-closed token gate (CAU-13) — resolve identity BEFORE reading the
+    // body, so an unauthorized upload never streams bytes into memory. The 401
+    // is identical for missing vs unknown token (no oracle). The upload is NOT
+    // identity-anchored content (the bytes are opaque), so we only authorize.
+    try {
+      requireIdentity(auth);
+    } catch (err) {
+      const mapped = mapError(err);
+      sendArtifactJson(res, mapped.status, mapped.body);
+      return true;
+    }
+    const bytes = await bufferArtifactBytes(req, res);
+    if (bytes === null) return true; // already responded 413 / aborted.
+    try {
+      const result = await backbone.putArtifact(
+        route.channel,
+        route.sha256,
+        bytes,
+      );
+      // Idempotent: a brand-new blob is 201, a dedup hit is 200 (ADR-C14).
+      sendArtifactJson(res, result.deduplicated ? 200 : 201, {
+        uri: result.uri,
+        sha256: result.sha256,
+        size: result.size,
+      });
+    } catch (err) {
+      const mapped = mapError(err);
+      sendArtifactJson(res, mapped.status, mapped.body);
+    }
+    return true;
+  }
+  if (method === "GET") {
+    // Tokenless read within the boundary (like readSince). Serve the raw blob as
+    // opaque application/octet-stream — never through the JSON send() helper.
+    try {
+      const bytes = await backbone.getArtifact(route.channel, route.sha256);
+      if (bytes === undefined) {
+        sendArtifactJson(res, 404, {
+          error: { code: "not_found", message: "no such artifact" },
+        });
+        return true;
+      }
+      if (res.writableEnded) return true;
+      res.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-length": String(bytes.length),
+      });
+      res.end(Buffer.from(bytes));
+    } catch (err) {
+      const mapped = mapError(err);
+      sendArtifactJson(res, mapped.status, mapped.body);
+    }
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -392,6 +583,43 @@ export function createServer(opts: ServerOptions = {}): Server {
   const server = createHttpServer(
     { connectionsCheckingInterval: CONNECTIONS_CHECK_INTERVAL_MS },
     (req, res) => {
+      // Artifact routes (ADR-C14) take a DEDICATED raw-bytes branch BEFORE the
+      // JSON body-buffering below: the upload is opaque bytes (no JSON parse, no
+      // JSON `send`) with its own incremental MAX_ARTIFACT_BYTES cap, and the GET
+      // serves binary. We branch here so the JSON `MAX_BODY_BYTES` cap and parser
+      // never touch an artifact request. A malformed-percent path throws
+      // MalformedPathError, mapped to a clean 400 (same as the JSON path).
+      let artifactRoute: ArtifactRoute | undefined;
+      try {
+        artifactRoute = matchArtifactRoute(req.url ?? "/");
+      } catch (err) {
+        const message =
+          err instanceof MalformedPathError ? err.message : "invalid request";
+        sendArtifactJson(res, 400, {
+          error: { code: "invalid_request", message },
+        });
+        return;
+      }
+      if (artifactRoute !== undefined) {
+        const route = artifactRoute;
+        void (async () => {
+          const handled = await handleArtifactRoute(backbone, route, req, res, {
+            tokens,
+            bearer: bearerFromHeader(req.headers.authorization),
+          });
+          if (!handled && !res.writableEnded) {
+            sendArtifactJson(res, 405, {
+              error: { code: "method_not_allowed", message: "method not allowed" },
+            });
+          }
+        })().catch((err: unknown) => {
+          if (res.writableEnded) return;
+          const mapped = mapError(err);
+          sendArtifactJson(res, mapped.status, mapped.body);
+        });
+        return;
+      }
+
       const chunks: Buffer[] = [];
       let size = 0;
       let aborted = false;
