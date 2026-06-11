@@ -210,9 +210,16 @@ describe("ephemeral artifact store over the wire (ADR-C14 / CAU-100)", () => {
     url = server.url;
     const fresh = new HttpBackbone(url, { token: TOK_A });
 
-    // The channel itself no longer exists ⇒ the artifact GET is a 404 (the
-    // HttpBackbone maps a 404 to undefined). The store did not survive the exit.
-    const got = await fresh.getArtifact(CHANNEL, digest).catch(() => undefined);
-    expect(got).toBeUndefined();
+    // Re-create the SAME channel on the fresh server, then fetch the same blob.
+    // This isolates the store from the channel: the channel now exists again, so
+    // an `undefined` here proves the BLOB itself did not survive the process exit
+    // (not merely that the channel was gone). No blanket catch — a thrown error
+    // would now be a real failure, not silently swallowed.
+    await fresh.createChannel({
+      channel: CHANNEL,
+      purpose: "evidence",
+      created_by: "alice",
+    });
+    expect(await fresh.getArtifact(CHANNEL, digest)).toBeUndefined();
   });
 });

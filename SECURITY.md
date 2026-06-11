@@ -280,7 +280,10 @@ defend against any of the following:
   **the same cooperative posture as the CAU-74/83 caps**: they protect a cooperating team from an
   accidental large/runaway upload, **not** against a hostile valid-token holder, who can still
   upload up to the caps or churn distinct blobs — the remedy for a hostile or compromised token is
-  revocation, not the caps. The store is also subject to the same secret-leak boundary as the log:
+  revocation, not the caps. The global cap is **first-come with no per-channel fairness or
+  eviction**: one channel may consume the whole 128 MiB budget and `413` uploads in others until its
+  blobs are freed by process exit. Acceptable under the single-trusted-team loopback model; not a
+  multi-tenant fairness guarantee. The store is also subject to the same secret-leak boundary as the log:
   an uploaded blob is the same shared, persisted surface as a message `body` (ADR-C12) — **never
   upload secrets**. The blob is opaque and never rendered (the hook shows only `↗artifact`), and the
   GET serves it as `application/octet-stream`. No read-amplification is introduced: a GET serves
