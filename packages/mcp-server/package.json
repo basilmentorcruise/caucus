@@ -17,6 +17,7 @@
   "main": "./dist/lib.js",
   "types": "./dist/lib.d.ts",
   "bin": {
+    "caucus": "./dist/cli/bin.js",
     "caucus-mcp": "./dist/index.js"
   },
   "exports": {
@@ -37,6 +38,7 @@
   "dependencies": {
     "@caucus/backbone": "workspace:*",
     "@caucus/backbone-server": "workspace:*",
+    "@caucus/hook": "workspace:*",
     "@caucus/schema": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.4.3"

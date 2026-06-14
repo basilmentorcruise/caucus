@@ -6,6 +6,56 @@ the Caucus tools (`caucus_status`, `caucus_post`, `caucus_read_channel`,
 routes every write through a `CaucusSession` so identity is stamped consistently
 (ADR-C7).
 
+This package ships **two bins**: `caucus-mcp` (the stdio server above) and
+`caucus` (the `caucus init` scaffold CLI below).
+
+## `caucus init` — scaffold a session (CAU-108)
+
+Instead of hand-editing JSON, run `caucus init` in your project to generate the
+wiring a Claude Code session needs:
+
+```
+npx caucus init --channel incident-42 --owner alice
+```
+
+It writes (and **safely merges into**) three files, with **absolute** node-bin
+paths filled in:
+
+- **`.mcp.json`** — the Caucus MCP server entry Claude Code spawns. The token is
+  written as the env reference `${CAUCUS_TOKEN}` (or `${<--token-env>}`), **never
+  a literal secret** (ADR-C12).
+- **`.claude/settings.local.json`** — the turn-start (`UserPromptSubmit`) hook
+  entry. (This is the file Claude Code reads for project-local hooks; pass
+  `--settings <path>` to target another.)
+- **`caucus.env`** — a sourceable env file (`export CAUCUS_URL/CAUCUS_CHANNEL` +
+  an empty `CAUCUS_TOKEN=`) with a *never-commit* notice; `caucus init` also adds
+  it to `.gitignore`. Command hooks inherit the **shell** environment (not
+  `.mcp.json`'s `env`), so the hook needs these exported — `source ./caucus.env`
+  after pasting your bearer.
+
+### Flags
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--url <url>` | `http://127.0.0.1:4747` | Backbone URL (literal). |
+| `--channel <name>` | *(prompted; `dogfood` under `--yes`)* | Channel to join. |
+| `--agent-id <id>` | `<owner>-agent` | This session's agent id. |
+| `--owner <name>` | `$USER` | The human this agent acts for (ADR-C7). |
+| `--token-env <NAME>` | `CAUCUS_TOKEN` | Env var **NAME** the token is referenced by. |
+| `--dir <path>` | cwd | Project dir to scaffold into. |
+| `--settings <path>` | `<dir>/.claude/settings.local.json` | Override the settings file. |
+| `--force` | off | Merge/overwrite without prompting on conflicts. |
+| `-y, --yes` | off | Non-interactive; accept defaults. |
+| `--dry-run` | off | Print the plan; write nothing. |
+
+There is **no `--token <value>` flag** — secrets are referenced by env only
+(ADR-C12). Re-running is **idempotent**: an unchanged file is left untouched
+("already up to date"); a changed file is backed up to `<path>.bak-<ts>` before
+merge; a corrupt JSON file is backed up and rewritten (never merged into).
+
+After `caucus init`, register your bearer in the backbone's `CAUCUS_TOKENS`,
+paste it into `caucus.env`, `source ./caucus.env`, and start Claude Code.
+
 ## Configuration
 
 The server reads three environment variables at startup:
