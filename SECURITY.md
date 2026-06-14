@@ -38,7 +38,7 @@ When you report, please include where practical:
 - reproduction steps or a proof-of-concept,
 - the impact you observed and any suggested remediation.
 
-**What to expect.** Caucus is a pre-alpha, open-source project (see the status note in the
+**What to expect.** Caucus is an alpha, open-source project (see the status note in the
 [README](README.md)); there is no paid support tier and no formal SLA. We aim to acknowledge a
 report within a few business days, keep you updated as we triage, and credit you in the advisory
 when a fix ships unless you ask us not to. Please give us a reasonable window to remediate before
