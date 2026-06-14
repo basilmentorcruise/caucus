@@ -1,0 +1,512 @@
+import { resolve } from "node:path";
+
+import { describe, expect, it } from "vitest";
+
+import {
+  DEFAULT_CHANNEL,
+  backupName,
+  parseArgs,
+  runInit,
+  validateChannel,
+  validateField,
+  validateTokenEnv,
+  type InitDeps,
+} from "./init.js";
+import { type Prompter } from "./prompts.js";
+
+const DIR = "/proj";
+const MCP_PATH = resolve(DIR, ".mcp.json");
+const SETTINGS_PATH = resolve(DIR, ".claude", "settings.local.json");
+const ENV_PATH = resolve(DIR, "caucus.env");
+const GITIGNORE_PATH = resolve(DIR, ".gitignore");
+
+const BINS = { mcpServer: "/abs/mcp/dist/index.js", hook: "/abs/hook/dist/bin.js" };
+const TOKEN_LOOKING = "tok-SUPERSECRET-99";
+
+/** An in-memory deps harness capturing files, logs, and backups. */
+function makeDeps(
+  overrides: Partial<InitDeps> & { files?: Record<string, string>; env?: Record<string, string | undefined> } = {},
+): InitDeps & {
+  files: Map<string, string>;
+  out: string[];
+  err: string[];
+  backups: Array<{ from: string; to: string }>;
+} {
+  const files = new Map<string, string>(Object.entries(overrides.files ?? {}));
+  const out: string[] = [];
+  const err: string[] = [];
+  const backups: Array<{ from: string; to: string }> = [];
+  const deps: InitDeps & {
+    files: Map<string, string>;
+    out: string[];
+    err: string[];
+    backups: Array<{ from: string; to: string }>;
+  } = {
+    env: overrides.env ?? { USER: "alice" },
+    cwd: DIR,
+    isTTY: overrides.isTTY ?? false,
+    log: (l) => out.push(l),
+    errlog: (l) => err.push(l),
+    readFile: async (p) => files.get(p),
+    writeFile: async (p, c) => {
+      files.set(p, c);
+    },
+    backup: async (from, to) => {
+      backups.push({ from, to });
+      const c = files.get(from);
+      if (c !== undefined) files.set(to, c);
+    },
+    now: () => 1700000000000,
+    resolveBins: overrides.resolveBins ?? (() => BINS),
+    makePrompter: overrides.makePrompter,
+    files,
+    out,
+    err,
+    backups,
+  };
+  return deps;
+}
+
+describe("parseArgs", () => {
+  it("parses flags and short aliases", () => {
+    const r = parseArgs([
+      "--url", "http://h:1", "--channel", "ch", "--agent-id", "a", "--owner", "o",
+      "--token-env", "MY_TOK", "--dir", "/d", "--settings", "/s.json",
+      "--force", "-y", "--dry-run",
+    ]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.options).toMatchObject({
+      url: "http://h:1", channel: "ch", agentId: "a", owner: "o",
+      tokenEnv: "MY_TOK", dir: "/d", settings: "/s.json",
+      force: true, yes: true, dryRun: true,
+    });
+  });
+
+  it("rejects --token (ADR-C12: there is no token-value flag)", () => {
+    const r = parseArgs(["--token", "secret"]);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toMatch(/no.*--token|not supported/i);
+    expect(r.error).toContain("ADR-C12");
+  });
+
+  it("errors on a flag missing its value", () => {
+    const r = parseArgs(["--channel"]);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain("--channel requires a value");
+  });
+
+  it("errors on an unknown argument", () => {
+    const r = parseArgs(["--nope"]);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain("unknown argument");
+  });
+
+  it("sets help for -h/--help", () => {
+    expect(parseArgs(["--help"])).toMatchObject({ ok: true, options: { help: true } });
+    expect(parseArgs(["-h"])).toMatchObject({ ok: true, options: { help: true } });
+  });
+});
+
+describe("validateChannel", () => {
+  it("trims and accepts a normal name", () => {
+    expect(validateChannel("  incident-7 ")).toBe("incident-7");
+  });
+  it("rejects empty/whitespace", () => {
+    expect(validateChannel("   ")).toEqual({ err: expect.stringContaining("empty") });
+  });
+  it("rejects control characters", () => {
+    expect(validateChannel("bad\u0007name")).toEqual({
+      err: expect.stringContaining("control characters"),
+    });
+    expect(validateChannel("null\u0000here")).toEqual({
+      err: expect.stringContaining("control characters"),
+    });
+  });
+});
+
+describe("validateTokenEnv", () => {
+  it("accepts env-var-shaped names", () => {
+    expect(validateTokenEnv("CAUCUS_TOKEN")).toBe("CAUCUS_TOKEN");
+    expect(validateTokenEnv("_x9")).toBe("_x9");
+  });
+  it("rejects values, dashes, leading digits", () => {
+    expect(validateTokenEnv("tok-abc")).toMatchObject({ err: expect.any(String) });
+    expect(validateTokenEnv("9X")).toMatchObject({ err: expect.any(String) });
+    expect(validateTokenEnv("a b")).toMatchObject({ err: expect.any(String) });
+  });
+});
+
+describe("validateField (control-char scrub for cosmetic --owner/--agent-id)", () => {
+  it("trims and accepts ordinary names", () => {
+    expect(validateField("--owner", "  alice ")).toBe("alice");
+    expect(validateField("--agent-id", "alice-agent")).toBe("alice-agent");
+  });
+  it("rejects control characters (same class as validateChannel)", () => {
+    expect(validateField("--owner", "ali\u0000ce")).toMatchObject({ err: expect.any(String) });
+    expect(validateField("--owner", "a\u001bb")).toMatchObject({ err: expect.any(String) });
+    expect(validateField("--agent-id", "a\u007fb")).toMatchObject({ err: expect.any(String) });
+  });
+});
+
+describe("backupName", () => {
+  it("appends a .bak-<ts> suffix", () => {
+    expect(backupName("/a/b.json", 123)).toBe("/a/b.json.bak-123");
+  });
+});
+
+describe("runInit — help & errors", () => {
+  it("prints usage and exits 0 on --help", async () => {
+    const deps = makeDeps();
+    expect(await runInit(["--help"], deps)).toBe(0);
+    expect(deps.out.join("\n")).toContain("caucus init");
+    expect(deps.out.join("\n")).toContain("There is no --token flag.");
+  });
+
+  it("exits 1 with guidance on a parse error", async () => {
+    const deps = makeDeps();
+    expect(await runInit(["--token", "x"], deps)).toBe(1);
+    expect(deps.err.join("\n")).toContain("ADR-C12");
+    expect(deps.err.join("\n")).toContain("--help");
+  });
+
+  it("exits 1 on an invalid channel", async () => {
+    const deps = makeDeps();
+    expect(await runInit(["--yes", "--channel", "  ", "--owner", "alice"], deps)).toBe(1);
+    expect(deps.err.join("\n")).toContain("empty");
+  });
+
+  it("exits 1 on an invalid --token-env", async () => {
+    const deps = makeDeps();
+    expect(
+      await runInit(["--yes", "--channel", "ch", "--owner", "alice", "--token-env", "bad-name"], deps),
+    ).toBe(1);
+    expect(deps.err.join("\n")).toContain("token-env");
+  });
+
+  it("exits 1 when owner cannot be resolved (no --owner, no $USER)", async () => {
+    const deps = makeDeps({ env: {} });
+    expect(await runInit(["--yes", "--channel", "ch"], deps)).toBe(1);
+    expect(deps.err.join("\n")).toContain("owner is required");
+  });
+
+  it("exits 1 with a clear message when bin resolution fails", async () => {
+    const deps = makeDeps({
+      resolveBins: () => {
+        throw new Error("hook not found");
+      },
+    });
+    expect(await runInit(["--yes", "--channel", "ch", "--owner", "alice"], deps)).toBe(1);
+    expect(deps.err.join("\n")).toContain("@caucus/hook");
+  });
+});
+
+describe("runInit — clean-dir scaffold (--yes)", () => {
+  it("writes all three files + gitignore with the ${ENV} token reference and NO secret", async () => {
+    const deps = makeDeps();
+    const code = await runInit(
+      ["--yes", "--channel", "incident-42", "--owner", "alice", "--url", "http://127.0.0.1:4747"],
+      deps,
+    );
+    expect(code).toBe(0);
+
+    const mcp = deps.files.get(MCP_PATH)!;
+    expect(mcp).toContain("${CAUCUS_TOKEN}");
+    expect(mcp).toContain("/abs/mcp/dist/index.js");
+    expect(mcp).toContain('"CAUCUS_CHANNEL": "incident-42"');
+    expect(mcp).not.toContain(TOKEN_LOOKING);
+
+    const settings = deps.files.get(SETTINGS_PATH)!;
+    expect(settings).toContain("UserPromptSubmit");
+    expect(settings).toContain("node /abs/hook/dist/bin.js");
+    expect(settings).toContain('"caucus"');
+
+    const env = deps.files.get(ENV_PATH)!;
+    expect(env).toContain("export CAUCUS_TOKEN=\n");
+    expect(env).toContain("NEVER COMMIT");
+
+    expect(deps.files.get(GITIGNORE_PATH)).toContain("caucus.env");
+
+    // Quiet, factual output; next steps present; no secret anywhere.
+    const allOut = deps.out.join("\n");
+    expect(allOut).toContain("Next steps");
+    expect(allOut).not.toContain(TOKEN_LOOKING);
+  });
+
+  it("under --yes with no --channel defaults to 'dogfood' with a printed notice", async () => {
+    const deps = makeDeps();
+    expect(await runInit(["--yes", "--owner", "alice"], deps)).toBe(0);
+    expect(deps.files.get(MCP_PATH)).toContain(`"CAUCUS_CHANNEL": "${DEFAULT_CHANNEL}"`);
+    expect(deps.err.join("\n")).toContain(`using "${DEFAULT_CHANNEL}"`);
+  });
+
+  it("honors a custom --token-env in BOTH the reference and the env file", async () => {
+    const deps = makeDeps();
+    await runInit(
+      ["--yes", "--channel", "ch", "--owner", "alice", "--token-env", "MY_BEARER"],
+      deps,
+    );
+    expect(deps.files.get(MCP_PATH)).toContain("${MY_BEARER}");
+    expect(deps.files.get(ENV_PATH)).toContain("export MY_BEARER=\n");
+  });
+
+  it("appends caucus.env + *.bak-* to an existing .gitignore lacking a trailing newline", async () => {
+    const deps = makeDeps({ files: { [GITIGNORE_PATH]: "node_modules" } });
+    await runInit(["--yes", "--channel", "ch", "--owner", "alice"], deps);
+    expect(deps.files.get(GITIGNORE_PATH)).toBe("node_modules\ncaucus.env\n*.bak-*\n");
+    expect(deps.out.join("\n")).toContain("updated  .gitignore");
+  });
+
+  it("only appends the missing scaffold pattern (idempotent per-pattern)", async () => {
+    // caucus.env already ignored but *.bak-* is not → append only *.bak-*.
+    const deps = makeDeps({ files: { [GITIGNORE_PATH]: "caucus.env\nfoo\n" } });
+    await runInit(["--yes", "--channel", "ch", "--owner", "alice"], deps);
+    expect(deps.files.get(GITIGNORE_PATH)).toBe("caucus.env\nfoo\n*.bak-*\n");
+    expect(deps.out.join("\n")).toContain("updated  .gitignore");
+  });
+
+  it("leaves .gitignore untouched when both scaffold patterns are already ignored", async () => {
+    const deps = makeDeps({ files: { [GITIGNORE_PATH]: "caucus.env\n*.bak-*\nfoo\n" } });
+    await runInit(["--yes", "--channel", "ch", "--owner", "alice"], deps);
+    expect(deps.files.get(GITIGNORE_PATH)).toBe("caucus.env\n*.bak-*\nfoo\n");
+    expect(deps.out.join("\n")).not.toContain(".gitignore");
+  });
+
+  it("honors --settings as a path override", async () => {
+    const deps = makeDeps();
+    await runInit(
+      ["--yes", "--channel", "ch", "--owner", "alice", "--settings", "/proj/custom.json"],
+      deps,
+    );
+    expect(deps.files.has(resolve("/proj/custom.json"))).toBe(true);
+    expect(deps.files.has(SETTINGS_PATH)).toBe(false);
+  });
+});
+
+describe("runInit — idempotency & merge safety", () => {
+  it("a second run is a no-op (no backups, byte-identical)", async () => {
+    const d1 = makeDeps();
+    await runInit(["--yes", "--channel", "ch", "--owner", "alice"], d1);
+    const snapshot = new Map(d1.files);
+
+    const d2 = makeDeps({ files: Object.fromEntries(snapshot) });
+    await runInit(["--yes", "--channel", "ch", "--owner", "alice"], d2);
+    expect(d2.backups).toHaveLength(0);
+    expect(d2.out.join("\n")).toContain("already up to date");
+    // Byte-identical.
+    expect(d2.files.get(MCP_PATH)).toBe(snapshot.get(MCP_PATH));
+    expect(d2.files.get(SETTINGS_PATH)).toBe(snapshot.get(SETTINGS_PATH));
+  });
+
+  it("preserves an unrelated mcpServers entry and backs up on a differing merge (--force)", async () => {
+    const deps = makeDeps({
+      files: {
+        [MCP_PATH]: JSON.stringify({ mcpServers: { other: { command: "x" } } }, null, 2) + "\n",
+      },
+    });
+    expect(
+      await runInit(["--yes", "--force", "--channel", "ch", "--owner", "alice"], deps),
+    ).toBe(0);
+    const mcp = deps.files.get(MCP_PATH)!;
+    expect(mcp).toContain('"other"');
+    expect(mcp).toContain('"caucus"');
+    expect(deps.backups.some((b) => b.from === MCP_PATH)).toBe(true);
+  });
+
+  it("preserves a permissions block in settings on merge (--force)", async () => {
+    const deps = makeDeps({
+      files: {
+        [SETTINGS_PATH]: JSON.stringify({ permissions: { allow: ["Bash(ls)"] } }, null, 2) + "\n",
+      },
+    });
+    await runInit(["--yes", "--force", "--channel", "ch", "--owner", "alice"], deps);
+    const s = deps.files.get(SETTINGS_PATH)!;
+    expect(s).toContain("Bash(ls)");
+    expect(s).toContain("UserPromptSubmit");
+  });
+
+  it("backs up + rewrites a CORRUPT json file (never merges into garbage)", async () => {
+    const deps = makeDeps({ files: { [MCP_PATH]: "{ not valid json" } });
+    await runInit(["--yes", "--force", "--channel", "ch", "--owner", "alice"], deps);
+    expect(deps.backups.some((b) => b.from === MCP_PATH)).toBe(true);
+    const mcp = deps.files.get(MCP_PATH)!;
+    expect(mcp).toContain('"caucus"');
+    expect(mcp).not.toContain("not valid json");
+  });
+
+  it("refuses to modify existing files non-interactively without --force", async () => {
+    const deps = makeDeps({ files: { [MCP_PATH]: '{"mcpServers":{"x":1}}' } });
+    expect(await runInit(["--yes", "--channel", "ch", "--owner", "alice"], deps)).toBe(1);
+    expect(deps.err.join("\n")).toContain("--force");
+    // Nothing written/backed up.
+    expect(deps.backups).toHaveLength(0);
+    expect(deps.files.get(MCP_PATH)).toBe('{"mcpServers":{"x":1}}');
+  });
+});
+
+describe("runInit — caucus.env secret safety (S1, ADR-C12)", () => {
+  // The bearer a user might already have pasted into their caucus.env.
+  const PASTED_TOKEN = "tok-alice-REALLY-SECRET-42";
+  // A pre-seeded caucus.env that DIFFERS from what the scaffold would write
+  // (different url/channel) AND carries the user's real token literal.
+  const seededEnv = [
+    "export CAUCUS_URL=http://old-host:9999",
+    "export CAUCUS_CHANNEL=old-channel",
+    `export CAUCUS_TOKEN=${PASTED_TOKEN}`,
+    "",
+  ].join("\n");
+
+  it("on a differing --force re-run leaves caucus.env EXACTLY as-is, never backed up, token never lands in any file", async () => {
+    const deps = makeDeps({ files: { [ENV_PATH]: seededEnv } });
+    // Changed url + channel, --force so the JSON files would otherwise merge.
+    const code = await runInit(
+      ["--yes", "--force", "--channel", "new-channel", "--owner", "alice", "--url", "http://new-host:4747"],
+      deps,
+    );
+    expect(code).toBe(0);
+
+    // (a) caucus.env is byte-identical to what the user pasted — untouched.
+    expect(deps.files.get(ENV_PATH)).toBe(seededEnv);
+    // It was never backed up (no .bak entry references it).
+    expect(deps.backups.some((b) => b.from === ENV_PATH)).toBe(false);
+
+    // (b) the token literal appears in NO file EXCEPT the user's own caucus.env
+    // (which legitimately holds it) — and in particular in no *.bak-* file.
+    for (const [path, content] of deps.files) {
+      if (path === ENV_PATH) continue; // the user's own file is allowed to hold it
+      expect(content, `token literal leaked into ${path}`).not.toContain(PASTED_TOKEN);
+    }
+    // Belt-and-suspenders: the scaffold created no caucus.env backup at all.
+    for (const path of deps.files.keys()) {
+      expect(path).not.toMatch(/caucus\.env\.bak-/);
+    }
+
+    // A clear "left as-is" notice is printed so the user can reconcile by hand.
+    expect(deps.out.join("\n")).toContain("left as-is");
+  });
+
+  it("ensureGitignore keeps caucus.env AND *.bak-* ignored", async () => {
+    const deps = makeDeps({ files: { [ENV_PATH]: seededEnv } });
+    await runInit(
+      ["--yes", "--force", "--channel", "new-channel", "--owner", "alice", "--url", "http://new-host:4747"],
+      deps,
+    );
+    const gitignore = deps.files.get(GITIGNORE_PATH) ?? "";
+    const lines = gitignore.split("\n").map((l) => l.trim());
+    expect(lines).toContain("caucus.env");
+    expect(lines).toContain("*.bak-*");
+  });
+
+  it("a differing caucus.env without --force still does not trigger the conflict gate (env is non-destructive)", async () => {
+    // caucus.env differs but is never written/backed up, so a non-interactive
+    // run with no JSON conflicts succeeds (exit 0), not the --force-required 1.
+    const deps = makeDeps({ files: { [ENV_PATH]: seededEnv } });
+    const code = await runInit(
+      ["--yes", "--channel", "new-channel", "--owner", "alice", "--url", "http://new-host:4747"],
+      deps,
+    );
+    expect(code).toBe(0);
+    expect(deps.files.get(ENV_PATH)).toBe(seededEnv);
+  });
+});
+
+describe("runInit — next-steps copy (designer #1)", () => {
+  it("uses an unmistakable <YOUR_SECRET> placeholder, the real identity, and names the silent-no-token failure", async () => {
+    const deps = makeDeps();
+    await runInit(["--yes", "--channel", "ch", "--owner", "alice", "--agent-id", "alice-agent"], deps);
+    const out = deps.out.join("\n");
+    // Fill-me-in placeholder, not a copy-pasteable fake secret.
+    expect(out).toContain("<YOUR_SECRET>");
+    expect(out).not.toContain("tok-alice-secret");
+    // Real resolved identity in the mapping.
+    expect(out).toContain(`CAUCUS_TOKENS="<YOUR_SECRET>:alice-agent:alice"`);
+    // The make-or-break failure mode is named.
+    expect(out).toMatch(/silently/i);
+    expect(out).toContain("posts nothing");
+  });
+});
+
+describe("runInit — --dry-run", () => {
+  it("writes nothing and prints the plan", async () => {
+    const deps = makeDeps();
+    expect(
+      await runInit(["--yes", "--dry-run", "--channel", "ch", "--owner", "alice"], deps),
+    ).toBe(0);
+    expect(deps.files.size).toBe(0);
+    expect(deps.backups).toHaveLength(0);
+    const o = deps.out.join("\n");
+    expect(o).toContain("dry run");
+    expect(o).toContain("/abs/mcp/dist/index.js");
+    expect(o).toContain("/abs/hook/dist/bin.js");
+    expect(o).toContain('channel "ch"');
+  });
+
+  it("dry-run over an existing file shows merge but never backs up or writes", async () => {
+    const deps = makeDeps({ files: { [MCP_PATH]: '{"mcpServers":{"x":1}}' } });
+    await runInit(["--dry-run", "--channel", "ch", "--owner", "alice"], deps);
+    expect(deps.backups).toHaveLength(0);
+    expect(deps.files.get(MCP_PATH)).toBe('{"mcpServers":{"x":1}}');
+  });
+});
+
+describe("runInit — interactive prompting", () => {
+  /** A scripted prompter returning queued answers/confirms. */
+  function scriptedPrompter(answers: string[], confirms: boolean[]): { prompter: Prompter; closed: () => boolean } {
+    let ai = 0;
+    let ci = 0;
+    let closedFlag = false;
+    return {
+      prompter: {
+        ask: async (_q, fallback) => {
+          const a = answers[ai++];
+          return a !== undefined && a !== "" ? a : (fallback ?? "");
+        },
+        confirm: async () => confirms[ci++] ?? false,
+        close: () => {
+          closedFlag = true;
+        },
+      },
+      closed: () => closedFlag,
+    };
+  }
+
+  it("fills missing values from prompts and closes the prompter", async () => {
+    const { prompter, closed } = scriptedPrompter(
+      ["http://h:9", "promptch", "bob", "bob-agent"],
+      [],
+    );
+    const deps = makeDeps({ isTTY: true, makePrompter: () => prompter });
+    expect(await runInit([], deps)).toBe(0);
+    const mcp = deps.files.get(MCP_PATH)!;
+    expect(mcp).toContain('"CAUCUS_URL": "http://h:9"');
+    expect(mcp).toContain('"CAUCUS_CHANNEL": "promptch"');
+    expect(closed()).toBe(true);
+  });
+
+  it("a declined conflict aborts with nothing written", async () => {
+    const { prompter } = scriptedPrompter(["ch", "alice", "alice-agent"], [false]);
+    const deps = makeDeps({
+      isTTY: true,
+      makePrompter: () => prompter,
+      files: { [MCP_PATH]: '{"mcpServers":{"x":1}}' },
+    });
+    expect(await runInit([], deps)).toBe(1);
+    expect(deps.err.join("\n")).toContain("Aborted");
+    expect(deps.files.get(MCP_PATH)).toBe('{"mcpServers":{"x":1}}');
+  });
+
+  it("an accepted conflict proceeds with a backup", async () => {
+    const { prompter } = scriptedPrompter(["ch", "alice", "alice-agent"], [true]);
+    const deps = makeDeps({
+      isTTY: true,
+      makePrompter: () => prompter,
+      files: { [MCP_PATH]: JSON.stringify({ mcpServers: { x: 1 } }, null, 2) + "\n" },
+    });
+    expect(await runInit([], deps)).toBe(0);
+    expect(deps.backups.some((b) => b.from === MCP_PATH)).toBe(true);
+    expect(deps.files.get(MCP_PATH)).toContain('"caucus"');
+  });
+});

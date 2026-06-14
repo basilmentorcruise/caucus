@@ -34,6 +34,7 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "
 /** Bins the spawned-subprocess scenarios need; asserted to exist post-build. */
 const REQUIRED_BINS = [
   "packages/mcp-server/dist/index.js",
+  "packages/mcp-server/dist/cli/bin.js",
   "packages/hook/dist/bin.js",
   "packages/backbone-server/dist/bin.js",
 ];
