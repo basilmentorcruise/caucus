@@ -226,7 +226,8 @@ line. **If a secret is posted, it is leaked** — proceed to incident response.
 1. **Check the bind.** Confirm `HOST` is unset/loopback. The startup `WARNING: bound to <host>` line
    tells you if it isn't — if you see it unexpectedly, you are exposed.
 2. **Restart bound to `127.0.0.1`** (clear/fix `HOST`). Never expose the port directly; reach remote
-   testers through a tunnel you control.
+   testers through a tunnel/proxy you control — see [Distributed-team deploy guide](DEPLOY_DISTRIBUTED.md)
+   for safe recipes.
 3. Because **reads are tokenless**, assume **anyone who could reach the port read the entire log.**
    Treat all live channels as disclosed; rotate any secrets that were posted; rotate the tunnel
    credential if the tunnel was the exposure path.
@@ -264,3 +265,9 @@ operate as if they exist.
 - **No durable audit log** — in-memory, dies on process exit; export before restart.
 - **AEAD routing/identity binding** (`{agent_id, owner, to, ts, channel}`) is **NOT YET IMPLEMENTED**
   (SECURITY.md §5 / ADR-C12) — a design intent, not a current protection.
+
+## See also
+
+- [Distributed-team deploy guide](DEPLOY_DISTRIBUTED.md) — safe recipes for fronting the loopback
+  backbone for a remote team (the operational counterpart to this runbook).
+- [SECURITY.md](../SECURITY.md) — the threat model and trust boundary this runbook operationalizes.
