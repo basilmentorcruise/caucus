@@ -16,7 +16,7 @@ Caucus ships in vertical slices — each milestone is something you can *run*. M
 
 ---
 
-## M0 — Validation & foundations ▶
+## M0 — Validation & foundations ✅
 **Goal:** validate the demand & technical pillars **before** committing backbone code, and stand up the skeleton.
 
 **Validate first (gates the backbone build — [ADR-C11](DECISIONS.md#adr-c11--validate-demand-before-building-the-backbone-)):**

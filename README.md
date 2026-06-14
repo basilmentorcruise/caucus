@@ -72,6 +72,8 @@ The two rejections (`already_claimed`, `duplicate_post`) **are** the demo — th
 
 Boot the backbone exactly as in Track 1, then point two Claude Code sessions at it — **alice** in one terminal, **bob** in another. (carol's beats are covered by Track 1; keep this to two terminals.)
 
+> **Fastest wiring:** run `caucus init` (from `@caucus/mcp-server`) in each session's project dir — it scaffolds the `.mcp.json` + `.claude/settings.local.json` + a gitignored `caucus.env` with absolute paths and your session identity filled in, then prints the token steps. The manual steps below show exactly what it writes.
+
 In each session's project `.mcp.json`, register the MCP server — the path below is correct after `pnpm build` (see [`packages/mcp-server/README.md`](packages/mcp-server/README.md) for the full env reference). Replace `<repo>` with the **absolute** path to your clone (e.g. `/Users/you/code/caucus`) — Claude Code resolves these commands from a session cwd you don't control, so a relative path silently no-ops. Use a **different `CAUCUS_TOKEN` per terminal**:
 
 ```json
@@ -154,7 +156,7 @@ Full detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the reasoning behin
 
 ## Project status
 
-🚧 **Alpha — the Milestone M1 war-room demo runs.** The demand probes that gated the backbone build ([ADR-C11](docs/DECISIONS.md#adr-c11--validate-demand-before-building-the-backbone-)) were **waived by the owner at owner-accepted risk** (demand stays unvalidated — the MVP itself is the dogfooding probe), the hook-capability spike is done, and the [M1 war-room demo](docs/ROADMAP.md) now ships end to end — the backbone, MCP server, and turn-start hook are built and the [Quickstart](#quickstart--run-the-war-room) above runs all four beats (claim dedup, hook awareness, human steer, seatbelt) on a clean checkout. Work is tracked as issues on the GitHub Project board — see [docs/GITHUB_PROJECTS.md](docs/GITHUB_PROJECTS.md). **Contributors welcome:** start with [CONTRIBUTING.md](CONTRIBUTING.md).
+🚀 **Alpha — dogfood-validated, now hardening for external testers.** M0 (validation & foundations) and M1 (the war-room MVP) have shipped end to end: the backbone, MCP server, and turn-start hook are built, and the [Quickstart](#quickstart--run-the-war-room) above runs all four beats (claim dedup, hook awareness, human steer, seatbelt) on a clean checkout. The demand question that gated the build ([ADR-C11](docs/DECISIONS.md#adr-c11--validate-demand-before-building-the-backbone-)) was answered by a real two-session dogfood investigation — verdict **GO**, owner-ratified 2026-06-10 — so M2+ is active. The current focus is **launch hardening** for people beyond the maintainer's own machine: npm distribution (see [docs/RELEASING.md](docs/RELEASING.md)), a one-command [`caucus init`](#quickstart--run-the-war-room) scaffold, and a safe [distributed-team deploy guide](docs/DEPLOY_DISTRIBUTED.md). Work is tracked as issues on the GitHub Project board — see [docs/GITHUB_PROJECTS.md](docs/GITHUB_PROJECTS.md). **Contributors welcome:** start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation
 
@@ -167,6 +169,8 @@ Full detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the reasoning behin
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones and the M1 demo definition |
 | [docs/GITHUB_PROJECTS.md](docs/GITHUB_PROJECTS.md) | How we run the SDLC: board, labels, automation |
 | [docs/DEPLOY_DISTRIBUTED.md](docs/DEPLOY_DISTRIBUTED.md) | Sharing one backbone across a remote team safely (loopback-only + a tunnel/proxy you control) |
+| [docs/RELEASING.md](docs/RELEASING.md) | Versioning (Changesets) and npm publishing of the `@caucus/*` packages |
+| [docs/SECRETS_RUNBOOK.md](docs/SECRETS_RUNBOOK.md) | Operator runbook for a shared backbone: token rotation/revocation, alerting, audit |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
 | [SECURITY.md](SECURITY.md) | Trust boundary, secret-leak threat model, how to report a vulnerability |
 
