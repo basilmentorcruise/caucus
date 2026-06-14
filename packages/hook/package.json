@@ -1,9 +1,18 @@
 {
   "name": "@caucus/hook",
-  "version": "0.0.0",
-  "private": true,
-  "description": "Claude Code turn-start awareness hook.",
+  "version": "0.1.0",
+  "description": "Caucus Claude Code turn-start awareness hook.",
   "license": "MIT",
+  "author": "Caucus contributors",
+  "homepage": "https://github.com/basilmentorcruise/caucus#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/basilmentorcruise/caucus.git",
+    "directory": "packages/hook"
+  },
+  "bugs": {
+    "url": "https://github.com/basilmentorcruise/caucus/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -17,6 +26,9 @@
     "caucus-hook": "./dist/bin.js"
   },
   "files": ["dist"],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc --build"
   },

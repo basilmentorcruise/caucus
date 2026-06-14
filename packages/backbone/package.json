@@ -1,9 +1,18 @@
 {
   "name": "@caucus/backbone",
-  "version": "0.0.0",
-  "private": true,
-  "description": "Channel service: append-only log, claim ledger, cursors.",
+  "version": "0.1.0",
+  "description": "Caucus channel service: append-only log, first-write-wins claim ledger, cursors, seatbelts.",
   "license": "MIT",
+  "author": "Caucus contributors",
+  "homepage": "https://github.com/basilmentorcruise/caucus#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/basilmentorcruise/caucus.git",
+    "directory": "packages/backbone"
+  },
+  "bugs": {
+    "url": "https://github.com/basilmentorcruise/caucus/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -14,6 +23,9 @@
     }
   },
   "files": ["dist"],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc --build"
   },
