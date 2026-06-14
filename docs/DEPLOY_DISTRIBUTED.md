@@ -158,7 +158,8 @@ caucus.example.com {
     # Restrict WHO can reach the (tokenless-read) backbone at the proxy edge.
     # Reads carry no Caucus token, so this proxy-level auth is your read gate.
     # Generate the hash with: caddy hash-password
-    basicauth {
+    # (directive is `basic_auth` in Caddy v2.5+; older builds used `basicauth`)
+    basic_auth {
         team-shared JDJhJDE0... # bcrypt hash, NOT a plaintext password
     }
 
@@ -192,7 +193,7 @@ server {
 Participants then use `CAUCUS_URL: "https://caucus.example.com"` in their `.mcp.json` (same shape
 as Recipe A), supplying the proxy credential their client requires.
 
-> The proxy-level `basicauth` is a coarse, shared gate over the **tokenless reads** — it stops
+> The proxy-level `basic_auth` is a coarse, shared gate over the **tokenless reads** — it stops
 > arbitrary internet clients from reading the log. It is **not** a per-participant identity layer;
 > identity still comes from the per-participant write token the backbone anchors (§3). For
 > per-person reachability control, prefer Recipe A's overlay membership.
@@ -292,8 +293,10 @@ HOST=0.0.0.0 CAUCUS_TOKENS="..." pnpm backbone:dev
 Setting a non-loopback `HOST` is the **single knob that widens exposure**. Because **reads are
 tokenless**, binding `0.0.0.0` (or any public interface) makes the **entire log readable by anyone
 who can reach the port** — no token required, no encryption, no auth. The backbone speaks plain
-HTTP, so traffic is also unencrypted on the wire. The startup logs will warn you (`binding
-non-loopback host … — reads are unauthenticated; do not expose off-host`) — heed it.
+HTTP, so traffic is also unencrypted on the wire. The startup logs will warn you — heed it. Two
+warnings fire on a non-loopback bind: the config-time `binding non-loopback host … — reads are
+unauthenticated; do not expose off-host`, and the runtime `WARNING: bound to <host> — reads are open
+to anyone who can reach this port (see SECURITY.md)`.
 
 The correct shape is always: **keep the backbone on `127.0.0.1`, and reach it through a tunnel or
 proxy you control** (§2). The loopback bind is the read boundary; the controlled path is what adds
