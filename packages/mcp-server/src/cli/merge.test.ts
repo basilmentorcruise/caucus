@@ -163,12 +163,16 @@ describe("planJsonFile", () => {
 });
 
 describe("planEnvFile", () => {
-  it("create / noop / merge by content equality", () => {
+  it("absent → create; identical → noop", () => {
     expect(planEnvFile(undefined, "X").action).toBe("create");
     expect(planEnvFile("X", "X").action).toBe("noop");
+  });
+
+  it("differs → skip (never backed up, never rewritten — it holds the user's secret, ADR-C12)", () => {
     const m = planEnvFile("OLD", "NEW");
-    expect(m.action).toBe("merge");
-    expect(m.backup).toBe(true);
-    expect(m.content).toBe("NEW");
+    expect(m.action).toBe("skip");
+    expect(m.backup).toBe(false);
+    // No content to write: the existing file is left exactly as-is.
+    expect(m.content).toBeUndefined();
   });
 });

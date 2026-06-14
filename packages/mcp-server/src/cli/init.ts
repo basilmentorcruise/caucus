@@ -87,9 +87,9 @@ Generates (and safely merges into) the files a tester needs:
 
 OPTIONS
   --url <url>          Backbone URL                     (default ${DEFAULT_URL})
-  --channel <name>     Channel to join                  (required; prompted)
+  --channel <name>     Channel to join                  (prompted; "${DEFAULT_CHANNEL}" with --yes)
   --agent-id <id>      This session's agent id          (default: derived from --owner)
-  --owner <name>       The human this agent acts for     (default: $USER)
+  --owner <name>       The human this agent acts for     (default: $USER; required)
   --token-env <NAME>   Env var NAME holding the bearer  (default ${DEFAULT_TOKEN_ENV})
   --dir <path>         Project dir to scaffold into     (default: cwd)
   --settings <path>    Override the settings file path  (default: <dir>/.claude/settings.local.json)
@@ -197,6 +197,24 @@ export function validateChannel(channel: string): string | { err: string } {
   return trimmed;
 }
 
+/**
+ * Reject control characters in a cosmetic field (`--owner` / `--agent-id`).
+ * These fields are display-only — they seed the next-steps `CAUCUS_TOKENS`
+ * example and the generated agent id, but they DO NOT establish identity, which
+ * is server-anchored from the bearer (ADR-C7). We still scrub control chars for
+ * consistency with the CAU-71/81 sanitize discipline (and so the printed
+ * next-steps line can't be corrupted by an escape sequence). Returns the trimmed
+ * value or `{ err }`. Uses the same `\x00-\x1f\x7f` class as `validateChannel`.
+ */
+export function validateField(label: string, value: string): string | { err: string } {
+  const trimmed = value.trim();
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) {
+    return { err: `${label} must not contain control characters` };
+  }
+  return trimmed;
+}
+
 /** A token-env NAME must look like an env var (letters/digits/underscore, not leading digit). */
 export function validateTokenEnv(name: string): string | { err: string } {
   const trimmed = name.trim();
@@ -225,12 +243,17 @@ export function backupName(path: string, ts: number): string {
 /** Print the human-readable next steps after a successful (non-dry-run) scaffold. */
 function printNextSteps(deps: InitDeps, v: ResolvedValues, bins: ResolvedBins): void {
   deps.log("");
-  deps.log("Next steps:");
-  deps.log(`  1. Register your bearer in the backbone's CAUCUS_TOKENS, e.g.`);
-  deps.log(`       CAUCUS_TOKENS="tok-${v.owner}-secret:${v.agentId}:${v.owner}"`);
-  deps.log(`  2. Paste that secret into caucus.env (the empty ${v.tokenEnv}=) — never commit it.`);
-  deps.log(`  3. source ./caucus.env`);
-  deps.log(`  4. Start Claude Code; it spawns the MCP server and fires the turn-start hook.`);
+  deps.log("Next steps (the scaffold can't do these for you):");
+  deps.log("");
+  deps.log("  1. Choose a bearer secret for this session — any opaque string only you know");
+  deps.log("     (call it <YOUR_SECRET>). Prefer a random value, not a guessable one.");
+  deps.log("  2. Register it in the backbone's CAUCUS_TOKENS, mapped to this identity:");
+  deps.log(`       CAUCUS_TOKENS="<YOUR_SECRET>:${v.agentId}:${v.owner}"`);
+  deps.log(`  3. Paste the SAME <YOUR_SECRET> into caucus.env (the empty ${v.tokenEnv}= line).`);
+  deps.log("     caucus.env is gitignored — never commit it.");
+  deps.log("  4. source ./caucus.env");
+  deps.log("  5. Start Claude Code. Without steps 1–4 the session has no token and silently");
+  deps.log("     posts nothing — this is the #1 first-run mistake.");
   void bins;
 }
 
@@ -278,7 +301,7 @@ export async function runInit(
       } else {
         channelRaw = DEFAULT_CHANNEL;
         deps.errlog(
-          `notice: no --channel given; defaulting to "${DEFAULT_CHANNEL}" (non-interactive).`,
+          `note: no --channel given; using "${DEFAULT_CHANNEL}" (override with --channel <name>).`,
         );
       }
     } else {
@@ -290,18 +313,30 @@ export async function runInit(
       return 1;
     }
 
-    const owner =
+    const ownerRaw =
       opts.owner?.trim() ||
       (prompter ? await prompter.ask("Owner (the human you act for)", defaultOwner) : defaultOwner);
-    if (owner === "") {
+    if (ownerRaw === "") {
       deps.errlog(
         `error: owner is required (set --owner or $USER).`,
       );
       return 1;
     }
-    const agentId =
+    // owner/agent-id are cosmetic/next-steps-only — identity is server-anchored
+    // (ADR-C7) — but we still reject control chars for sanitize consistency.
+    const owner = validateField("--owner", ownerRaw);
+    if (typeof owner !== "string") {
+      deps.errlog(`error: ${owner.err}`);
+      return 1;
+    }
+    const agentIdRaw =
       opts.agentId?.trim() ||
       (prompter ? await prompter.ask("Agent id", `${owner}-agent`) : `${owner}-agent`);
+    const agentId = validateField("--agent-id", agentIdRaw);
+    if (typeof agentId !== "string") {
+      deps.errlog(`error: ${agentId.err}`);
+      return 1;
+    }
 
     const tokenEnvRaw = opts.tokenEnv?.trim() || DEFAULT_TOKEN_ENV;
     const tokenEnv = validateTokenEnv(tokenEnvRaw);
@@ -310,7 +345,9 @@ export async function runInit(
       return 1;
     }
 
-    const dir = resolve(opts.dir?.trim() || deps.cwd);
+    // Resolve a relative --dir against the injected cwd (like --settings), so the
+    // two stay consistent and the flow is fully testable.
+    const dir = resolve(deps.cwd, opts.dir?.trim() || ".");
     const settingsPath = opts.settings
       ? resolve(deps.cwd, opts.settings)
       : resolve(dir, ".claude", "settings.local.json");
@@ -398,6 +435,15 @@ export async function runInit(
         deps.log(`unchanged  ${it.label} (already up to date)`);
         continue;
       }
+      if (it.plan.action === "skip") {
+        // Only caucus.env reaches `skip`: it differs but holds the user's pasted
+        // secret, so we never touch it (and never back it up — that .bak would be
+        // committable, ADR-C12). Print a notice so the user can reconcile by hand.
+        deps.log(
+          `left as-is ${it.label} (already exists and differs; update CAUCUS_URL/CAUCUS_CHANNEL by hand if needed)`,
+        );
+        continue;
+      }
       if (it.plan.backup) {
         const bak = backupName(it.path, ts);
         await deps.backup(it.path, bak);
@@ -428,20 +474,32 @@ function describePlan(action: FilePlan["action"]): string {
       return "rewrote";
     case "noop":
       return "unchanged";
+    case "skip":
+      return "left as-is";
   }
 }
 
-/** Append `caucus.env` to `.gitignore` if not already ignored (idempotent). */
+/**
+ * Patterns the scaffold ensures `.gitignore` carries (idempotent). `caucus.env`
+ * holds the user's pasted bearer; `*.bak-<ts>` is the suffix this scaffold uses
+ * when it backs a file up on a conflicting merge. Even though `caucus.env`
+ * itself is never backed up (ADR-C12 — see `planEnvFile`), we ignore `*.bak-*`
+ * belt-and-suspenders so no scaffold backup can ever be committed.
+ */
+const GITIGNORE_PATTERNS: readonly string[] = ["caucus.env", "*.bak-*"];
+
+/** Append any missing scaffold ignore patterns to `.gitignore` (idempotent). */
 async function ensureGitignore(deps: InitDeps, gitignorePath: string): Promise<void> {
   const current = await deps.readFile(gitignorePath);
-  const lines = current === undefined ? [] : current.split("\n");
-  const already = lines.some((l) => l.trim() === "caucus.env" || l.trim() === "/caucus.env");
-  if (already) return;
-  const next =
-    current === undefined
-      ? "caucus.env\n"
-      : (current.endsWith("\n") ? current : current + "\n") +
-        "caucus.env\n";
-  await deps.writeFile(gitignorePath, next);
-  deps.log(`${current === undefined ? "created" : "updated"}  .gitignore (ignores caucus.env)`);
+  const lines = (current === undefined ? [] : current.split("\n")).map((l) => l.trim());
+  const isIgnored = (pat: string): boolean =>
+    lines.some((l) => l === pat || l === `/${pat}`);
+  const missing = GITIGNORE_PATTERNS.filter((pat) => !isIgnored(pat));
+  if (missing.length === 0) return;
+  const prefix =
+    current === undefined ? "" : current.endsWith("\n") ? current : current + "\n";
+  await deps.writeFile(gitignorePath, prefix + missing.map((p) => `${p}\n`).join(""));
+  deps.log(
+    `${current === undefined ? "created" : "updated"}  .gitignore (ignores ${missing.join(", ")})`,
+  );
 }

@@ -50,11 +50,22 @@ paths filled in:
 
 There is **no `--token <value>` flag** — secrets are referenced by env only
 (ADR-C12). Re-running is **idempotent**: an unchanged file is left untouched
-("already up to date"); a changed file is backed up to `<path>.bak-<ts>` before
-merge; a corrupt JSON file is backed up and rewritten (never merged into).
+("already up to date"); a changed **JSON config** file (`.mcp.json` /
+`settings.local.json`) is backed up to `<path>.bak-<ts>` before merge; a corrupt
+JSON file is backed up and rewritten (never merged into). The scaffold also
+ignores `*.bak-*` so no backup can be committed. **`caucus.env` is special:**
+because it holds your pasted bearer, a differing existing `caucus.env` is **left
+exactly as-is and never backed up** (a `.bak` of it could smuggle the secret into
+a committable file, ADR-C12) — reconcile `CAUCUS_URL`/`CAUCUS_CHANNEL` by hand if
+they drift.
 
-After `caucus init`, register your bearer in the backbone's `CAUCUS_TOKENS`,
-paste it into `caucus.env`, `source ./caucus.env`, and start Claude Code.
+After `caucus init`, finish the wiring the scaffold can't do for you: **choose a
+bearer secret** (any opaque string only you know — prefer a random value),
+register it in the backbone's `CAUCUS_TOKENS` as `<secret>:<agent-id>:<owner>`,
+paste the **same** secret into `caucus.env` (the empty `CAUCUS_TOKEN=` line),
+`source ./caucus.env`, and start Claude Code. **A session with no token posts
+nothing — silently — so don't skip the token.** `caucus.env` is gitignored;
+never commit it (ADR-C12).
 
 ## Configuration
 

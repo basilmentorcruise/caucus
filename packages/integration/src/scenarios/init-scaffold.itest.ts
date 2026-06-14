@@ -233,6 +233,51 @@ describe("caucus init scaffold launches the server + fires the hook end-to-end (
     expect(entries.some((e) => e.includes(".bak-"))).toBe(false);
   });
 
+  it("never writes a pasted caucus.env token into any file (incl. *.bak-*) on a differing --force re-run (S1, ADR-C12)", async () => {
+    const dir3 = await mkdtemp(join(tmpdir(), "caucus-init-env-"));
+    try {
+      const PASTED = "tok-alice-PASTED-SECRET-S1";
+      const seeded = [
+        "export CAUCUS_URL=http://old-host:9999",
+        "export CAUCUS_CHANNEL=old-channel",
+        `export CAUCUS_TOKEN=${PASTED}`,
+        "",
+      ].join("\n");
+      await writeFile(join(dir3, "caucus.env"), seeded, "utf8");
+
+      // Re-run with a CHANGED url + channel and --force, exactly the scenario
+      // where the old code would have copied caucus.env to a committable .bak.
+      runInit(dir3, ["--url", "http://127.0.0.1:4747", "--force"]);
+
+      // caucus.env is byte-identical to what the user pasted (left untouched).
+      expect(await readFile(join(dir3, "caucus.env"), "utf8")).toBe(seeded);
+
+      // The token literal lands in NO file in the dir EXCEPT the user's own
+      // caucus.env — and in particular in no *.bak-* file.
+      const entries = await readdir(dir3);
+      for (const name of entries) {
+        // No scaffold backup of caucus.env may exist at all.
+        expect(name).not.toMatch(/caucus\.env\.bak-/);
+        if (name === "caucus.env") continue; // the user's own file holds it
+        const content = await readFile(join(dir3, name), "utf8").catch(() => "");
+        expect(content, `token leaked into ${name}`).not.toContain(PASTED);
+      }
+      // The nested settings file (in .claude/) is also clean.
+      const settingsNested = join(dir3, ".claude", "settings.local.json");
+      if (existsSync(settingsNested)) {
+        expect(await readFile(settingsNested, "utf8")).not.toContain(PASTED);
+      }
+
+      // .gitignore keeps caucus.env AND *.bak-* ignored.
+      const gitignore = await readFile(join(dir3, ".gitignore"), "utf8");
+      const lines = gitignore.split("\n").map((l) => l.trim());
+      expect(lines).toContain("caucus.env");
+      expect(lines).toContain("*.bak-*");
+    } finally {
+      await rm(dir3, { recursive: true, force: true });
+    }
+  });
+
   it("merges into an existing settings file, preserving an unrelated permissions block", async () => {
     const dir2 = await mkdtemp(join(tmpdir(), "caucus-init-merge-"));
     try {

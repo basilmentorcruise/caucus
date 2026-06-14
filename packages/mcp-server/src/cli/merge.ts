@@ -107,7 +107,9 @@ export type PlanAction =
   | "create" // file absent → write fresh
   | "noop" // file present and already byte-identical → leave it
   | "merge" // file present, valid JSON → merged in our keys (differs)
-  | "recreate"; // file present but corrupt JSON → backed up + written fresh
+  | "recreate" // file present but corrupt JSON → backed up + written fresh
+  | "skip"; // file present and differs, but it is the user's secret-bearing
+//           env file → leave it untouched, never back it up (ADR-C12)
 
 /** The decided plan for ONE artifact: what to write and why. */
 export interface FilePlan {
@@ -157,9 +159,16 @@ export function planJsonFile(
 
 /**
  * Decide the plan for the sourceable `caucus.env`, which is line-oriented, not
- * JSON. We never edit a user's existing env file (it may hold their pasted
- * secret): absent → `create`; identical → `noop`; differs → `merge` (back up +
- * write) so `--force` is required to change it.
+ * JSON. This is the ONE file the user owns and pastes their bearer secret into,
+ * so we must never copy it anywhere a backup could be committed (ADR-C12): a
+ * `.bak-<ts>` of a populated `caucus.env` would smuggle the secret into a
+ * git-trackable file. Therefore:
+ *   absent     → `create` (write the empty-token template);
+ *   identical  → `noop`   (already up to date);
+ *   differs    → `skip`   (leave it EXACTLY as-is — never backed up, never
+ *                          rewritten; the caller prints a notice so the user
+ *                          can reconcile CAUCUS_URL/CAUCUS_CHANNEL by hand).
+ * Note there is deliberately no `--force` path that overwrites it.
  */
 export function planEnvFile(
   current: string | undefined,
@@ -167,5 +176,5 @@ export function planEnvFile(
 ): FilePlan {
   if (current === undefined) return { action: "create", content, backup: false };
   if (current === content) return { action: "noop", backup: false };
-  return { action: "merge", content, backup: true };
+  return { action: "skip", backup: false };
 }
