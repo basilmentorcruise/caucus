@@ -1,28 +1,56 @@
 # Releasing & versioning
 
 Caucus uses [Changesets](https://github.com/changesets/changesets) to track changes,
-compute version bumps, and generate changelogs across the monorepo.
+compute version bumps, and generate changelogs across the monorepo, and to **publish** the
+public packages to npm.
 
-> **Status:** packages are **not published** anywhere yet (every `@caucus/*` package is
-> `"private": true`). This document describes how we **version** the workspace today and
-> how publishing **will** work once the project decides to publish. **No npm tokens,
-> publish workflow, tags, or GitHub releases are wired up** — see
-> [Out of scope / follow-ups](#out-of-scope--follow-ups).
+> **Status:** the public `@caucus/*` packages are **published to npm** under the `@caucus`
+> scope (`publishConfig.access: "public"`). The "do not publish yet" posture was reversed
+> for the frictionless-alpha launch (owner-ratified 2026-06-14). The only remaining manual
+> step is a one-time owner action — provisioning the npm org and the `NPM_TOKEN` repo
+> secret — see [Owner action required before first publish](#owner-action-required-before-first-publish).
+
+## Published vs. private packages
+
+Five packages are **public** (publishable to npm):
+
+- `@caucus/schema`
+- `@caucus/backbone`
+- `@caucus/backbone-server`
+- `@caucus/mcp-server`
+- `@caucus/hook`
+
+Two packages stay **private** (never published — `"private": true`):
+
+- `@caucus/integration` — the test-only cross-package integration harness; not a shipped
+  artifact. It matches the `@caucus/*` glob in the `fixed` group (so it version-bumps in
+  lockstep), but `changeset publish` / `pnpm publish -r` skip any `private` package, so npm
+  never receives it.
+- `caucus` (the repo root) — the workspace container; not scoped under `@caucus/*` and not
+  part of the lockstep group.
 
 ## Versioning model: fixed (lockstep)
 
-All four library packages are versioned **together** as one unit:
+All packages matching `@caucus/*` are versioned **together** as one unit:
 
 ```json
 "fixed": [["@caucus/*"]]
 ```
 
 **Why fixed and not independent:** `@caucus/schema`, `@caucus/backbone`,
-`@caucus/mcp-server`, and `@caucus/hook` are one cohesive system that co-evolves around a
-single shared, versioned message schema. Pre-1.0, lockstep versioning keeps version
-reasoning trivial — there is exactly **one** Caucus version number, and any change ships
-the whole set in step. We can revisit independent versioning if/when the packages develop
-genuinely independent release cadences.
+`@caucus/backbone-server`, `@caucus/mcp-server`, and `@caucus/hook` are one cohesive system
+that co-evolves around a single shared, versioned message schema. Pre-1.0, lockstep
+versioning keeps version reasoning trivial — there is exactly **one** Caucus version number,
+and any change ships the whole set in step. We can revisit independent versioning if/when the
+packages develop genuinely independent release cadences. The first public release is
+`0.1.0`.
+
+**`0.1.0` is the initial public release** and consolidates all prior unreleased,
+never-published pre-1.0 work into one fresh baseline — so the changelog correctly starts
+at `0.1.0` rather than replaying internal pre-release notes. The five packages carry
+`version: 0.1.0` in `package.json` with **no** pending changeset, so the automated flow
+publishes `0.1.0` directly (no `Version Packages` PR is needed for this first cut); the
+next user-facing change adds a changeset and bumps from `0.1.0` as normal.
 
 The `examples/*` workspace is a demo/quickstart, not a publishable library, and currently
 contributes no npm package (no `package.json`), so it is not versioned or published.
@@ -30,8 +58,8 @@ contributes no npm package (no `package.json`), so it is not versioned or publis
 Config lives in [`.changeset/config.json`](../.changeset/config.json):
 
 - `"baseBranch": "main"` — changesets diffs against `main`.
-- `"access": "restricted"` — private-safe default; nothing is published publicly even if a
-  publish step is later added by mistake.
+- `"access": "public"` — the `@caucus/*` packages publish publicly. (Private packages are
+  still never published regardless of this setting.)
 - `"changelog": "@changesets/cli/changelog"` — generates per-package `CHANGELOG.md`.
 
 ## The release flow
@@ -71,22 +99,32 @@ updates each `CHANGELOG.md`. Commit the result on a branch and open a **version 
 (conventionally titled `Version Packages`). Review the version bumps and changelogs, then
 merge.
 
-> When a publish CI workflow is eventually added, this version PR is normally opened and
-> kept up to date **automatically** by the changesets GitHub Action (see follow-ups).
+> This version PR is normally opened and kept up to date **automatically** by the
+> [`changesets/action`](https://github.com/changesets/action) in
+> [`.github/workflows/release.yml`](../.github/workflows/release.yml) on every push to
+> `main`.
 
-### 3. Tag + GitHub release (future)
+### 3. Publish to npm (automated)
 
-Once the version PR merges to `main`, a release is cut by tagging the version commit and
-publishing a GitHub release with the changelog. **This is not automated or performed in
-the current setup** — there are no tags or releases yet, by design.
+The release is automated by `.github/workflows/release.yml`. On every push to `main` it:
 
-### 4. npm publish — OUT OF SCOPE
+1. Runs the **full CI gate** first — `pnpm lint`, `pnpm typecheck`, `pnpm test` (with the
+   enforced coverage gate), `pnpm build`, and `pnpm test:integration` — exactly mirroring
+   `ci.yml`. Publishing only happens **after** all of these pass.
+2. Hands off to the Changesets action, which:
+   - **opens / updates** the `Version Packages` PR when changesets are pending; or
+   - **runs `pnpm release`** (= `pnpm build && changeset publish`) once that version PR is
+     merged, publishing the five public `@caucus/*` packages to npm and tagging the release.
 
-Publishing to npm is **explicitly out of scope** until the project decides to go public.
-The `release` root script (`pnpm build && changeset publish`) exists so the wiring is in
-place, but **it is not run by any workflow** and all packages are `private: true`, so
-`changeset publish` is a no-op for them. Do not add npm tokens or a publish workflow as
-part of unrelated work.
+**`workspace:*` rewriting:** the public packages depend on each other via `workspace:*`.
+`changeset publish` (pnpm under the hood) rewrites every `workspace:*` range to the
+concrete published version at pack time, so the tarballs on npm carry real semver ranges,
+never the `workspace:` protocol. Private packages (`@caucus/integration`, root `caucus`)
+are skipped entirely.
+
+**Safe without a token.** The publish step is gated on the `NPM_TOKEN` repo secret. When
+the secret is absent the publish is skipped and the workflow still passes — it never errors
+CI. This means the workflow is inert until the owner completes the one-time setup below.
 
 ## Root scripts
 
@@ -94,7 +132,7 @@ part of unrelated work.
 | --- | --- | --- |
 | `pnpm changeset` | `changeset` | Add a changeset for your change. |
 | `pnpm changeset:version` | `changeset version` | Consume changesets, bump versions, write changelogs. |
-| `pnpm release` | `pnpm build && changeset publish` | Build then publish (no-op while packages are private; not run by CI). |
+| `pnpm release` | `pnpm build && changeset publish` | Build then publish the public `@caucus/*` packages to npm. Run by `release.yml` (gated on `NPM_TOKEN`); private packages are skipped. |
 
 ## Clean-machine install (quickstart artifacts)
 
@@ -124,17 +162,30 @@ This exact path was verified from a fresh `git clone` on a clean checkout (no gl
 pnpm, no pre-existing `node_modules`): `corepack pnpm install` and `corepack pnpm build`
 both completed successfully.
 
+## Owner action required before first publish
+
+Everything in the repo is prepped: the five public packages are configured with
+`publishConfig.access: "public"`, `.changeset/config.json` is `"public"`, and
+`release.yml` runs the full gate and publishes via Changesets. The publish step is a safe
+no-op until the **owner** completes two manual steps that agents/CI cannot do:
+
+1. **Create / own the `@caucus` org on npmjs.com.** Sign in at <https://www.npmjs.com/>,
+   create the `@caucus` scope/organization, and confirm the publishing account is an
+   org member with publish rights. The package names (`@caucus/schema`, `@caucus/backbone`,
+   `@caucus/backbone-server`, `@caucus/mcp-server`, `@caucus/hook`) must be available under
+   that scope.
+2. **Add an `NPM_TOKEN` repo secret.** Create an **automation** access token with publish
+   rights (`npm login`, then npm website → *Access Tokens* → *Generate New Token* →
+   *Automation*), and add it as a repository secret named `NPM_TOKEN`
+   (GitHub → repo *Settings* → *Secrets and variables* → *Actions* → *New repository
+   secret*). The release workflow maps it to `NODE_AUTH_TOKEN` for `changeset publish`.
+
+That is the entire manual surface: **`npm login` + paste the token as `NPM_TOKEN`.** Once
+the secret exists, the next push to `main` will run the gate and publish (or, with pending
+changesets, open the `Version Packages` PR first). Until then, the workflow stays green and
+publishes nothing.
+
 ## Out of scope / follow-ups
 
-These are intentionally **not** done in this setup and are left as follow-ups for when the
-project decides to publish:
-
-- **No publish CI workflow.** `changeset init` / the changesets docs suggest a
-  `changesets/action` GitHub Action that opens the version PR and runs `changeset publish`
-  on merge to `main`. It is **deliberately not added** here — adding it would require npm
-  tokens and would push artifacts outward. Add it (and an `NPM_TOKEN` secret) only when
-  publishing is approved.
-- **No tags or GitHub releases.** No version has been tagged or released.
-- **No npm tokens / registry config.** Packages remain `private: true` until then.
-- **Flip `access` to `"public"`** in `.changeset/config.json` and drop `private: true`
-  from each package when public publishing is approved.
+- **GitHub Releases bodies.** The Changesets action tags published versions; richer
+  GitHub Release notes can be layered on later if desired.

@@ -1,0 +1,97 @@
+name: Release
+
+# Publishes the public @caucus/* packages to npm via Changesets.
+#
+# Flow: on every push to main, run the FULL CI gate (lint · typecheck ·
+# test+coverage · build) and only then hand off to the Changesets action,
+# which either opens/updates the "Version Packages" PR (when changesets are
+# pending) or runs `pnpm release` (= build + changeset publish) when the
+# version PR has been merged.
+#
+# SAFE NO-OP WITHOUT A TOKEN: the publish step is gated on `secrets.NPM_TOKEN`.
+# When the secret is absent (e.g. forks, or before the owner provisions it) the
+# gate is false, the Changesets action is skipped, and the job still passes —
+# it never errors CI. See docs/RELEASING.md → "Owner action required".
+
+on:
+  push:
+    branches: [main]
+
+# Never run two publishes concurrently; do NOT cancel an in-progress publish.
+concurrency:
+  group: release-${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # changesets opens/updates the Version Packages PR + tags
+  pull-requests: write
+
+jobs:
+  release:
+    name: gate · publish (@caucus/*)
+    runs-on: ubuntu-latest
+    # Lift the secret into an env var at job scope. `secrets.*` is allowed in
+    # step `if:` expressions, but routing through `env` is the robust, widely
+    # documented pattern and reads clearly in the gate below.
+    env:
+      HAS_NPM_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Enable corepack BEFORE actions/setup-node so the pnpm version pinned in
+      # package.json's "packageManager" field is the one that gets activated.
+      - name: Enable corepack (pnpm)
+        run: corepack enable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.20.2"
+          cache: pnpm
+          # Registry + auth config so `changeset publish` can authenticate via
+          # NODE_AUTH_TOKEN (writes a project .npmrc honouring the token below).
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # ----- FULL GATE (mirrors ci.yml) — runs BEFORE any publish -----
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test with enforced coverage gate
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      # Cross-package integration harness — the same step ci.yml runs, so the
+      # pre-publish gate truly mirrors CI (boots the backbone + ≥2 clients and
+      # runs the concurrent-claim / cursor scenarios).
+      - name: Integration harness
+        run: pnpm test:integration
+
+      # ----- Publish (gated on NPM_TOKEN; safe no-op when absent) -----
+      - name: Publish via Changesets
+        if: ${{ env.HAS_NPM_TOKEN == 'true' }}
+        uses: changesets/action@v1
+        with:
+          # `pnpm release` = `pnpm build && changeset publish`. Private packages
+          # (@caucus/integration, root caucus) are skipped by changeset publish;
+          # workspace:* deps are rewritten to real ranges at pack time.
+          publish: pnpm release
+          version: pnpm changeset:version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish skipped (no NPM_TOKEN)
+        if: ${{ env.HAS_NPM_TOKEN != 'true' }}
+        run: |
+          echo "NPM_TOKEN secret is not set — skipping publish (safe no-op)."
+          echo "See docs/RELEASING.md → 'Owner action required before first publish'."

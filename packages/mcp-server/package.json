@@ -1,9 +1,18 @@
 {
   "name": "@caucus/mcp-server",
-  "version": "0.0.0",
-  "private": true,
-  "description": "MCP server over the backbone interface.",
+  "version": "0.1.0",
+  "description": "Caucus MCP server over the backbone interface.",
   "license": "MIT",
+  "author": "Caucus contributors",
+  "homepage": "https://github.com/basilmentorcruise/caucus#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/basilmentorcruise/caucus.git",
+    "directory": "packages/mcp-server"
+  },
+  "bugs": {
+    "url": "https://github.com/basilmentorcruise/caucus/issues"
+  },
   "type": "module",
   "main": "./dist/lib.js",
   "types": "./dist/lib.d.ts",
@@ -19,6 +28,9 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc --build"
   },
