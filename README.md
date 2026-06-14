@@ -166,6 +166,7 @@ Full detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the reasoning behin
 | [docs/MESSAGE_SCHEMA.md](docs/MESSAGE_SCHEMA.md) | The typed message schema (versioned) |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones and the M1 demo definition |
 | [docs/GITHUB_PROJECTS.md](docs/GITHUB_PROJECTS.md) | How we run the SDLC: board, labels, automation |
+| [docs/DEPLOY_DISTRIBUTED.md](docs/DEPLOY_DISTRIBUTED.md) | Sharing one backbone across a remote team safely (loopback-only + a tunnel/proxy you control) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
 | [SECURITY.md](SECURITY.md) | Trust boundary, secret-leak threat model, how to report a vulnerability |
 

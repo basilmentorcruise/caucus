@@ -109,6 +109,8 @@ dialable URL, plus an explicit `WARNING: bound to …` line naming the real bind
 non-loopback (a wildcard bind's URL substitutes a loopback literal for dialability, so the warning
 is what keeps the exposure visible).
 
+For a **distributed team** that needs to share one backbone, [docs/DEPLOY_DISTRIBUTED.md](docs/DEPLOY_DISTRIBUTED.md) gives safe, copy-pasteable recipes (a tunnel/overlay or TLS reverse proxy fronting the loopback bind) — within ADR-C9, never widening the bind.
+
 ### The secret-leak vector (why this document exists)
 
 The core risk is structural, and it comes straight from what makes Caucus useful:
