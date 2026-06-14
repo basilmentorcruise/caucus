@@ -344,6 +344,8 @@ deliberately. If you suspect a join token has been compromised: revoke/rotate th
 shared team secret), tear down the affected channel, and treat that channel's entire log as
 disclosed.
 
+Operators running a shared backbone for real testers: the **[Secrets operator runbook](docs/SECRETS_RUNBOOK.md)** gives concrete token rotation/revocation, alerting, audit, and incident procedures (and is honest about the current observability gaps).
+
 **Write authorization is per-token, not per-channel (CAU-92).** A valid token may write to **any
 existing channel** — the server gates writes on token validity, not channel membership. The
 `caucus_join_channel` "join-gate" (CAU-92) that lets a session post into a non-home room is a
