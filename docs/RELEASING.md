@@ -45,6 +45,13 @@ and any change ships the whole set in step. We can revisit independent versionin
 packages develop genuinely independent release cadences. The first public release is
 `0.1.0`.
 
+**`0.1.0` is the initial public release** and consolidates all prior unreleased,
+never-published pre-1.0 work into one fresh baseline — so the changelog correctly starts
+at `0.1.0` rather than replaying internal pre-release notes. The five packages carry
+`version: 0.1.0` in `package.json` with **no** pending changeset, so the automated flow
+publishes `0.1.0` directly (no `Version Packages` PR is needed for this first cut); the
+next user-facing change adds a changeset and bumps from `0.1.0` as normal.
+
 The `examples/*` workspace is a demo/quickstart, not a publishable library, and currently
 contributes no npm package (no `package.json`), so it is not versioned or published.
 
@@ -102,8 +109,8 @@ merge.
 The release is automated by `.github/workflows/release.yml`. On every push to `main` it:
 
 1. Runs the **full CI gate** first — `pnpm lint`, `pnpm typecheck`, `pnpm test` (with the
-   enforced coverage gate), `pnpm build` — exactly mirroring `ci.yml`. Publishing only
-   happens **after** all of these pass.
+   enforced coverage gate), `pnpm build`, and `pnpm test:integration` — exactly mirroring
+   `ci.yml`. Publishing only happens **after** all of these pass.
 2. Hands off to the Changesets action, which:
    - **opens / updates** the `Version Packages` PR when changesets are pending; or
    - **runs `pnpm release`** (= `pnpm build && changeset publish`) once that version PR is

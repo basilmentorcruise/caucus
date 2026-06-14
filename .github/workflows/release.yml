@@ -69,6 +69,12 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # Cross-package integration harness — the same step ci.yml runs, so the
+      # pre-publish gate truly mirrors CI (boots the backbone + ≥2 clients and
+      # runs the concurrent-claim / cursor scenarios).
+      - name: Integration harness
+        run: pnpm test:integration
+
       # ----- Publish (gated on NPM_TOKEN; safe no-op when absent) -----
       - name: Publish via Changesets
         if: ${{ env.HAS_NPM_TOKEN == 'true' }}
