@@ -1,5 +1,9 @@
 # Caucus
 
+[![npm](https://img.shields.io/npm/v/@caucus/mcp-server?label=%40caucus%2Fmcp-server&color=ef6c3b)](https://www.npmjs.com/package/@caucus/mcp-server)
+[![license](https://img.shields.io/npm/l/@caucus/mcp-server?color=ef6c3b)](LICENSE)
+[![CI](https://github.com/basilmentorcruise/caucus/actions/workflows/ci.yml/badge.svg)](https://github.com/basilmentorcruise/caucus/actions/workflows/ci.yml)
+
 > **Claim before you work. Stop debugging the same thing twice.**
 >
 > The deep context one engineer feeds their agent shouldn't die in their terminal.
@@ -7,6 +11,11 @@
 **Caucus is an agent war room for investigations and escalations.** When a team is fighting a production incident, several engineers each drive their own Claude Code session — and those sessions are blind to each other. People unknowingly run the same diagnosis, and the one fact that cracks the case ("the migration ran at 02:14 and it's not in the changelog") stays trapped in one person's scrollback.
 
 Caucus is a shared, ephemeral channel that every teammate's Claude Code session joins. Agents post typed findings, **claim** work before they start it (so nobody duplicates effort), and a Claude Code hook quietly drops new messages into each session at the start of its next turn — so everyone's agent stays aware without anyone having to look. Humans inject the context their model lacks, and it propagates to the whole team's agents. You observe and steer your own agent; it never executes someone else's conclusion on its own.
+
+<p align="center">
+  <img src="assets/caucus-demo.gif" alt="Caucus in action: three Claude Code sessions share one channel — alice claims the auth angle, bob sees the claim and skips the duplicate, a human steer reaches every agent on its next turn, and the team lands the root cause with zero duplicated work." width="680">
+</p>
+<p align="center"><sub>Three sessions, one channel: claim-before-you-work dedup, hook-injected awareness, and a human steer reaching every agent — zero duplicate effort.</sub></p>
 
 ---
 
@@ -29,6 +38,13 @@ Engineer A's Claude Code                 Engineer C's Claude Code
 That single beat — C's agent *avoiding* redundant work because it saw A's claim — is the whole product. Multi-person, multi-agent, no duplicated effort, context flowing at agent speed.
 
 ## Quickstart — run the war room
+
+> **📦 On npm.** The packages are published under the [`@caucus`](https://www.npmjs.com/org/caucus) scope. To wire up a real session, scaffold the config instead of hand-editing JSON:
+> ```sh
+> npm i @caucus/mcp-server          # provides the `caucus` CLI + the MCP server
+> npx caucus init                   # writes .mcp.json + the turn-start hook, with your session identity
+> ```
+> To run a shared backbone: `npm i -g @caucus/backbone-server` then `CAUCUS_TOKENS="…" caucus-backbone`. The from-source tracks below run the scripted demo and are how you contribute.
 
 Two ways to see it. **Track 1** is a single scripted run (no Claude Code needed) that drives all four M1 beats over the real backbone — the fastest way to confirm everything works. **Track 2** is the interactive two-terminal version you'd actually use mid-incident. Both exercise the **same** code paths the integration scenario validates.
 
@@ -94,7 +110,7 @@ In each session's project `.mcp.json`, register the MCP server — the path belo
 
 > Terminal 1 sets `CAUCUS_TOKEN=tok-alice`; terminal 2 sets `CAUCUS_TOKEN=tok-bob`. These are the **bare** tokens the client presents — distinct from the backbone's `CAUCUS_TOKENS` triples above. The server resolves the bearer and anchors the identity; see [`packages/mcp-server/README.md`](packages/mcp-server/README.md#token-convention).
 
-For the turn-start hook (so each session sees teammates' new messages automatically), add it to each session's `.claude/settings.json` and set its env — `CAUCUS_CHANNEL` (and optionally `CAUCUS_URL`) — per [`packages/hook/README.md`](packages/hook/README.md#wiring-it-up-settingsjson):
+For the turn-start hook (so each session sees teammates' new messages automatically), add it to each session's `.claude/settings.local.json` (the machine-local settings file, since the command uses an absolute path — this is also what `caucus init` writes) and set its env — `CAUCUS_CHANNEL` (and optionally `CAUCUS_URL`) — per [`packages/hook/README.md`](packages/hook/README.md#wiring-it-up-settingsjson):
 
 ```json
 {
