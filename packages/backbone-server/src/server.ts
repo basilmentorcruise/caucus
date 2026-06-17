@@ -238,6 +238,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /** Reusable 400 for a body that is absent or not a JSON object. */
 const BODY_MUST_BE_OBJECT = "request body must be a JSON object";
 
+/** Reusable 400 for a /reassign body missing a well-formed `assignee` (CAU-18). */
+const REASSIGN_ASSIGNEE_REQUIRED =
+  "reassign requires an assignee object with a non-empty agent_id and owner";
+
 /**
  * Extract the bearer token from a raw `Authorization` header value: strip a
  * case-insensitive `Bearer ` prefix and trim. Returns `undefined` for an absent
@@ -566,6 +570,21 @@ export async function dispatch(
             // Split the assignee out of the message body (a NEW object, no
             // mutation), then anchor the authorizer's identity onto the message.
             const { assignee, ...msg } = body as Record<string, unknown>;
+            // Structural guard for the poster-asserted assignee: a missing or
+            // partial assignee must be REJECTED here, not silently fall through
+            // to the backbone (which would otherwise record the authorizer as
+            // holder — a silent self-reassign). The backbone re-validates the
+            // assignee's field constraints (length/control-char); this complements
+            // that with a presence/shape gate at the HTTP edge (CAU-18).
+            if (
+              !isPlainObject(assignee) ||
+              typeof assignee.agent_id !== "string" ||
+              assignee.agent_id.length === 0 ||
+              typeof assignee.owner !== "string" ||
+              assignee.owner.length === 0
+            ) {
+              return invalidRequest(REASSIGN_ASSIGNEE_REQUIRED);
+            }
             const anchored = {
               ...msg,
               agent_id: identity.agent_id,

@@ -27,6 +27,7 @@ import {
   normalizeTarget,
   SCHEMA_VERSION,
   validate,
+  validateIdentityField,
 } from "@caucus/schema";
 
 import { createHash } from "node:crypto";
@@ -792,6 +793,20 @@ export class InMemoryBackbone implements Backbone {
     // now points at the assignee. `msg.owner` is the AUTHORIZER matched against
     // the current holder (ADR-C7). Validate the message as-authored.
     const validated = this.#validateMessage(msg);
+    // The `assignee` is poster-asserted (the holder vouches for it, like `to[]`),
+    // so it bypasses `#validateMessage` — but it IS written raw into the ledger
+    // as the stored holder, so it MUST face the SAME identity-field constraints
+    // as `msg.agent_id`/`msg.owner` (non-empty, no control chars, ≤ MAX_FIELD_CHARS)
+    // to avoid stored-tainted-identity / memory-amplification (CAU-18 security).
+    // Uses the shared validator so the constraints can never drift; NON-echoing
+    // (ADR-C12) — the error never reflects the offending assignee content.
+    const assigneeIssues = [
+      ...validateIdentityField("assignee.agent_id", assignee?.agent_id),
+      ...validateIdentityField("assignee.owner", assignee?.owner),
+    ];
+    if (assigneeIssues.length > 0) {
+      throw new InvalidMessageError(assigneeIssues);
+    }
     let key: string;
     try {
       key = normalizeTarget(msg.target);
@@ -835,11 +850,16 @@ export class InMemoryBackbone implements Backbone {
     // schema-valid with the required `target`) stamped with `status:"resolved"`,
     // and the ledger ENTRY is deleted on commit. Derive the resolved message
     // before the critical section.
-    const resolved = { ...msg, status: "resolved" } as MessageInput;
+    // `msg.type === "claim"` was just asserted, so `msg.target` is a string;
+    // preserve that narrowing through the spread (no widening `as MessageInput`)
+    // so the key can be derived from the SAME resolved message we validate and
+    // commit — consistent with `claim`/`reassign`, which key off their validated
+    // message's target.
+    const resolved = { ...msg, status: "resolved" as const };
     const validated = this.#validateMessage(resolved);
     let key: string;
     try {
-      key = normalizeTarget(msg.target);
+      key = normalizeTarget(resolved.target);
     } catch (err) {
       if (err instanceof MalformedMessageError) {
         throw new InvalidMessageError(err.issues);

@@ -11,10 +11,10 @@
  * expiry posts nothing, and every new result/error string is value-free
  * (ADR-C12).
  */
-import { newMsgId, type MessageInput } from "@caucus/schema";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { MAX_FIELD_CHARS, newMsgId, type MessageInput } from "@caucus/schema";
+import { beforeEach, describe, expect, it } from "vitest";
 
-import { InMemoryBackbone } from "./index.js";
+import { InMemoryBackbone, InvalidMessageError } from "./index.js";
 
 const CH = "incident-lifecycle";
 
@@ -28,10 +28,6 @@ beforeEach(async () => {
   nowMs = 1_000_000; // arbitrary non-zero epoch start.
   b = new InMemoryBackbone({ clock });
   await b.createChannel({ channel: CH, purpose: "lifecycle", created_by: "alice" });
-});
-
-afterEach(() => {
-  // No timers/resources to release — the backbone is in-memory and clock-driven.
 });
 
 /** A claim `MessageInput` for `target` by `agent`/`owner`, fresh `msg_id`. */
@@ -409,5 +405,74 @@ describe("Edges — input validation on the new methods", () => {
         body: "x",
       } as MessageInput),
     ).rejects.toThrow();
+  });
+});
+
+describe("Edges — poster-asserted assignee is field-validated before the ledger (CAU-18 security)", () => {
+  // The `assignee` rides as poster-asserted data the holder vouches for, but it
+  // is written RAW into the ledger as the stored holder — so it MUST face the
+  // same identity-field constraints as `agent_id`/`owner` (non-empty, no control
+  // chars, ≤ MAX_FIELD_CHARS). A token-holder could otherwise plant a megabyte
+  // or control-byte-laden holder (memory amplification + stored-tainted identity).
+  it("rejects an oversized assignee owner (> MAX_FIELD_CHARS): throws, ledger unchanged, nothing appended", async () => {
+    await b.claim(CH, claim("holder-agent", "holder-owner", "db", { lease_ttl: 60 }));
+    const before = await head();
+    const oversized = "o".repeat(MAX_FIELD_CHARS + 1);
+    await expect(
+      b.reassignClaim(
+        CH,
+        claim("holder-agent", "holder-owner", "db"),
+        { agent_id: "new-agent", owner: oversized },
+      ),
+    ).rejects.toThrow(InvalidMessageError);
+    // No append for the rejected reassign.
+    expect(await head()).toBe(before);
+    // Ledger still points at the ORIGINAL holder — a renew by it still succeeds.
+    const renew = await b.claim(
+      CH,
+      claim("holder-agent", "holder-owner", "db", { lease_ttl: 60, heartbeat: true }),
+    );
+    expect(renew.outcome).toBe("granted");
+  });
+
+  it("rejects a control-char assignee agent_id: throws, ledger unchanged, nothing appended", async () => {
+    await b.claim(CH, claim("holder-agent", "holder-owner", "db", { lease_ttl: 60 }));
+    const before = await head();
+    await expect(
+      b.reassignClaim(
+        CH,
+        claim("holder-agent", "holder-owner", "db"),
+        { agent_id: "new agent", owner: "new-owner" },
+      ),
+    ).rejects.toThrow(InvalidMessageError);
+    expect(await head()).toBe(before);
+    const renew = await b.claim(
+      CH,
+      claim("holder-agent", "holder-owner", "db", { lease_ttl: 60, heartbeat: true }),
+    );
+    expect(renew.outcome).toBe("granted");
+  });
+
+  it("the thrown error is value-free (ADR-C12): never echoes the offending assignee content", async () => {
+    await b.claim(CH, claim("holder-agent", "holder-owner", "db", { lease_ttl: 60 }));
+    const secret = "s".repeat(MAX_FIELD_CHARS + 1);
+    try {
+      await b.reassignClaim(
+        CH,
+        claim("holder-agent", "holder-owner", "db"),
+        { agent_id: "new-agent", owner: secret },
+      );
+      throw new Error("unreachable — reassign should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(InvalidMessageError);
+      const serialized = JSON.stringify({
+        message: (err as Error).message,
+        issues: (err as InvalidMessageError).issues,
+      });
+      // The error names the field + the limit + the length, never the value.
+      expect(serialized).not.toContain(secret);
+      expect(serialized).toContain("assignee.owner");
+      expect(serialized).toContain(String(secret.length));
+    }
   });
 });

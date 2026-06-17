@@ -62,6 +62,28 @@ function isNonEmptyString(v: unknown): v is string {
 }
 
 /**
+ * Validate a single identity field (`agent_id`/`owner`) with the SAME
+ * constraints `validate` applies inline to `value.agent_id`/`value.owner`:
+ * non-empty string, no control bytes, ≤ {@link MAX_FIELD_CHARS}. Returns the
+ * list of issues (empty when valid). The single authority for identity-field
+ * shape — reused by callers that anchor a *poster-asserted* identity (e.g. the
+ * reassignment `assignee`) before storing it (CAU-18). NON-echoing (ADR-C12 /
+ * CAU-88): the messages name the field, the limit, and the actual length —
+ * never the offending value.
+ */
+export function validateIdentityField(name: string, value: unknown): string[] {
+  const issues: string[] = [];
+  if (!isNonEmptyString(value)) {
+    issues.push(`${name} must be a non-empty string`);
+  } else if (containsControlChars(value)) {
+    issues.push(`${name} must not contain control characters`);
+  } else if (value.length > MAX_FIELD_CHARS) {
+    issues.push(`${name} exceeds ${MAX_FIELD_CHARS} characters (${value.length})`);
+  }
+  return issues;
+}
+
+/**
  * Assert that `value` is a structurally valid schema message (v1). Assumes the
  * version gate has already accepted `value.v`. Throws
  * {@link MalformedMessageError} listing every problem found.
@@ -112,34 +134,14 @@ export function validate(value: unknown): asserts value is CaucusMessage {
     issues.push(`type must be one of ${MESSAGE_TYPES.join(", ")}`);
   }
 
-  // Required string fields. Each control-char check (CAU-71) runs only when
-  // the base shape check passed, so a field never double-reports.
-  if (!isNonEmptyString(value.agent_id)) {
-    issues.push("agent_id must be a non-empty string");
-  } else if (containsControlChars(value.agent_id)) {
-    issues.push("agent_id must not contain control characters");
-  } else if (value.agent_id.length > MAX_FIELD_CHARS) {
-    // Length cap (CAU-90): `agent_id` is a short session label, not a payload —
-    // an in-process embedder has no HTTP byte bound, so an unbounded value is a
-    // read-amplification lever (a 50MB `agent_id` survives into a clamped read
-    // page). Positional + NON-echoing (ADR-C12 / CAU-88): name the field, the
-    // limit, and the actual length — never the value. The length is a plain
-    // integer (control-byte-free per CAU-88), so it is safe to interpolate.
-    issues.push(
-      `agent_id exceeds ${MAX_FIELD_CHARS} characters (${value.agent_id.length})`,
-    );
-  }
-  if (!isNonEmptyString(value.owner)) {
-    issues.push("owner must be a non-empty string");
-  } else if (containsControlChars(value.owner)) {
-    issues.push("owner must not contain control characters");
-  } else if (value.owner.length > MAX_FIELD_CHARS) {
-    // Length cap (CAU-90) — same rationale as `agent_id` above; `owner` is a
-    // short human label. Non-echoing: field name + limit + actual length only.
-    issues.push(
-      `owner exceeds ${MAX_FIELD_CHARS} characters (${value.owner.length})`,
-    );
-  }
+  // Required identity fields. The shared `validateIdentityField` applies the
+  // same checks (non-empty, no control chars per CAU-71, ≤ MAX_FIELD_CHARS
+  // read-amplification cap per CAU-90) and is reused by poster-asserted-identity
+  // callers (the reassignment assignee, CAU-18). Each check is short-circuited
+  // inside the helper, so a field never double-reports. Positional + NON-echoing
+  // (ADR-C12 / CAU-88): field name + limit + actual length only, never the value.
+  issues.push(...validateIdentityField("agent_id", value.agent_id));
+  issues.push(...validateIdentityField("owner", value.owner));
   // msg_id needs no control-char check: the ULID regex already excludes them.
   if (!isUlid(value.msg_id)) {
     issues.push("msg_id must be a ULID");
