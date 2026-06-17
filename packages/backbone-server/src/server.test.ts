@@ -561,6 +561,96 @@ describe("dispatch — claim route (CAU-7)", () => {
   });
 });
 
+describe("dispatch — reassign route assignee guard (CAU-18)", () => {
+  /** A valid claim-message body (the holder's side of a reassign). */
+  function reassignBody(target: string, over: Record<string, unknown> = {}) {
+    return {
+      type: "claim",
+      agent_id: "a",
+      owner: "alice",
+      msg_id: newMsgId(),
+      body: "reassigning",
+      target,
+      ...over,
+    };
+  }
+
+  /** Seed `c1` and grant alice the `db` claim so a reassign is well-positioned. */
+  async function seededWithClaim(): Promise<InMemoryBackbone> {
+    const bb = await seeded();
+    const granted = await dispatch(
+      bb,
+      "POST",
+      "/channels/c1/claim",
+      reassignBody("db", { body: "claiming" }),
+      AUTH,
+    );
+    expect(granted.status).toBe(200);
+    return bb;
+  }
+
+  it("missing assignee → 400 invalid_request, ledger unchanged (no silent self-reassign)", async () => {
+    const bb = await seededWithClaim();
+    const before = (await bb.describeChannel("c1")).head;
+    // No `assignee` key in the body at all.
+    const res = await dispatch(bb, "POST", "/channels/c1/reassign", reassignBody("db"), AUTH);
+    expect(res.status).toBe(400);
+    expect(res.json).toMatchObject({ error: { code: "invalid_request" } });
+    // Nothing appended — the reassign never reached the backbone.
+    expect((await bb.describeChannel("c1")).head).toBe(before);
+  });
+
+  it("partial assignee (owner only, no agent_id) → 400 invalid_request, ledger unchanged", async () => {
+    const bb = await seededWithClaim();
+    const before = (await bb.describeChannel("c1")).head;
+    const res = await dispatch(
+      bb,
+      "POST",
+      "/channels/c1/reassign",
+      reassignBody("db", { assignee: { owner: "bob" } }),
+      AUTH,
+    );
+    expect(res.status).toBe(400);
+    expect(res.json).toMatchObject({ error: { code: "invalid_request" } });
+    expect((await bb.describeChannel("c1")).head).toBe(before);
+  });
+
+  it("a non-object / empty-string assignee → 400 invalid_request", async () => {
+    const bb = await seededWithClaim();
+    for (const assignee of [
+      "bob",
+      42,
+      [],
+      null,
+      { agent_id: "", owner: "bob" },
+      { agent_id: "b", owner: "" },
+    ] as const) {
+      const res = await dispatch(
+        bb,
+        "POST",
+        "/channels/c1/reassign",
+        reassignBody("db", { assignee }),
+        AUTH,
+      );
+      expect(res.status).toBe(400);
+      expect(res.json).toMatchObject({ error: { code: "invalid_request" } });
+    }
+  });
+
+  it("a well-formed assignee → 200 granted (the guard does not reject valid input)", async () => {
+    const bb = await seededWithClaim();
+    const res = await dispatch(
+      bb,
+      "POST",
+      "/channels/c1/reassign",
+      reassignBody("db", { assignee: { agent_id: "b", owner: "bob" } }),
+      AUTH,
+    );
+    expect(res.status).toBe(200);
+    expect((res.json as { outcome: string }).outcome).toBe("granted");
+  });
+});
+
 describe("dispatch — identity anchoring + auth gate (CAU-13)", () => {
   /** A finding body that SPOOFS mallory — the server must overwrite it. */
   function spoofedFinding(over: Record<string, unknown> = {}) {

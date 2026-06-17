@@ -12,6 +12,7 @@ export type {
   AppendResult,
   Backbone,
   ChannelDescriptor,
+  ClaimAssignee,
   ClaimResult,
   CreateChannelOptions,
   Cursor,

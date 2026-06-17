@@ -17,6 +17,8 @@ import { statusTool } from "./tools/status.js";
 import { postTool, postFindingTool, steerTool } from "./tools/post.js";
 import { readChannelTool } from "./tools/read-channel.js";
 import { claimTool } from "./tools/claim.js";
+import { reassignTool } from "./tools/reassign.js";
+import { markDoneTool } from "./tools/mark-done.js";
 import { subscribeTool } from "./tools/subscribe.js";
 import {
   listChannelsTool,
@@ -56,6 +58,8 @@ export function createCaucusServer({
     steerTool,
     readChannelTool,
     claimTool,
+    reassignTool,
+    markDoneTool,
     subscribeTool,
     listChannelsTool,
     describeChannelTool,

@@ -154,6 +154,12 @@ export const claimTool: CaucusTool = {
       };
       return { content: [{ type: "text", text: JSON.stringify(payload) }] };
     }
+    // `claim()` only ever returns `granted`/`already_claimed` (never the
+    // `not_held` outcome, which is exclusive to markClaimDone). Guard so a future
+    // change surfaces cleanly rather than serializing an undefined `by`.
+    if (result.outcome !== "already_claimed") {
+      throw new Error("unexpected claim outcome");
+    }
     // `already_claimed.by` carries the winner's identity straight into this
     // (losing) agent's model context. The free-form identity fields are
     // poster-controlled, so sanitize them BEFORE serialization (CAU-73), the

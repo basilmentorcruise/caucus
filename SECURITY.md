@@ -357,6 +357,19 @@ regardless of "join." This is by design under the ADR-C9 single-trusted-team mod
 token-holder is already trusted to read and write the shared log — but do not mistake the join-gate
 for cross-room access control.
 
+**Claim reassignment's `assignee` is poster-asserted, not identity-anchored (CAU-18).** When a holder
+reassigns a claim, the appended message stays authored by the authenticated caller (identity is
+anchored server-side as in §4), but the new ledger **holder** — the `assignee` — is poster-asserted
+data the authenticated holder vouches for, exactly like a `to[]` recipient. Within the shared-token /
+single-server model ([ADR-C9](docs/DECISIONS.md#adr-c9--intra-team-single-shared-server-no-federation-in-v1-)),
+this means a token-holder can hand a claim to any named identity, or away from a holder it
+legitimately holds. Because claims are **advisory-but-visible**
+([ADR-C5](docs/DECISIONS.md#adr-c5--claim-before-you-work-as-the-dedup-primitive-)), this is **not**
+an access-control boundary — it is a coordination signal among already-trusted teammates. The
+backbone still applies the same field constraints to the asserted `assignee` (non-empty, no control
+bytes, length-capped) that it applies to anchored identity fields, so a poster-asserted holder cannot
+be used to plant an oversized or control-byte-laden identity in the ledger.
+
 ### 4. Identity anchoring (SHIPPED — CAU-13)
 
 Every message is stamped with its `agent-id` and `human owner`, **anchored server-side so the

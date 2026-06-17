@@ -39,6 +39,7 @@ import type {
   AppendResult,
   Backbone,
   ChannelDescriptor,
+  ClaimAssignee,
   ClaimResult,
   PutArtifactResult,
 } from "@caucus/backbone";
@@ -121,6 +122,33 @@ export interface CaucusSession {
    * @throws NotJoinedError if `target` is a non-home channel not yet joined.
    */
   claim(draft: ToolMessageDraft, target?: string): Promise<ClaimResult>;
+
+  /**
+   * Hand a live claim to a new holder (CAU-18). Stamps the CALLER's identity onto
+   * `draft` (the authorizer, matched against the current holder on the anchored
+   * `owner`, ADR-C7) and runs the reassignment through the claim ledger.
+   * `assignee` is the new holder — poster-asserted data the authenticated caller
+   * vouches for (never identity-anchored). The join-gate and per-call `target`
+   * routing behave exactly as for {@link claim}.
+   *
+   * @throws NotJoinedError if `target` is a non-home channel not yet joined.
+   */
+  reassignClaim(
+    draft: ToolMessageDraft,
+    assignee: ClaimAssignee,
+    target?: string,
+  ): Promise<ClaimResult>;
+
+  /**
+   * Mark a live claim done, freeing the target (CAU-18). Stamps the CALLER's
+   * identity onto `draft` (the holder, matched on the anchored `owner`) and runs
+   * the done transition through the claim ledger; a `status:"resolved"` message
+   * is posted and the ledger entry is removed. The join-gate and `target` routing
+   * behave exactly as for {@link claim}.
+   *
+   * @throws NotJoinedError if `target` is a non-home channel not yet joined.
+   */
+  markClaimDone(draft: ToolMessageDraft, target?: string): Promise<ClaimResult>;
 
   /**
    * Open the cross-room posting gate for `channel` (CAU-92).
@@ -239,6 +267,17 @@ export function createSession(
     async claim(draft, target) {
       const ch = resolveTarget(target);
       return backbone.claim(ch, stampIdentity(identity, draft));
+    },
+    async reassignClaim(draft, assignee, target) {
+      // Same join-gate + server-side identity stamping as claim: the stamped
+      // identity is the AUTHORIZER (current holder); `assignee` rides separately
+      // as the new ledger holder (poster-asserted, never anchored).
+      const ch = resolveTarget(target);
+      return backbone.reassignClaim(ch, stampIdentity(identity, draft), assignee);
+    },
+    async markClaimDone(draft, target) {
+      const ch = resolveTarget(target);
+      return backbone.markClaimDone(ch, stampIdentity(identity, draft));
     },
     async uploadArtifact(sha256, bytes, target) {
       // Same join-gate as post/claim: a non-home target must have been joined.

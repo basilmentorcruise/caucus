@@ -42,7 +42,7 @@ import {
   type ServerResponse,
 } from "node:http";
 
-import type { Backbone, Cursor } from "@caucus/backbone";
+import type { Backbone, ClaimAssignee, Cursor } from "@caucus/backbone";
 import { InMemoryBackbone, MAX_ARTIFACT_BYTES } from "@caucus/backbone";
 import type { MessageInput } from "@caucus/schema";
 import { sanitizeErrorFragment } from "@caucus/schema";
@@ -238,6 +238,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /** Reusable 400 for a body that is absent or not a JSON object. */
 const BODY_MUST_BE_OBJECT = "request body must be a JSON object";
 
+/** Reusable 400 for a /reassign body missing a well-formed `assignee` (CAU-18). */
+const REASSIGN_ASSIGNEE_REQUIRED =
+  "reassign requires an assignee object with a non-empty agent_id and owner";
+
 /**
  * Extract the bearer token from a raw `Authorization` header value: strip a
  * case-insensitive `Bearer ` prefix and trim. Returns `undefined` for an absent
@@ -416,11 +420,14 @@ async function handleArtifactRoute(
  * extraction, and serialization, so every route, status, and error-mapping case
  * is unit-testable without a live socket.
  *
- * The three write routes (`POST /channels`, `/append`, `/claim`) require a
- * resolved bearer identity and ANCHOR it onto the message — building a NEW body
- * with the resolved `agent_id`/`owner` (createChannel: `created_by`) overwriting
- * whatever the client supplied (anti-forgery by construction; client identity
- * fields are advisory). Reads and `/healthz` ignore `auth`.
+ * The write routes (`POST /channels`, `/append`, `/claim`, and the CAU-18
+ * lifecycle routes `/reassign`, `/done`) require a resolved bearer identity and
+ * ANCHOR it onto the message — building a NEW body with the resolved
+ * `agent_id`/`owner` (createChannel: `created_by`) overwriting whatever the
+ * client supplied (anti-forgery by construction; client identity fields are
+ * advisory). On `/reassign` the anchored identity is the AUTHORIZER (the holder),
+ * while the `assignee` (new ledger holder) rides as poster-asserted body data,
+ * never anchored. Reads and `/healthz` ignore `auth`.
  *
  * Malformed-JSON and payload-too-large are detected during body buffering, so
  * they never reach here — `dispatch` assumes `body` is a parsed value.
@@ -545,6 +552,64 @@ export async function dispatch(
               owner: identity.owner,
             };
             const result = await backbone.claim(
+              channel,
+              anchored as unknown as MessageInput,
+            );
+            return { status: 200, json: result };
+          }
+          case "reassign": {
+            // Reassign (CAU-18): the current holder hands a live target to an
+            // assignee. Identity is anchored to the bearer EXACTLY as `claim` —
+            // the anchored identity is the AUTHORIZER (matched against the holder
+            // on `owner`, ADR-C7). The `assignee` (new ledger holder) rides as a
+            // sibling field of the body; it is poster-asserted data the
+            // authenticated holder vouches for (like `to[]`), NOT identity-
+            // anchored. All outcomes are normal 200 results, like `claim`.
+            if (!isPlainObject(body)) return invalidRequest(BODY_MUST_BE_OBJECT);
+            const identity = requireIdentity(auth);
+            // Split the assignee out of the message body (a NEW object, no
+            // mutation), then anchor the authorizer's identity onto the message.
+            const { assignee, ...msg } = body as Record<string, unknown>;
+            // Structural guard for the poster-asserted assignee: a missing or
+            // partial assignee must be REJECTED here, not silently fall through
+            // to the backbone (which would otherwise record the authorizer as
+            // holder — a silent self-reassign). The backbone re-validates the
+            // assignee's field constraints (length/control-char); this complements
+            // that with a presence/shape gate at the HTTP edge (CAU-18).
+            if (
+              !isPlainObject(assignee) ||
+              typeof assignee.agent_id !== "string" ||
+              assignee.agent_id.length === 0 ||
+              typeof assignee.owner !== "string" ||
+              assignee.owner.length === 0
+            ) {
+              return invalidRequest(REASSIGN_ASSIGNEE_REQUIRED);
+            }
+            const anchored = {
+              ...msg,
+              agent_id: identity.agent_id,
+              owner: identity.owner,
+            };
+            const result = await backbone.reassignClaim(
+              channel,
+              anchored as unknown as MessageInput,
+              assignee as unknown as ClaimAssignee,
+            );
+            return { status: 200, json: result };
+          }
+          case "done": {
+            // Done (CAU-18): the holder marks a live target finished, freeing it.
+            // Identity is anchored to the bearer as `claim` (the holder owner is
+            // the authorizer). Outcomes (`granted`/`already_claimed`/`not_held`)
+            // are all normal 200 results.
+            if (!isPlainObject(body)) return invalidRequest(BODY_MUST_BE_OBJECT);
+            const identity = requireIdentity(auth);
+            const anchored = {
+              ...body,
+              agent_id: identity.agent_id,
+              owner: identity.owner,
+            };
+            const result = await backbone.markClaimDone(
               channel,
               anchored as unknown as MessageInput,
             );

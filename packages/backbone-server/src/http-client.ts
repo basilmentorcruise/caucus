@@ -20,6 +20,7 @@ import type {
   AppendResult,
   Backbone,
   ChannelDescriptor,
+  ClaimAssignee,
   ClaimResult,
   CreateChannelOptions,
   Cursor,
@@ -178,6 +179,35 @@ export class HttpBackbone implements Backbone {
     return (await this.#request(
       "POST",
       `/channels/${encodeURIComponent(channel)}/claim`,
+      msg,
+    )) as ClaimResult;
+  }
+
+  async reassignClaim(
+    channel: string,
+    msg: MessageInput,
+    assignee: ClaimAssignee,
+  ): Promise<ClaimResult> {
+    // Like `claim`, all outcomes (`granted`/`already_claimed`) are a normal 200
+    // result — only validation/not-found throw. The `assignee` rides as a
+    // sibling field of the message body; the server anchors the AUTHORIZER's
+    // identity from the bearer (CAU-13) and reads `assignee` as poster-asserted
+    // data (never anchored), exactly as the in-memory backbone does.
+    return (await this.#request(
+      "POST",
+      `/channels/${encodeURIComponent(channel)}/reassign`,
+      { ...msg, assignee },
+    )) as ClaimResult;
+  }
+
+  async markClaimDone(
+    channel: string,
+    msg: MessageInput,
+  ): Promise<ClaimResult> {
+    // `not_held`/`already_claimed`/`granted` are all normal 200 results.
+    return (await this.#request(
+      "POST",
+      `/channels/${encodeURIComponent(channel)}/done`,
       msg,
     )) as ClaimResult;
   }

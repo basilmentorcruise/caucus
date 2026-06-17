@@ -38,5 +38,5 @@ export {
 } from "./sanitize.js";
 export { isUlid, newMsgId } from "./ulid.js";
 export { normalizeTarget } from "./target.js";
-export { validate } from "./validate.js";
+export { validate, validateIdentityField } from "./validate.js";
 export { encode, decode } from "./codec.js";

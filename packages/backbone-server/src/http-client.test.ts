@@ -116,6 +116,72 @@ describe("HttpBackbone — round-trips against a live server", () => {
     expect(Array.isArray(res)).toBe(true);
   });
 
+  it("claim → reassign → done lifecycle round-trips over the wire (CAU-18)", async () => {
+    await client.createChannel({ channel: "rtlc", purpose: "p", created_by: "a" });
+    // The token anchors identity to agent=a / owner=alice, so alice is the
+    // holder/authorizer; reassign/done are owner-matched server-side (ADR-C7).
+    const claimed = await client.claim("rtlc", {
+      type: "claim",
+      agent_id: "client-claimed",
+      owner: "spoofed",
+      msg_id: newMsgId(),
+      body: "claiming",
+      target: "wire-target",
+    });
+    expect(claimed.outcome).toBe("granted");
+
+    // Reassign to bob: the assignee rides as poster-asserted data.
+    const reassigned = await client.reassignClaim(
+      "rtlc",
+      {
+        type: "claim",
+        agent_id: "ignored",
+        owner: "ignored",
+        msg_id: newMsgId(),
+        body: "reassigning",
+        target: "wire-target",
+      },
+      { agent_id: "bob-agent", owner: "bob" },
+    );
+    expect(reassigned.outcome).toBe("granted");
+
+    // A fresh client claim now finds BOB holding it (ledger points at assignee).
+    const contend = await client.claim("rtlc", {
+      type: "claim",
+      agent_id: "a",
+      owner: "alice",
+      msg_id: newMsgId(),
+      body: "claiming",
+      target: "wire-target",
+    });
+    expect(contend.outcome).toBe("already_claimed");
+    if (contend.outcome !== "already_claimed") throw new Error("unreachable");
+    expect(contend.by.owner).toBe("bob");
+
+    // Bob holds it, alice (the token identity) is NOT the holder, so a done by
+    // alice is a no-op (already_claimed naming bob).
+    const doneByNonHolder = await client.markClaimDone("rtlc", {
+      type: "claim",
+      agent_id: "a",
+      owner: "alice",
+      msg_id: newMsgId(),
+      body: "done",
+      target: "wire-target",
+    });
+    expect(doneByNonHolder.outcome).toBe("already_claimed");
+
+    // Done on an unheld target → not_held round-trips as a 200 result.
+    const notHeld = await client.markClaimDone("rtlc", {
+      type: "claim",
+      agent_id: "a",
+      owner: "alice",
+      msg_id: newMsgId(),
+      body: "done",
+      target: "never-held-wire",
+    });
+    expect(notHeld.outcome).toBe("not_held");
+  });
+
   it("shares server state with a second client (cross-client visibility)", async () => {
     // `a` writes, so it carries a token; `b` only reads, so it stays tokenless.
     const a = new HttpBackbone(server.url, { token: TOKEN });

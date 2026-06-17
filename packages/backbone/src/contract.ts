@@ -134,16 +134,25 @@ export interface AppendResult {
 }
 
 /**
- * The outcome of {@link Backbone.claim}. A claim is NOT an error when it loses;
- * a lost claim is the `already_claimed` outcome carrying the winner's identity.
+ * The outcome of {@link Backbone.claim} / {@link Backbone.reassignClaim} /
+ * {@link Backbone.markClaimDone}. A claim is NOT an error when it loses; a lost
+ * claim is the `already_claimed` outcome carrying the holder's identity.
  *
- * - `granted`: this caller won. The granted `claim` message has been appended to
- *   the log in the *same* atomic step (ADR-C5: single append, never a
- *   dual-write), so it is immediately visible via {@link Backbone.readSince} and
- *   `cursor` is the new head.
- * - `already_claimed`: a prior claim already holds the (normalized) target.
- *   First-write-wins; NO message is appended and the head does not move. `by`
- *   identifies the winning claim.
+ * - `granted`: this caller won (CAU-4 + CAU-18). The appended message — a fresh
+ *   `claim`, a heartbeat renew, a reassignment to the new holder, or a
+ *   `status:"resolved"` done — has been appended to the log in the *same* atomic
+ *   step (ADR-C5: single append, never a dual-write), so it is immediately
+ *   visible via {@link Backbone.readSince} and `cursor` is the new head.
+ *   `granted` is reused for every successful transition (no per-transition
+ *   variant), since the appended `message` already distinguishes them.
+ * - `already_claimed`: a LIVE claim already holds the (normalized) target by a
+ *   different holder. First-write-wins; NO message is appended and the head does
+ *   not move. `by` identifies the holding claim. (A LAPSED lease does not produce
+ *   this — it frees the target, so the next claim is `granted`.)
+ * - `not_held` (CAU-18): a privileged transition ({@link Backbone.markClaimDone})
+ *   targeted a key with NO live lease the caller holds (unheld, never-claimed, or
+ *   already lapsed). A NO-OP: nothing is appended, the head does not move, and the
+ *   ledger is untouched. The caller cannot "finish" a claim it does not hold.
  */
 export type ClaimResult =
   | {
@@ -159,7 +168,25 @@ export type ClaimResult =
         readonly ts: string;
         readonly msg_id: string;
       };
+    }
+  | {
+      readonly outcome: "not_held";
     };
+
+/**
+ * The new holder a {@link Backbone.reassignClaim} hands a live target to
+ * (CAU-18). These are the anchored identity fields (ADR-C7) that the appended
+ * reassignment `claim` message is authored AS, so the ledger record and the
+ * visible message agree on who now owns the target. The CALLER's identity (on
+ * the `msg` passed to `reassignClaim`) is the *authorizer* matched against the
+ * current holder; it is not stored.
+ */
+export interface ClaimAssignee {
+  /** Stable id of the agent the target is being handed to. */
+  readonly agent_id: string;
+  /** The human the new holder acts for (the anchored owner, ADR-C7). */
+  readonly owner: string;
+}
 
 /** A channel's verbosity policy (ADR-C6). Defaults to `quiet`. */
 export type Verbosity = "quiet" | "normal" | "chatty";
@@ -295,6 +322,66 @@ export interface Backbone {
    *   `type:"claim"`, has an empty target, or exceeds the body cap.
    */
   claim(channel: string, msg: MessageInput): Promise<ClaimResult>;
+
+  /**
+   * Hand a LIVE claim to a new holder, first-write-wins-preserving (CAU-18, the
+   * ADR-C5 reassignment transition). Authorization matches the CURRENT holder on
+   * the anchored `owner` (ADR-C7 — the human, not the session `agent_id`), so a
+   * human may reassign across their own sessions; a different `agent_id` with the
+   * same `owner` is allowed, a different `owner` is not.
+   *
+   * `msg` is a `claim`-typed message carrying the CALLER's anchored identity (the
+   * authorizer) and the `target`. `assignee` is the new holder. On success a
+   * `claim` message authored AS THE ASSIGNEE is appended in the same atomic step
+   * (so the ledger record and the visible message agree) and the result is
+   * `granted` with that message; the ledger now points at the assignee.
+   *
+   * Outcomes:
+   * - `granted` — the caller held the live lease (or the target was unheld /
+   *   lapsed, in which case this degrades to a plain fresh claim by the assignee:
+   *   an expired holder has NO privileged reassign right).
+   * - `already_claimed` — a DIFFERENT owner holds a live lease; the ledger is
+   *   untouched and `by` names that holder.
+   *
+   * Lease semantics carry over: the reassignment honours `msg.lease_ttl` (the new
+   * holder's lease starts `now`), and a `heartbeat` on `msg` is irrelevant here.
+   *
+   * @throws InvalidMessageError if `msg` is not `type:"claim"`, fails schema
+   *   validation, or has an empty target.
+   * @throws InvalidChannelNameError / UnknownChannelError as for {@link claim}.
+   */
+  reassignClaim(
+    channel: string,
+    msg: MessageInput,
+    assignee: ClaimAssignee,
+  ): Promise<ClaimResult>;
+
+  /**
+   * Mark a LIVE claim DONE, freeing the target (CAU-18, the ADR-C5 explicit
+   * done-state transition). Only the current holder, matched on the anchored
+   * `owner` (ADR-C7), may finish a claim.
+   *
+   * `msg` is a `claim`-typed message carrying the holder's anchored identity and
+   * the `target`. On success a `status:"resolved"` `claim` message is appended in
+   * the same atomic step (a VISIBLE record of completion — unlike a lapse, which
+   * is silent/lazy) and the ledger entry is DELETED, so a later {@link claim} on
+   * the target starts a fresh lease and returns `granted`.
+   *
+   * Outcomes:
+   * - `granted` — the caller held the live lease; the resolved message is
+   *   appended and the target is freed.
+   * - `already_claimed` — a DIFFERENT owner holds a live lease; a NO-OP (no
+   *   message, head unchanged), `by` names that holder. You cannot close someone
+   *   else's claim.
+   * - `not_held` — the target is unheld / never-claimed / already lapsed; a NO-OP
+   *   with no message (an expired holder closing its own lapsed claim posts
+   *   nothing).
+   *
+   * @throws InvalidMessageError if `msg` is not `type:"claim"`, fails schema
+   *   validation, or has an empty target.
+   * @throws InvalidChannelNameError / UnknownChannelError as for {@link claim}.
+   */
+  markClaimDone(channel: string, msg: MessageInput): Promise<ClaimResult>;
 
   /**
    * Mint a cursor at the channel's current head. This is a stateless

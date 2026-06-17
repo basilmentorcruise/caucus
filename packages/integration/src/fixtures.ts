@@ -12,6 +12,10 @@ import { newMsgId, type MessageInput } from "@caucus/schema";
 export interface MessageOpts {
   /** Defaults to `"note"` for findings / `"claiming <target>"` for claims. */
   readonly body?: string;
+  /** Claim only (CAU-18): lease length in seconds before lapse without heartbeat. */
+  readonly lease_ttl?: number;
+  /** Claim only (CAU-18): mark a keep-alive that renews the holder's lease. */
+  readonly heartbeat?: boolean;
 }
 
 /**
@@ -61,7 +65,7 @@ export function claimMsg(
   target: string,
   opts: MessageOpts = {},
 ): MessageInput {
-  return {
+  const msg: MessageInput = {
     type: "claim",
     agent_id: agentId,
     owner,
@@ -69,4 +73,8 @@ export function claimMsg(
     body: opts.body ?? `claiming ${target}`,
     target,
   };
+  // CAU-18 lease fields: copy only when present so a plain claim stays byte-equal.
+  if (opts.lease_ttl !== undefined) msg.lease_ttl = opts.lease_ttl;
+  if (opts.heartbeat !== undefined) msg.heartbeat = opts.heartbeat;
+  return msg;
 }
