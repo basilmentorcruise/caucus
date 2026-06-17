@@ -107,6 +107,12 @@ class FakeBackbone implements Backbone {
   claim(_channel: string, _msg: MessageInput): Promise<ClaimResult> {
     throw new Error("not used");
   }
+  reassignClaim(_channel: string, _msg: MessageInput): Promise<ClaimResult> {
+    throw new Error("not used");
+  }
+  markClaimDone(_channel: string, _msg: MessageInput): Promise<ClaimResult> {
+    throw new Error("not used");
+  }
   putArtifact(): Promise<never> {
     throw new Error("not used");
   }

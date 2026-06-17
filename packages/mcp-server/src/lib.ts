@@ -21,6 +21,8 @@ export {
 } from "./tools/registry.js";
 export { postTool, postFindingTool, steerTool } from "./tools/post.js";
 export { claimTool } from "./tools/claim.js";
+export { reassignTool } from "./tools/reassign.js";
+export { markDoneTool } from "./tools/mark-done.js";
 export { statusTool } from "./tools/status.js";
 export { subscribeTool } from "./tools/subscribe.js";
 export { readChannelTool } from "./tools/read-channel.js";

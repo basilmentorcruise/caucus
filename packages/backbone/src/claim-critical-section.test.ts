@@ -62,15 +62,18 @@ describe("claim() critical-section guard (no await between ledger read and write
     expect(source.indexOf(BEGIN)).toBeLessThan(source.indexOf(END));
   });
 
-  it("the marked region still wraps the ledger read AND the ledger write", () => {
+  it("the marked region still wraps the ledger read, write AND delete", () => {
     const region = source.slice(
       source.indexOf(BEGIN),
       source.indexOf(END),
     );
     // If a refactor moves the compare-and-set out from between the markers,
-    // the guard would be watching dead air — fail loudly instead.
+    // the guard would be watching dead air — fail loudly instead. CAU-18 added
+    // the `done` transition (delete the ledger entry); it MUST live in the same
+    // no-await region as the read/write so freeing a target is atomic too.
     expect(region).toContain("claimLedger.get(");
     expect(region).toContain("claimLedger.set(");
+    expect(region).toContain("claimLedger.delete(");
   });
 
   it("contains no deferral in code between the markers", () => {
@@ -94,6 +97,23 @@ describe("claim() critical-section guard (no await between ledger read and write
         "read-then-write must be a single run-to-completion step; see " +
         "docs/BACKBONE_CONTRACT.md). Restructure so all deferrals happen " +
         "BEFORE the CLAIM-CRITICAL-SECTION-BEGIN marker.",
+    ).toEqual([]);
+  });
+
+  it("uses NO timer/sweeper anywhere in in-memory.ts (CAU-18: lazy expiry only)", () => {
+    // Lease expiry is LAZY — computed inside the claim transition against the
+    // injected clock, never via a background sweep. A `setTimeout`/`setInterval`
+    // would reintroduce wall-clock scheduling (and a yield) and is forbidden by
+    // the CAU-18 plan. Strip comments first (the prose legitimately mentions
+    // "no setTimeout"); assert no timer call survives in real code.
+    const code = stripComments(source);
+    const timers =
+      code.match(/\b(setTimeout|setInterval|setImmediate)\s*\(/g) ?? [];
+    expect(
+      timers,
+      "in-memory.ts introduced a timer (setTimeout/setInterval/setImmediate) — " +
+        "lease expiry MUST stay lazy (evaluated on the next claim against the " +
+        "injected clock), with no background sweeper (CAU-18).",
     ).toEqual([]);
   });
 });
