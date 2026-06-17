@@ -16,6 +16,7 @@ import { registerTools, type CaucusTool } from "./tools/registry.js";
 import { statusTool } from "./tools/status.js";
 import { postTool, postFindingTool, steerTool } from "./tools/post.js";
 import { readChannelTool } from "./tools/read-channel.js";
+import { catchMeUpTool } from "./tools/catch-me-up.js";
 import { claimTool } from "./tools/claim.js";
 import { reassignTool } from "./tools/reassign.js";
 import { markDoneTool } from "./tools/mark-done.js";
@@ -57,6 +58,7 @@ export function createCaucusServer({
     postFindingTool,
     steerTool,
     readChannelTool,
+    catchMeUpTool,
     claimTool,
     reassignTool,
     markDoneTool,
