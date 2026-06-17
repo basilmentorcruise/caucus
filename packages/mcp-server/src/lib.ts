@@ -26,6 +26,16 @@ export { markDoneTool } from "./tools/mark-done.js";
 export { statusTool } from "./tools/status.js";
 export { subscribeTool } from "./tools/subscribe.js";
 export { readChannelTool } from "./tools/read-channel.js";
+export { catchMeUpTool } from "./tools/catch-me-up.js";
+export {
+  buildDigest,
+  renderDigestMarkdown,
+  oneLine,
+  mdInert,
+  DIGEST_BODY_CHARS,
+  KEY_FINDINGS_CAP,
+  type DigestStructured,
+} from "./digest.js";
 export {
   listChannelsTool,
   describeChannelTool,

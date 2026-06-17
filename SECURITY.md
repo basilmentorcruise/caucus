@@ -173,6 +173,13 @@ defend against any of the following:
   - the `caucus_claim` tool, which strips the winner's `agent_id`/`owner` in an
     `already_claimed.by` result before serializing it into the losing agent's model context (CAU-73);
   - `caucus_read_channel` additionally strips the `agent_id` it serializes.
+  - the `caucus_catch_me_up` MCP tool, which one-lines + strips control bytes from
+    `body`/`owner`/`agent_id`/claim `target`/`purpose` in both the structured digest and the
+    markdown export, and additionally backslash-escapes every mid-line-active markdown
+    metacharacter in the markdown export so a pasted fragment cannot forge a heading, link,
+    table, or blockquote (CAU-19). **Caveat:** the markdown export neutralizes active markdown
+    *structure* but does NOT strip URL-shaped text — treat a pasted export as untrusted log
+    content, and render it with a CommonMark-safe (HTML-off) renderer.
 
   Read-side stripping is defense-in-depth layer two: since CAU-71 the root-cause fix is in place —
   the schema validator (and the backbone's channel-create boundary) **rejects** control characters

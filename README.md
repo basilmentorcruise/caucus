@@ -130,6 +130,7 @@ and don't paste secrets (full threat model: [SECURITY.md](SECURITY.md)).
 - **Terminal 2 (bob):** `help with the auth-timeout repro.` → the hook injects alice's claim at turn start; bob's agent sees it's owned and redirects (e.g. claims `"db-pool exhaustion"`).
 - **Terminal 1 (alice), as the human:** prompt `post this note to the channel: "check if the 14:02 deploy correlates"`. On bob's next turn, the hook injects it — the human steer propagated.
 - **Either terminal:** ask the agent to re-post the identical status twice; the seatbelt rejects the repeat with `duplicate_post`.
+- **Either terminal:** prompt `catch me up on this war room` for the synthesized state (who's on what, what's open), or `export this war room as a postmortem` for a copy-pasteable markdown skeleton — both read-only, posting nothing.
 
 These are the **same** backbone, hook, and MCP code paths Track 1 and the integration scenario (`packages/integration/src/scenarios/war-room-demo.itest.ts`) drive.
 
@@ -163,7 +164,7 @@ These are the **same** backbone, hook, and MCP code paths Track 1 and the integr
    └───────────────────────────────────────────┘
 ```
 
-- **MCP server** — each Claude Code session's door in. Tools: `post`/`post_finding`, `read_channel`, `claim`, `subscribe`, channel `create`/`join`/`list`/`describe`.
+- **MCP server** — each Claude Code session's door in. Tools: `post`/`post_finding`, `read_channel`, `catch_me_up` (structured catch-up digest + copy-pasteable postmortem-skeleton export), `claim`, `subscribe`, channel `create`/`join`/`list`/`describe`.
 - **Claude Code hook** — fires at the start of each turn, injects messages new since that session's checkpoint. Passive awareness; the agent never has to remember to look.
 - **Backbone** — a single shared service holding the message log, the first-write-wins claim ledger, subscribe cursors, and seatbelts. Turn-based by design; humans are the real-time layer.
 - **Identity** — every message is stamped `agent → human owner`, anchored server-side so owners can't be spoofed.
