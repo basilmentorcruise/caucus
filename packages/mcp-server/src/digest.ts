@@ -182,11 +182,22 @@ export function oneLine(s: string): string {
 }
 
 /**
- * Backslash-escape every markdown metacharacter so a poster-controlled fragment
- * embedded in the markdown export cannot forge structure (ADR-C12). Escapes the
- * CommonMark ASCII punctuation that is active in our render — headings (`#`),
- * emphasis (`* _`), code (`` ` ``), links/images (`[ ] ( ) !`), lists (`+ - .`),
- * braces (`{ }`), tables (`|`), blockquotes (`>`), and the backslash itself.
+ * Backslash-escape every markdown metacharacter that is active MID-LINE so a
+ * poster-controlled fragment embedded in the markdown export cannot forge
+ * structure (ADR-C12). Escapes the CommonMark ASCII punctuation that can take
+ * effect anywhere in a line — emphasis (`* _`), code (`` ` ``), links/images
+ * (`[ ] ( ) !`), headings (`#`), braces (`{ }`), tables (`|`), blockquotes
+ * (`>`), and the backslash itself.
+ *
+ * `+`, `-`, and `.` are DELIBERATELY excluded. They are markdown-structural ONLY
+ * at line-start (a bullet `- ` / `+ ` or an ordered-list `1. `): every fragment
+ * this function receives is {@link oneLine}d (newline-free) and interpolated
+ * MID-LINE, so none of them can ever sit at a line-start. Escaping them bought
+ * no injection defense and only littered hyphenated identifiers/versions
+ * (`incident-1`, `auth-service`, `v1.2.3`) with `\-`/`\.` in human-pasted
+ * postmortems. ALL mid-line-active metacharacters remain escaped: a forged
+ * heading (`## `), a link (`](http…)`), emphasis, code, a table, or a blockquote
+ * is still neutralized (the C3 vision-guard asserts this).
  *
  * Input is expected to already be {@link oneLine}d (single line, control-byte
  * free): so a forged `\n## Heading` cannot survive (the newline is gone), and
@@ -195,7 +206,7 @@ export function oneLine(s: string): string {
  * not themselves re-escaped.
  */
 export function mdInert(s: string): string {
-  return s.replace(/[\\`*_{}[\]()#+\-.!|>]/g, "\\$&");
+  return s.replace(/[\\`*_{}[\]()#!|>]/g, "\\$&");
 }
 
 /**
@@ -391,9 +402,17 @@ export function buildDigest(
   };
 }
 
-/** Render a single `by_type` count line, e.g. `finding: 3 · claim: 1 · …`. */
+/**
+ * Render a single `by_type` count line, e.g. `finding: 3 · claim: 1`. Zero-count
+ * types are dropped HERE (markdown surface only) so the line stays scannable;
+ * falls back to `_none_` when nothing was posted. The STRUCTURED `by_type`
+ * object stays fully zero-filled for byte-identical JSON (determinism B2/B7).
+ */
 function renderCounts(by_type: ByType): string {
-  return MESSAGE_TYPES.map((t) => `${t}: ${by_type[t]}`).join(" · ");
+  const parts = MESSAGE_TYPES.filter((t) => by_type[t] > 0).map(
+    (t) => `${t}: ${by_type[t]}`,
+  );
+  return parts.length > 0 ? parts.join(" · ") : "_none_";
 }
 
 /** A markdown artifact marker for a finding that links to full content (ADR-C12). */
@@ -416,19 +435,19 @@ export function renderDigestMarkdown(
 ): string {
   const lines: string[] = [];
 
-  // Title — channel + purpose (both poster-controlled → inert).
+  // Title — the incident's identity (channel + purpose), NOT the tool brand.
+  // Both poster-controlled → inert. The tool brand moves to a quiet subtitle.
   if (descriptor !== undefined) {
     const channel = mdInert(oneLine(descriptor.channel));
     if (typeof descriptor.purpose === "string" && descriptor.purpose.length > 0) {
-      lines.push(
-        `# Caucus war room: ${channel} — ${mdInert(oneLine(descriptor.purpose))}`,
-      );
+      lines.push(`# ${channel} — ${mdInert(oneLine(descriptor.purpose))}`);
     } else {
-      lines.push(`# Caucus war room: ${channel}`);
+      lines.push(`# ${channel}`);
     }
   } else {
-    lines.push("# Caucus war room");
+    lines.push("# War room digest");
   }
+  lines.push("_Caucus war-room digest._");
   lines.push("");
 
   // Participants.
@@ -499,8 +518,13 @@ export function renderDigestMarkdown(
   lines.push(renderCounts(digest.by_type));
   lines.push("");
 
-  // Cursor footer so an IC can resume an incremental catch-up.
-  lines.push(`_cursor: ${digest.window.to_cursor}_`);
+  // Machine-metadata footer: a self-describing line a human can recognize and
+  // delete, and an agent can parse for the resume token. The HR separates it
+  // from the human-facing body.
+  lines.push("---");
+  lines.push(
+    `_Caucus digest · resume with since=${digest.window.to_cursor} · ${digest.window.message_count} messages in this window._`,
+  );
 
   return lines.join("\n");
 }

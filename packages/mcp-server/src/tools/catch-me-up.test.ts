@@ -75,10 +75,11 @@ describe("caucus_catch_me_up (A1 — unknown channel tolerance)", () => {
     const backbone = new InMemoryBackbone();
     const session = createSession(config, backbone);
     const md = markdown(await catchMeUpTool.handle(session, { format: "markdown" }));
-    // The channel slug is mdInert-escaped (the hyphen is a markdown metachar).
-    expect(md).toContain("# Caucus war room: incident\\-1");
+    // H1 is the channel identity; the hyphen is no longer escaped (mid-line).
+    expect(md).toContain("# incident-1");
+    expect(md).toContain("_Caucus war-room digest._");
     expect(md).toContain("_No findings yet._");
-    expect(md).toContain("_cursor: 0_");
+    expect(md).toContain("resume with since=0");
   });
 });
 
@@ -139,8 +140,8 @@ describe("caucus_catch_me_up (markdown title from descriptor)", () => {
     const { backbone, session } = await createdSession();
     await backbone.append("incident-1", finding("agent-1", "alice", "found it"));
     const md = markdown(await catchMeUpTool.handle(session, { format: "markdown" }));
-    // Channel slug + purpose are mdInert-escaped (hyphens are markdown metachars).
-    expect(md).toContain("# Caucus war room: incident\\-1 — test catch\\-up");
+    // H1 is `# channel — purpose`; hyphens are no longer escaped (mid-line).
+    expect(md).toContain("# incident-1 — test catch-up");
     expect(md).toContain("found it");
   });
 });

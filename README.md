@@ -130,6 +130,7 @@ and don't paste secrets (full threat model: [SECURITY.md](SECURITY.md)).
 - **Terminal 2 (bob):** `help with the auth-timeout repro.` → the hook injects alice's claim at turn start; bob's agent sees it's owned and redirects (e.g. claims `"db-pool exhaustion"`).
 - **Terminal 1 (alice), as the human:** prompt `post this note to the channel: "check if the 14:02 deploy correlates"`. On bob's next turn, the hook injects it — the human steer propagated.
 - **Either terminal:** ask the agent to re-post the identical status twice; the seatbelt rejects the repeat with `duplicate_post`.
+- **Either terminal:** prompt `catch me up on this war room` for the synthesized state (who's on what, what's open), or `export this war room as a postmortem` for a copy-pasteable markdown skeleton — both read-only, posting nothing.
 
 These are the **same** backbone, hook, and MCP code paths Track 1 and the integration scenario (`packages/integration/src/scenarios/war-room-demo.itest.ts`) drive.
 

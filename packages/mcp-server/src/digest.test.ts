@@ -280,17 +280,25 @@ describe("oneLine + mdInert helpers", () => {
     expect(oneLine(`a${ESC}[31mb${C1}c${DEL}`)).toBe("a[31mbc");
   });
 
-  it("mdInert escapes markdown metacharacters", () => {
+  it("mdInert escapes mid-line-active markdown metacharacters", () => {
     expect(mdInert("## heading")).toBe("\\#\\# heading");
     expect(mdInert("[evil](http://x)")).toBe("\\[evil\\]\\(http://x\\)");
     expect(mdInert("a*b_c`d|e>f")).toBe("a\\*b\\_c\\`d\\|e\\>f");
     // Backslash escaped first so escapes are not double-escaped.
     expect(mdInert("a\\b")).toBe("a\\\\b");
   });
+
+  it("mdInert does NOT escape +, -, . (structural only at line-start; fragments are mid-line)", () => {
+    // Hyphenated identifiers and versions stay clean in human-pasted postmortems.
+    expect(mdInert("incident-1")).toBe("incident-1");
+    expect(mdInert("auth-service")).toBe("auth-service");
+    expect(mdInert("v1.2.3")).toBe("v1.2.3");
+    expect(mdInert("a+b")).toBe("a+b");
+  });
 });
 
 describe("renderDigestMarkdown — layout (C1/C2/C4)", () => {
-  it("renders all sections in order with a title + cursor footer", () => {
+  it("renders all sections in order with a title, subtitle + resume footer", () => {
     const f = msg({ type: "finding", owner: "alice", agent_id: "a", body: "found a bug", artifact: "caucus-artifact://x" });
     const q = msg({ type: "question", owner: "bob", agent_id: "b", body: "is it fixed?" });
     const messages = [
@@ -302,8 +310,12 @@ describe("renderDigestMarkdown — layout (C1/C2/C4)", () => {
     const d = buildDigest(messages, { from_cursor: 0, to_cursor: 4 });
     const md = renderDigestMarkdown(d, { channel: "incident-7", purpose: "checkout 500s" });
 
-    // The channel slug is mdInert-escaped (the hyphen is a markdown metachar).
-    expect(md).toContain("# Caucus war room: incident\\-7 — checkout 500s");
+    // H1 is the incident's identity (channel — purpose), NOT the tool brand.
+    // The hyphen in `incident-7` is no longer escaped (mid-line, not structural).
+    expect(md).toContain("# incident-7 — checkout 500s");
+    // The tool brand is a quiet subtitle right under the H1.
+    expect(md).toContain("_Caucus war-room digest._");
+    expect(md).not.toContain("# Caucus war room");
     // Section order.
     const idxParticipants = md.indexOf("## Participants");
     const idxTimeline = md.indexOf("## Timeline of findings");
@@ -320,13 +332,19 @@ describe("renderDigestMarkdown — layout (C1/C2/C4)", () => {
     expect(md).toContain("↗artifact");
     expect(md).toContain("found a bug");
     expect(md).toContain("is it fixed?");
-    expect(md).toContain("_cursor: 4_");
+    // Self-describing machine-metadata footer (HR + labeled resume line).
+    expect(md).toContain("---");
+    expect(md).toContain(
+      "_Caucus digest · resume with since=4 · 4 messages in this window._",
+    );
   });
 
   it("title fallback without purpose, and empty-section stubs", () => {
     const d = buildDigest([], { from_cursor: 0, to_cursor: 0 });
     const md = renderDigestMarkdown(d, { channel: "quiet-room" });
-    expect(md).toContain("# Caucus war room: quiet\\-room");
+    // Hyphen no longer escaped; H1 is just the channel, no em-dash separator.
+    expect(md).toContain("# quiet-room");
+    expect(md).toContain("_Caucus war-room digest._");
     expect(md).not.toContain(" — ");
     expect(md).toContain("_No participants yet._");
     expect(md).toContain("_No findings yet._");
@@ -334,7 +352,34 @@ describe("renderDigestMarkdown — layout (C1/C2/C4)", () => {
     expect(md).toContain("_No open questions._");
     // No-descriptor fallback title.
     const md2 = renderDigestMarkdown(d);
-    expect(md2).toContain("# Caucus war room");
+    expect(md2).toContain("# War room digest");
+  });
+
+  it("the markdown counts line drops zero-count types but the structured by_type stays zero-filled", () => {
+    const messages = [
+      msg({ type: "finding", body: "f" }),
+      msg({ type: "finding", body: "g" }),
+      msg({ type: "claim", target: "t", owner: "alice", agent_id: "a" }),
+    ];
+    const d = buildDigest(messages, WINDOW);
+    const md = renderDigestMarkdown(d, { channel: "c" });
+
+    // Markdown surface: only the non-zero types appear on the Counts line.
+    const countsLine = md.split("\n")[md.split("\n").indexOf("## Counts") + 1]!;
+    expect(countsLine).toBe("finding: 2 · claim: 1");
+    expect(countsLine).not.toContain("question:");
+    expect(countsLine).not.toContain(": 0");
+
+    // Structured object: ALL types present, zero-filled (determinism B2/B7).
+    for (const t of MESSAGE_TYPES) expect(d.by_type[t]).toBeTypeOf("number");
+    expect(d.by_type.question).toBe(0);
+  });
+
+  it("the markdown counts line falls back to _none_ on an empty window", () => {
+    const d = buildDigest([], { from_cursor: 0, to_cursor: 0 });
+    const md = renderDigestMarkdown(d, { channel: "c" });
+    const countsLine = md.split("\n")[md.split("\n").indexOf("## Counts") + 1]!;
+    expect(countsLine).toBe("_none_");
   });
 
   it("renders the findings overflow line when capped", () => {

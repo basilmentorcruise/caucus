@@ -40,7 +40,7 @@ const CATCH_ME_UP_INPUT = {
     .optional()
     .describe(
       "Opaque numeric cursor from a prior digest's `to_cursor` (structured) or " +
-        "`_cursor:` footer (markdown). Absent ⇒ summarize from the channel " +
+        "`since=N` footer (markdown). Absent ⇒ summarize from the channel " +
         "start. Pass it back to take an incremental catch-up of only what's new.",
     ),
   channel: z
@@ -55,8 +55,10 @@ const CATCH_ME_UP_INPUT = {
     .enum(["structured", "markdown"])
     .default("structured")
     .describe(
-      "`structured` (default) returns the JSON projection for an agent to read; " +
-        "`markdown` returns a copy-pasteable postmortem skeleton for a human.",
+      "`structured` (default) returns the JSON projection for you to read and " +
+        "narrate to your human; `markdown` returns a copy-pasteable postmortem " +
+        "skeleton — the human-handoff trigger: reach for it when a human asks to " +
+        "export, write up, or hand off the war room.",
     ),
 } as const satisfies ZodRawShapeCompat;
 
@@ -95,15 +97,17 @@ async function drainWindow(
 export const catchMeUpTool: CaucusTool = {
   name: "caucus_catch_me_up",
   description:
-    "Catch up on (or export) a Caucus war room. Read-only: posts NOTHING " +
-    "(ADR-C6). Returns a deterministic, structured projection of the channel " +
-    "over a cursor window — message counts by type, participants, open/" +
-    "resolved claims, unanswered questions, and a timeline of findings — so " +
-    "you can see the state of an investigation 40 messages deep WITHOUT " +
+    "Catch up on (or export) a Caucus war room. Returns the SYNTHESIZED state " +
+    "of the investigation — who's on what, what's open, the key findings — NOT " +
+    "the raw message scroll (for that, use caucus_read_channel). Read-only: " +
+    "posts NOTHING (ADR-C6). It is a deterministic, structured projection of " +
+    "the channel over a cursor window — message counts by type, participants, " +
+    "open/resolved claims, unanswered questions, and a timeline of findings — " +
+    "so you can see the state of an investigation 40 messages deep WITHOUT " +
     "re-reading the raw scroll. `format: \"structured\"` (default) returns " +
     "JSON for you to read and narrate; `format: \"markdown\"` returns a copy-" +
     "pasteable postmortem skeleton for a human. Omit `since` to summarize from " +
-    "the start; pass back the returned `to_cursor` (structured) or `_cursor:` " +
+    "the start; pass back the returned `to_cursor` (structured) or `since=N` " +
     "footer (markdown) as `since` to take an incremental catch-up of only " +
     "what's new. Use `channel` to summarize a room you joined (default: your " +
     "session channel). It drains the whole window, not one page, and there is " +

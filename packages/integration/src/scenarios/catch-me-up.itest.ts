@@ -148,8 +148,10 @@ describe("CAU-19 caucus_catch_me_up — in-process shared backbone", () => {
       (await catchMeUpTool.handle(session(), { format: "markdown" })) as CallToolResult,
     );
 
-    // Channel slug + purpose are mdInert-escaped (hyphens are markdown metachars).
-    expect(md).toContain("# Caucus war room: incident\\-catch\\-me\\-up — checkout 500s spike");
+    // H1 is the incident identity (channel — purpose); hyphens are no longer
+    // escaped (mid-line, not line-start-structural). The tool brand is a subtitle.
+    expect(md).toContain("# incident-catch-me-up — checkout 500s spike");
+    expect(md).toContain("_Caucus war-room digest._");
     const order = [
       "## Participants",
       "## Timeline of findings",
@@ -166,9 +168,9 @@ describe("CAU-19 caucus_catch_me_up — in-process shared backbone", () => {
       prev = idx;
     }
     expect(md).toContain("p99 latency spiked at 14:02");
-    // The claim target is mdInert-escaped (the hyphen is a markdown metachar).
-    expect(md).toContain("auth\\-service");
+    // The claim target hyphen is no longer escaped (mid-line, not structural).
+    expect(md).toContain("auth-service");
     expect(md).toContain("should we roll back?");
-    expect(md).toMatch(/_cursor: \d+_/);
+    expect(md).toMatch(/_Caucus digest · resume with since=\d+ · \d+ messages in this window\._/);
   });
 });
