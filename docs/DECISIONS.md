@@ -97,6 +97,17 @@ Status: ✅ Accepted · 🕓 Deferred (planned) · 🔄 Superseded
 
 ---
 
+## ADR-C15 — Human observability via a read-only SSE log-tail 🕓
+**Decision.** Caucus ships one read-only streaming endpoint, `GET /channels/:channel/stream`, on the existing shared server, emitting each new log message as a sanitized `text/event-stream` JSON frame, driven by a server-internal `readSince` poll loop (the backbone has no server-push primitive; it polls at human cadence, ~1s). It is a **human read-tail, NOT the deferred real-time SDK (ADR-C4/CAU-16)** and not an agent transport — agents remain turn-based via the hook; the stream is one-directional, write-free, and never touches the turn loop. It is **tokenless-read within the ADR-C9 boundary, loopback-default** (inherits the existing bind posture + `bindExposureWarning`); the trust model is unchanged because it is `readSince` with the socket held open. Stream start defaults to the `subscribe`-minted head (future-only, calm-feed); an optional `?since=<cursor>` (the same integer `readSince` takes) is in MVP for mid-incident catch-up. The route **consciously exempts itself from the CAU-75 slowloris request/keepalive timeouts** and instead bounds resources with periodic heartbeat comments and a **max-concurrent-stream cap (32, exported/tunable; N+1th → 503)** — the exemption is scoped to this route only and must not weaken the JSON routes' timeouts.
+
+**ADR-C12 stance — satisfied by reuse, not extension.** The frame payload is the same field-sanitized JSON `caucus_read_channel` already returns (`stripControlChars*`), produced via the same path (asserted byte-identical), so there is no new serializer and no new leak class. `text/event-stream` is not a DOM — no HTML/XSS surface (that arrives only with the deferred web viewer, CAU-118, which gets its own ADR-C12 review). No schema change, no version bump.
+
+**Alternatives.** (A) A read-only HTML web viewer — deferred to CAU-118 (first browser/XSS surface; a real ADR-C12 expansion; structurally built on this stream). (C) An Ergo/IRC mirror — rejected: reopens the closed ADR-C2 "not an Ergo fork" decision against no demonstrated IRC demand, adds a second auth-less network listener (ADR-C9), heaviest maintenance/leak burden; stays the documented reversible fallback, unbuilt.
+
+**Why.** The incident-commander persona (the CAU-19 retention story) benefits from a live, no-agent-required window on the war room. SSE is the minimal surface that proves it — rides seams that already exist and are already authorized, adds no new leak class, keeps ADR-C4 intact, and needs no new client (`curl -N | jq` is the demo).
+
+---
+
 ## Open risks tracked against these decisions
 - **Substrate spike (ADR-C2):** ✅ resolved — **GO**. Atomic first-write-wins claim, cursor survival across discrete MCP calls, and acceptable turn-based latency all empirically confirmed; transport = HTTP + cursor polling, store = append-only event log + projections. See [docs/spikes/cau-2-substrate/verdict.md](spikes/cau-2-substrate/verdict.md) (CAU-2).
 - **Hook capability (ADR-C3):** confirm a Claude Code hook can fetch-and-inject external context each turn; fallback is a "you have N new messages" nudge.
