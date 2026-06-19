@@ -36,6 +36,7 @@ export {
   containsControlChars,
   containsControlCharsExceptWhitespace,
 } from "./sanitize.js";
+export { sanitizeMessageFields } from "./sanitize-message.js";
 export { isUlid, newMsgId } from "./ulid.js";
 export { normalizeTarget } from "./target.js";
 export { validate, validateIdentityField } from "./validate.js";

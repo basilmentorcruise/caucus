@@ -22,6 +22,7 @@ import {
   HEADERS_TIMEOUT_MS,
   KEEP_ALIVE_TIMEOUT_MS,
   MAX_BODY_BYTES,
+  MAX_CONCURRENT_STREAMS,
   REQUEST_TIMEOUT_MS,
   type AuthContext,
   type RunningServer,
@@ -990,6 +991,337 @@ describe("server lifecycle (sockets)", () => {
     expect(running.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(running.boundHost).toBe("127.0.0.1");
   });
+});
+
+/**
+ * Open an SSE stream over `node:http` and collect frames. Returns the response
+ * status, a live accessor for received `data:` frames + raw text, and an
+ * `abort()` that destroys the socket. SSE tests are leak-prone, so EVERY caller
+ * must `abort()` in a `finally` and the server must be closed in `afterEach`.
+ */
+interface SseHandle {
+  readonly status: number;
+  /** Parsed JSON payloads from each `data:` frame, in arrival order. */
+  readonly frames: () => unknown[];
+  /** The full raw response text (includes heartbeat comment lines). */
+  readonly raw: () => string;
+  readonly abort: () => void;
+}
+
+function openSse(url: string, path: string): Promise<SseHandle> {
+  const { hostname, port } = new URL(url);
+  return new Promise<SseHandle>((resolve, reject) => {
+    const req = httpRequest(
+      { hostname, port, method: "GET", path, headers: { accept: "text/event-stream" } },
+      (res) => {
+        let buf = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk: string) => {
+          buf += chunk;
+        });
+        res.on("error", () => {
+          /* socket torn down by abort() — ignore */
+        });
+        const parseFrames = (): unknown[] =>
+          buf
+            .split("\n\n")
+            .map((block) => {
+              const line = block
+                .split("\n")
+                .find((l) => l.startsWith("data: "));
+              return line === undefined ? undefined : line.slice("data: ".length);
+            })
+            .filter((d): d is string => d !== undefined)
+            .map((d) => JSON.parse(d));
+        resolve({
+          status: res.statusCode ?? 0,
+          frames: parseFrames,
+          raw: () => buf,
+          abort: () => req.destroy(),
+        });
+      },
+    );
+    req.on("error", (err: NodeJS.ErrnoException) => {
+      // destroy() after a response surfaces here as ECONNRESET — benign.
+      if (err.code === "ECONNRESET") return;
+      reject(err);
+    });
+    req.end();
+  });
+}
+
+/** Poll a predicate up to `timeoutMs`, resolving as soon as it holds. */
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 3_000,
+  stepMs = 50,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise<void>((r) => setTimeout(r, stepMs));
+  }
+  if (!predicate()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
+}
+
+describe("GET /channels/:channel/stream — read-only SSE log-tail (CAU-17, ADR-C15)", () => {
+  let running: RunningServer | undefined;
+
+  afterEach(async () => {
+    if (running) {
+      await running.close();
+      running = undefined;
+    }
+  });
+
+  async function bootWithChannel(): Promise<InMemoryBackbone> {
+    const bb = await seeded();
+    running = await startServer({ port: 0, backbone: bb, tokens: TOKENS });
+    return bb;
+  }
+
+  it("AC1 — opens 200 text/event-stream; opening posts nothing (head unchanged)", async () => {
+    const bb = await bootWithChannel();
+    const before = (await bb.describeChannel("c1")).head;
+    const sse = await openSse(running!.url, "/channels/c1/stream");
+    try {
+      expect(sse.status).toBe(200);
+      // header is asserted via the raw response below; status 200 + frames work
+      const after = (await bb.describeChannel("c1")).head;
+      expect(after).toBe(before); // no append, no claim recorded
+    } finally {
+      sse.abort();
+    }
+  });
+
+  it("AC1 — sets Content-Type: text/event-stream", async () => {
+    await bootWithChannel();
+    // fetch with a manual abort so the held-open stream does not hang the test.
+    const ac = new AbortController();
+    try {
+      const res = await fetch(`${running!.url}/channels/c1/stream`, {
+        signal: ac.signal,
+      });
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("text/event-stream");
+    } finally {
+      ac.abort();
+    }
+  });
+
+  it("AC1 — a POST/PUT/DELETE to the stream path → 405", async () => {
+    await bootWithChannel();
+    for (const method of ["POST", "PUT", "DELETE"]) {
+      const res = await fetch(`${running!.url}/channels/c1/stream`, {
+        method,
+        headers: BEARER_A,
+      });
+      expect(res.status).toBe(405);
+    }
+  });
+
+  it("AC2/AC3 — a message appended after connect arrives within ~one poll; frame byte-identical to readSince", async () => {
+    const bb = await bootWithChannel();
+    const sse = await openSse(running!.url, "/channels/c1/stream");
+    try {
+      expect(sse.status).toBe(200);
+      // Append AFTER connect; read the same message via readSince and assert the
+      // frame payload is byte-identical (same shared sanitizer — ADR-C15). Writes
+      // reject control bytes (CAU-71), so the in-frame strip is exercised by the
+      // pure unit test + the raw-wire integration test; here we pin byte-identity.
+      const appended = await bb.append("c1", {
+        type: "finding",
+        agent_id: "alice-agent",
+        owner: "alice",
+        msg_id: newMsgId(),
+        body: "live finding",
+      });
+      await waitFor(() => sse.frames().length >= 1);
+      const frame = sse.frames()[0];
+      const { messages } = await bb.readSince("c1", appended.cursor - 1);
+      const { sanitizeMessageFields } = await import("@caucus/schema");
+      expect(JSON.stringify(frame)).toBe(
+        JSON.stringify(sanitizeMessageFields(messages[0]!)),
+      );
+      expect(JSON.stringify(frame)).not.toMatch(CONTROL_CHARS);
+    } finally {
+      sse.abort();
+    }
+  });
+
+  it("AC3 — no ?since starts at head: a pre-connect message is NOT delivered", async () => {
+    const bb = await bootWithChannel();
+    // Append BEFORE connecting — must be invisible (subscribe-minted head).
+    await bb.append("c1", {
+      type: "note",
+      agent_id: "alice-agent",
+      owner: "alice",
+      msg_id: newMsgId(),
+      body: "old, pre-connect",
+    });
+    const sse = await openSse(running!.url, "/channels/c1/stream");
+    try {
+      // Append one AFTER connect; only it should arrive.
+      await bb.append("c1", {
+        type: "note",
+        agent_id: "alice-agent",
+        owner: "alice",
+        msg_id: newMsgId(),
+        body: "new, post-connect",
+      });
+      await waitFor(() => sse.frames().length >= 1);
+      const bodies = sse.frames().map((f) => (f as { body: string }).body);
+      expect(bodies).toContain("new, post-connect");
+      expect(bodies).not.toContain("old, pre-connect");
+    } finally {
+      sse.abort();
+    }
+  });
+
+  it("AC3 — ?since replays from the cursor with no dup/skip; ordered once-each", async () => {
+    const bb = await bootWithChannel();
+    // Seed three messages; subscribe at cursor 1 (after the first).
+    for (const body of ["m0", "m1", "m2"]) {
+      await bb.append("c1", {
+        type: "note",
+        agent_id: "alice-agent",
+        owner: "alice",
+        msg_id: newMsgId(),
+        body,
+      });
+    }
+    const sse = await openSse(running!.url, "/channels/c1/stream?since=1");
+    try {
+      expect(sse.status).toBe(200);
+      await waitFor(() => sse.frames().length >= 2);
+      // Append one more live; it must follow with no gap and no duplicate.
+      await bb.append("c1", {
+        type: "note",
+        agent_id: "alice-agent",
+        owner: "alice",
+        msg_id: newMsgId(),
+        body: "m3",
+      });
+      await waitFor(() => sse.frames().length >= 3);
+      const bodies = sse.frames().map((f) => (f as { body: string }).body);
+      expect(bodies).toEqual(["m1", "m2", "m3"]); // exactly, in order, once each
+    } finally {
+      sse.abort();
+    }
+  });
+
+  it("AC3 — a malformed ?since → 400 invalid_request", async () => {
+    await bootWithChannel();
+    for (const bad of ["abc", "-1", "1.5"]) {
+      const res = await fetch(
+        `${running!.url}/channels/c1/stream?since=${bad}`,
+      );
+      expect(res.status).toBe(400);
+      expect((await jsonBody(res)).error).toMatchObject({
+        code: "invalid_request",
+      });
+    }
+  });
+
+  it("AC3 — an out-of-range ?since (> head) → 400 invalid_cursor (mirrors readSince)", async () => {
+    await bootWithChannel();
+    const res = await fetch(`${running!.url}/channels/c1/stream?since=999`);
+    expect(res.status).toBe(400);
+    expect((await jsonBody(res)).error).toMatchObject({ code: "invalid_cursor" });
+  });
+
+  it("AC4 — the stream works with NO Authorization header (tokenless read)", async () => {
+    await bootWithChannel(); // server is token-gated for WRITES
+    const sse = await openSse(running!.url, "/channels/c1/stream");
+    try {
+      expect(sse.status).toBe(200); // no bearer sent, still opens
+    } finally {
+      sse.abort();
+    }
+  });
+
+  it("AC6 — unknown channel → 404, never auto-created", async () => {
+    await bootWithChannel();
+    const res = await fetch(`${running!.url}/channels/never-made/stream`);
+    expect(res.status).toBe(404);
+    expect((await jsonBody(res)).error).toMatchObject({ code: "unknown_channel" });
+    // It did not auto-create the channel.
+    const list = await fetch(`${running!.url}/channels`);
+    const names = ((await jsonBody(list)).channels as { channel: string }[]).map(
+      (c) => c.channel,
+    );
+    expect(names).not.toContain("never-made");
+  });
+
+  it("AC6 — an existing-but-empty channel opens 200 and stays silent until a message", async () => {
+    const bb = new InMemoryBackbone();
+    await bb.createChannel({ channel: "empty", purpose: "p", created_by: "alice" });
+    running = await startServer({ port: 0, backbone: bb, tokens: TOKENS });
+    const sse = await openSse(running.url, "/channels/empty/stream");
+    try {
+      expect(sse.status).toBe(200);
+      // Silent for a poll interval, then a message arrives.
+      await new Promise<void>((r) => setTimeout(r, 200));
+      expect(sse.frames()).toHaveLength(0);
+      await bb.append("empty", {
+        type: "note",
+        agent_id: "alice-agent",
+        owner: "alice",
+        msg_id: newMsgId(),
+        body: "first",
+      });
+      await waitFor(() => sse.frames().length >= 1);
+      expect((sse.frames()[0] as { body: string }).body).toBe("first");
+    } finally {
+      sse.abort();
+    }
+  });
+
+  it("AC5 — the JSON routes keep their CAU-75 timeouts (the exemption is scoped)", () => {
+    const server = createServer();
+    expect(server.headersTimeout).toBe(HEADERS_TIMEOUT_MS);
+    expect(server.requestTimeout).toBe(REQUEST_TIMEOUT_MS);
+    expect(server.keepAliveTimeout).toBe(KEEP_ALIVE_TIMEOUT_MS);
+    server.close();
+  });
+
+  it("AC5 — the 33rd concurrent stream → 503 (global capacity); freeing one re-opens a slot", async () => {
+    await bootWithChannel();
+    const open: SseHandle[] = [];
+    try {
+      // Open MAX_CONCURRENT_STREAMS streams; all must be 200.
+      for (let i = 0; i < MAX_CONCURRENT_STREAMS; i++) {
+        const sse = await openSse(running!.url, "/channels/c1/stream");
+        expect(sse.status).toBe(200);
+        open.push(sse);
+      }
+      // The N+1th is rejected 503 (not 429).
+      const overflow = await fetch(`${running!.url}/channels/c1/stream`);
+      expect(overflow.status).toBe(503);
+      expect((await overflow.json()) as { error: { code: string } }).toMatchObject(
+        { error: { code: "stream_capacity" } },
+      );
+      // Free one slot; a new stream must now succeed once the server has
+      // observed the socket close and decremented the counter.
+      const freed = open.pop()!;
+      freed.abort();
+      let reopened = false;
+      const deadline = Date.now() + 3_000;
+      while (Date.now() < deadline && !reopened) {
+        const probe = await openSse(running!.url, "/channels/c1/stream");
+        if (probe.status === 200) {
+          reopened = true;
+          open.push(probe); // keep it tracked for teardown
+        } else {
+          probe.abort();
+          await new Promise<void>((r) => setTimeout(r, 50));
+        }
+      }
+      expect(reopened).toBe(true);
+    } finally {
+      for (const sse of open) sse.abort();
+    }
+  }, 15_000);
 });
 
 describe("bindExposureWarning (CAU-75 — the startup log never masks a wide bind)", () => {

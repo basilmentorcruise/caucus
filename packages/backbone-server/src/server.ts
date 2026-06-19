@@ -42,13 +42,37 @@ import {
   type ServerResponse,
 } from "node:http";
 
-import type { Backbone, ClaimAssignee, Cursor } from "@caucus/backbone";
+import type {
+  AppendedMessage,
+  Backbone,
+  ClaimAssignee,
+  Cursor,
+} from "@caucus/backbone";
 import { InMemoryBackbone, MAX_ARTIFACT_BYTES } from "@caucus/backbone";
 import type { MessageInput } from "@caucus/schema";
 import { sanitizeErrorFragment } from "@caucus/schema";
 
 import { resolveToken, type TokenIdentity, type TokenMap } from "./tokens.js";
 import { mapError, UnauthorizedError, type WireErrorBody } from "./wire-errors.js";
+import {
+  formatMessageFrame,
+  HEARTBEAT_FRAME,
+  matchStreamRoute,
+  MAX_CONCURRENT_STREAMS,
+  parseSince,
+  SINCE_INVALID,
+  sinceParam,
+  STREAM_HEARTBEAT_INTERVAL_MS,
+  STREAM_POLL_INTERVAL_MS,
+} from "./stream.js";
+
+// Re-export the SSE log-tail bounds (ADR-C15, CAU-17) so operators/tests share
+// ONE source for the concurrency cap and the loop cadences.
+export {
+  MAX_CONCURRENT_STREAMS,
+  STREAM_POLL_INTERVAL_MS,
+  STREAM_HEARTBEAT_INTERVAL_MS,
+};
 
 /** Max raw request body the server will buffer before rejecting with 413. */
 export const MAX_BODY_BYTES = 256 * 1024;
@@ -413,6 +437,197 @@ async function handleArtifactRoute(
 }
 
 /**
+ * A per-server live counter of open SSE log-tail streams (ADR-C15, CAU-17). The
+ * cap bounds streams across ONE server's connections (a runaway client
+ * exhausting sockets is a per-process concern); a fresh {@link createServer}
+ * gets a fresh counter, so a stale stream teardown from an already-closed server
+ * can never corrupt a new server's count (which a module-global would). The
+ * count is incremented only once a stream actually opens (after the cap check
+ * and cursor resolve) and decremented exactly once on teardown.
+ */
+interface StreamCounter {
+  count: number;
+}
+
+/** SSE response headers: no caching, no buffering, keep the connection open. */
+const SSE_HEADERS = {
+  "content-type": "text/event-stream; charset=utf-8",
+  "cache-control": "no-cache, no-transform",
+  connection: "keep-alive",
+  // Defeat proxy/response buffering (nginx and friends) so frames flush live.
+  "x-accel-buffering": "no",
+} as const;
+
+/**
+ * Handle `GET /channels/:channel/stream` — the read-only SSE log-tail
+ * (ADR-C15, CAU-17). Tokenless within the trust boundary (like `readSince`); no
+ * write path. The route is EXEMPT from the CAU-75 slowloris socket timeouts
+ * (the held-open stream IS the intended behavior); it is instead bounded by the
+ * global {@link MAX_CONCURRENT_STREAMS} cap and periodic heartbeat comments. The
+ * exemption is BY CONSTRUCTION, not by touching the socket: `headersTimeout`/
+ * `requestTimeout` measure time to receive the REQUEST (this GET completes the
+ * instant its headers arrive) and `keepAliveTimeout` applies only to an idle
+ * socket between requests — so none of them reaps an in-flight response, and a
+ * held-open stream survives them untouched while the JSON routes keep their
+ * timeouts fully intact (validated in the integration suite).
+ *
+ * Flow: non-`GET` → 405; malformed `?since` → 400; unknown channel → 404 (via
+ * the backbone, never auto-created); at cap → 503. Otherwise it opens the
+ * stream at the start cursor (subscribe-minted head when `?since` is absent) and
+ * polls {@link Backbone.readSince} at {@link STREAM_POLL_INTERVAL_MS}, writing
+ * one sanitized SSE frame per new message; cursor advances by exactly the page
+ * size so there is no duplicate or skip across a poll boundary.
+ */
+async function handleStreamRoute(
+  backbone: Backbone,
+  channel: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  streams: StreamCounter,
+): Promise<void> {
+  const method = req.method ?? "GET";
+  if (method !== "GET") {
+    sendArtifactJson(res, 405, {
+      error: { code: "method_not_allowed", message: "method not allowed" },
+    });
+    return;
+  }
+
+  // Parse `?since` SHAPE first (a non-negative integer), 400 on malformed —
+  // mirrors `readSince`'s `invalid_cursor`. Absent ⇒ start at head.
+  const since = parseSince(sinceParam(req.url ?? "/"));
+  if (since === SINCE_INVALID) {
+    sendArtifactJson(res, 400, {
+      error: {
+        code: "invalid_request",
+        message: "since must be a non-negative integer cursor",
+      },
+    });
+    return;
+  }
+
+  // Resolve the start cursor. This is the step that yields 404 for an unknown
+  // channel (the backbone never auto-creates one) and 400 for an out-of-range
+  // `since` — both via the SAME backbone calls the JSON read path uses, so the
+  // statuses match. With no `?since` we mint the head via `subscribe` (future-
+  // only, calm-feed). With `?since`, a single bounded `readSince` validates the
+  // cursor is in `[0, head]` AND drains anything already past it (catch-up).
+  let startCursor: Cursor;
+  let backlog: readonly AppendedMessage[] = [];
+  try {
+    if (since === undefined) {
+      startCursor = await backbone.subscribe(channel);
+    } else {
+      const first = await backbone.readSince(channel, since);
+      backlog = first.messages;
+      startCursor = first.cursor;
+    }
+  } catch (err) {
+    const mapped = mapError(err);
+    sendArtifactJson(res, mapped.status, mapped.body);
+    return;
+  }
+
+  // Concurrency cap (ADR-C15): the 33rd concurrent stream is a GLOBAL capacity
+  // exhaustion — 503 (retryable), NOT a per-client 429. Checked AFTER the
+  // channel/cursor validation so a bad request still gets its precise 4xx.
+  if (streams.count >= MAX_CONCURRENT_STREAMS) {
+    sendArtifactJson(res, 503, {
+      error: {
+        code: "stream_capacity",
+        message: "too many concurrent streams; retry shortly",
+      },
+    });
+    return;
+  }
+  streams.count += 1;
+
+  // Open the stream. The route is exempt from the CAU-75 socket timeouts by
+  // CONSTRUCTION, not by mutating the socket: `headersTimeout`/`requestTimeout`
+  // measure time to receive the REQUEST (this GET completes the instant its
+  // headers arrive) and `keepAliveTimeout` applies only to an IDLE socket
+  // BETWEEN requests — none of them reaps an in-flight response, so a held-open
+  // stream survives them untouched. We deliberately do NOT call
+  // `req.socket.setTimeout(0)`: disabling a single socket's timeout corrupts
+  // Node's server-wide `connectionsCheckingInterval` sweep, which would silently
+  // DEFEAT the slowloris timeouts on the JSON routes (validated by the
+  // integration suite — that exact regression is what AC5c forbids).
+  res.writeHead(200, SSE_HEADERS);
+  // Flush the headers immediately with an opening comment so the client's
+  // response callback fires right away (Node buffers headers until the first
+  // body write). It also confirms the stream is live before any message.
+  res.write(HEARTBEAT_FRAME);
+
+  let cursor = startCursor;
+  let closed = false;
+  let polling = false;
+  // The two loop timers, in a holder so `teardown` (defined before they are
+  // created) can clear them by reference once they exist.
+  const timers: {
+    poll?: ReturnType<typeof setInterval>;
+    heartbeat?: ReturnType<typeof setInterval>;
+  } = {};
+
+  const teardown = (): void => {
+    if (closed) return;
+    closed = true;
+    streams.count -= 1;
+    if (timers.poll !== undefined) clearInterval(timers.poll);
+    if (timers.heartbeat !== undefined) clearInterval(timers.heartbeat);
+    if (!res.writableEnded) res.end();
+  };
+
+  // Backpressure: if the OS send buffer fills (a stalled consumer), `res.write`
+  // returns false. We DROP-AND-CLOSE that stream rather than buffer unbounded —
+  // a slow human client must not pin server memory (ADR-C15). A healthy client
+  // drains and stays open.
+  const writeFrame = (frame: string): boolean => {
+    if (closed || res.writableEnded) return false;
+    const ok = res.write(frame);
+    if (!ok) {
+      teardown();
+      return false;
+    }
+    return true;
+  };
+
+  // Flush any `?since` backlog already drained above, in order, before polling.
+  for (const message of backlog) {
+    if (!writeFrame(formatMessageFrame(message))) return;
+  }
+
+  const poll = async (): Promise<void> => {
+    if (closed || polling) return; // never overlap a slow read with the next tick
+    polling = true;
+    try {
+      const result = await backbone.readSince(channel, cursor);
+      if (closed) return;
+      for (const message of result.messages) {
+        if (!writeFrame(formatMessageFrame(message))) return;
+      }
+      // Advance by exactly the page size (the returned cursor) — no dup, no skip.
+      cursor = result.cursor;
+    } catch {
+      // A channel cannot vanish mid-stream in v0 (no delete), so a read error
+      // here is unexpected; close cleanly rather than crash the connection.
+      teardown();
+    } finally {
+      polling = false;
+    }
+  };
+
+  // Tear down on any socket-side close so the cap counter never leaks a slot.
+  res.on("close", teardown);
+  req.on("close", teardown);
+  res.on("error", teardown);
+
+  timers.poll = setInterval(() => void poll(), STREAM_POLL_INTERVAL_MS);
+  timers.heartbeat = setInterval(() => {
+    writeFrame(HEARTBEAT_FRAME);
+  }, STREAM_HEARTBEAT_INTERVAL_MS);
+}
+
+/**
  * Pure request dispatch — NO sockets. Given a method, path, already-parsed JSON
  * body (or `undefined` when there was no body), and the per-request
  * {@link AuthContext}, call the backbone and return a status + JSON. This is the
@@ -640,6 +855,9 @@ export async function dispatch(
 export function createServer(opts: ServerOptions = {}): Server {
   const backbone = opts.backbone ?? new InMemoryBackbone();
   const tokens = opts.tokens;
+  // Each server gets its own open-stream counter (ADR-C15) so the cap is scoped
+  // to this server's connections and a stale teardown cannot corrupt it.
+  const streams: StreamCounter = { count: 0 };
 
   // `connectionsCheckingInterval` is a creation option (the others are plain
   // instance properties, set after construction below): it tunes how often Node
@@ -682,6 +900,36 @@ export function createServer(opts: ServerOptions = {}): Server {
           const mapped = mapError(err);
           sendArtifactJson(res, mapped.status, mapped.body);
         });
+        return;
+      }
+
+      // SSE log-tail route (ADR-C15, CAU-17) takes its OWN branch BEFORE the
+      // JSON body-buffering: it holds the socket open (exempt from the CAU-75
+      // timeouts) and never reads a request body, so it must not traverse the
+      // body buffer / JSON `send`. A malformed-percent path is a clean 400, same
+      // as the JSON path. The exemption is scoped here, per-socket — the JSON
+      // routes below keep their timeouts.
+      let streamChannel: string | undefined;
+      try {
+        const segments = parseSegments(req.url ?? "/");
+        streamChannel = matchStreamRoute(segments)?.channel;
+      } catch (err) {
+        const message =
+          err instanceof MalformedPathError ? err.message : "invalid request";
+        sendArtifactJson(res, 400, {
+          error: { code: "invalid_request", message },
+        });
+        return;
+      }
+      if (streamChannel !== undefined) {
+        const channel = streamChannel;
+        void handleStreamRoute(backbone, channel, req, res, streams).catch(
+          (err: unknown) => {
+            if (res.writableEnded) return;
+            const mapped = mapError(err);
+            sendArtifactJson(res, mapped.status, mapped.body);
+          },
+        );
         return;
       }
 
@@ -793,6 +1041,12 @@ export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
         close: () =>
           new Promise<void>((res, rej) => {
             server.close((err) => (err ? rej(err) : res()));
+            // A held-open SSE log-tail (ADR-C15, CAU-17) is a long-lived
+            // connection that `server.close()` would otherwise WAIT on
+            // indefinitely (it only stops accepting new sockets). Destroy the
+            // live ones so a graceful shutdown actually completes; the stream's
+            // `res.on("close")` teardown then runs and frees its cap slot.
+            server.closeAllConnections();
           }),
       });
     });
