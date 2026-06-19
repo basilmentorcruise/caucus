@@ -298,6 +298,10 @@ defend against any of the following:
   GET serves it as `application/octet-stream`. No read-amplification is introduced: a GET serves
   exactly one blob and `readSince` carries only the bounded URI, never the bytes.
 
+- **SSE log-tail is a held-open tokenless read (CAU-17, [ADR-C15](docs/DECISIONS.md#adr-c15--human-observability-via-a-read-only-sse-log-tail-)).** `GET /channels/:channel/stream` is a tokenless read held open for the connection's lifetime; binding the server non-loopback turns it into a continuous live log tap to any reachable peer — strictly broader exposure than the one-shot read routes. Keep it loopback unless deliberately fronted by an authenticating proxy.
+  - The resource bound is a **32-stream concurrency cap with no per-stream max-lifetime**; on a wide bind, 32 held connections can both exfiltrate continuously and exhaust observability capacity for the real operator. (A per-stream lifetime/idle reaper is a noted follow-up if the route is ever exposed beyond loopback.)
+  - The CAU-75 slowloris exemption for this route is **scoped to the stream route by construction** — it mutates no socket-level or server-wide timeout knob, so the JSON routes retain the full CAU-75 posture. Do NOT "tidy up" by re-adding `req.socket.setTimeout(0)`: it corrupts Node's server-wide `connectionsCheckingInterval` sweep and silently disables slowloris protection process-wide.
+
 This is the same posture as
 [VISION.md](docs/VISION.md)'s non-goal **"Not a safe place for secrets."** Caucus is a trusted-team
 coordination layer; it is not a vault, not a DLP system, and not a confidentiality boundary
