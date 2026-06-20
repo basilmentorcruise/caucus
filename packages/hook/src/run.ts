@@ -46,6 +46,41 @@ import { renderDelta } from "./render.js";
 /** The Claude Code `UserPromptSubmit` event name (its hookSpecificOutput key). */
 const HOOK_EVENT_NAME = "UserPromptSubmit";
 
+/**
+ * Tags a {@link writeCheckpoint} failure so the outer catch can attribute it
+ * correctly (CAU-123). A checkpoint write is a LOCAL fs operation (mkdir +
+ * atomic write under `~/.caucus`); failing it (read-only home, permission
+ * denied, disk full) has nothing to do with the backbone, so it must NOT be
+ * reported as "backbone unavailable or slow". Wrapping the cause here lets the
+ * catch branch emit a distinct, value-free line while still failing open.
+ *
+ * Carries no path/cause text onto any surface — the wrapped `cause` is kept only
+ * for the type guard, never rendered (ADR-C12).
+ */
+class CheckpointWriteError extends Error {
+  constructor(cause: unknown) {
+    super("checkpoint write failed");
+    this.name = "CheckpointWriteError";
+    this.cause = cause;
+  }
+}
+
+/**
+ * {@link writeCheckpoint} wrapper that re-throws any failure as a
+ * {@link CheckpointWriteError} (CAU-123), so a LOCAL persist failure is
+ * distinguishable from a backbone fault in the outer catch. Never on the
+ * backbone-call path — a checkpoint write is pure local fs.
+ */
+async function persistCheckpoint(
+  ...args: Parameters<typeof writeCheckpoint>
+): Promise<void> {
+  try {
+    await writeCheckpoint(...args);
+  } catch (err) {
+    throw new CheckpointWriteError(err);
+  }
+}
+
 /** Client-side fetch budget. Well under the ~30 s `UserPromptSubmit` ceiling. */
 export const HOOK_TIMEOUT_MS = 4000;
 
@@ -205,7 +240,7 @@ export async function runHook(deps: RunHookDeps): Promise<string> {
         backbone.subscribe(channel),
         timeoutMs,
       );
-      await writeCheckpoint(path, head, channel);
+      await persistCheckpoint(path, head, channel);
       return "";
     }
 
@@ -252,20 +287,30 @@ export async function runHook(deps: RunHookDeps): Promise<string> {
       // single turn. (Defensive: if the cursor somehow advanced under an empty
       // render, persist the advance — there is no injection to record.)
       if (result.cursor !== checkpoint) {
-        await writeCheckpoint(path, result.cursor, channel);
+        await persistCheckpoint(path, result.cursor, channel);
       }
       return "";
     }
     // Persist the cursor the backbone RETURNED — never compute it ourselves —
     // alongside the EXACT block we're about to inject (CAU-93, A3: byte-equal),
     // so an audit can verify delivery from the hook's own state.
-    await writeCheckpoint(path, result.cursor, channel, {
+    await persistCheckpoint(path, result.cursor, channel, {
       cursor: result.cursor,
       block,
       ts: new Date().toISOString(),
     });
     return injectionEnvelope(block);
   } catch (err) {
+    // A LOCAL checkpoint-write failure (read-only home, permission denied, disk
+    // full) is NOT a backbone problem — attributing it to "backbone unavailable
+    // or slow" misleads anyone reading the stderr. Emit a distinct, value-free
+    // line (no path/cause — ADR-C12) and still fail open: inject nothing, exit
+    // 0. The cursor simply isn't persisted this turn; next turn retries. Checked
+    // FIRST so it can't be masked by the transient fall-through (CAU-123).
+    if (err instanceof CheckpointWriteError) {
+      stderr("caucus-hook: could not persist checkpoint this turn\n");
+      return "";
+    }
     // A STALE checkpoint (cursor past a restarted ephemeral backbone's head, or
     // a channel the fresh backbone never recreated) would otherwise wedge the
     // session blind FOREVER: every turn re-throws the same `invalid_cursor` /
@@ -277,14 +322,21 @@ export async function runHook(deps: RunHookDeps): Promise<string> {
           backbone.subscribe(channel),
           timeoutMs,
         );
-        await writeCheckpoint(path, head, channel);
+        await persistCheckpoint(path, head, channel);
         // Quiet: the checkpoint is healed; next turn injects the fresh delta.
         stderr("caucus-hook: re-synced checkpoint after backbone restart\n");
         return "";
-      } catch {
-        // The re-mint itself failed (backbone now down, slow, etc.). Stay
-        // fail-open and value-free; we'll try to heal again next turn.
-        stderr("caucus-hook: skipped this turn (backbone unavailable or slow)\n");
+      } catch (healErr) {
+        // The re-mint failed. Distinguish a LOCAL persist failure (read-only
+        // home etc.) from the backbone now being down/slow — same attribution
+        // fix as the main path (CAU-123). Either way: fail open, value-free.
+        if (healErr instanceof CheckpointWriteError) {
+          stderr("caucus-hook: could not persist checkpoint this turn\n");
+        } else {
+          stderr(
+            "caucus-hook: skipped this turn (backbone unavailable or slow)\n",
+          );
+        }
         return "";
       }
     }

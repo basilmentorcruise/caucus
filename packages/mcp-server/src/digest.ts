@@ -185,19 +185,27 @@ export function oneLine(s: string): string {
  * Backslash-escape every markdown metacharacter that is active MID-LINE so a
  * poster-controlled fragment embedded in the markdown export cannot forge
  * structure (ADR-C12). Escapes the CommonMark ASCII punctuation that can take
- * effect anywhere in a line — emphasis (`* _`), code (`` ` ``), links/images
- * (`[ ] ( ) !`), headings (`#`), braces (`{ }`), tables (`|`), blockquotes
+ * effect anywhere in a line — emphasis (`* _`), code (`` ` ``), link/image
+ * brackets (`[ ] !`), headings (`#`), braces (`{ }`), tables (`|`), blockquotes
  * (`>`), and the backslash itself.
  *
- * `+`, `-`, and `.` are DELIBERATELY excluded. They are markdown-structural ONLY
- * at line-start (a bullet `- ` / `+ ` or an ordered-list `1. `): every fragment
- * this function receives is {@link oneLine}d (newline-free) and interpolated
- * MID-LINE, so none of them can ever sit at a line-start. Escaping them bought
- * no injection defense and only littered hyphenated identifiers/versions
- * (`incident-1`, `auth-service`, `v1.2.3`) with `\-`/`\.` in human-pasted
- * postmortems. ALL mid-line-active metacharacters remain escaped: a forged
- * heading (`## `), a link (`](http…)`), emphasis, code, a table, or a blockquote
- * is still neutralized (the C3 vision-guard asserts this).
+ * `(` and `)` are DELIBERATELY excluded (CAU-123). A parenthesis is markdown-
+ * active ONLY as the URL delimiter of an inline link/image, i.e. immediately
+ * after a `](` — and the `[`/`]` are already escaped here, so the `](` sequence
+ * can never form (the C3 vision-guard's `not.toContain("](")` still holds). A
+ * lone `(`/`)` is inert CommonMark text. Escaping them bought no injection
+ * defense and only littered ordinary prose — `auth-timeout repro (qa5)` rendered
+ * as `auth-timeout repro \(qa5\)` in human-pasted postmortems.
+ *
+ * `+`, `-`, and `.` are excluded for the same reason: they are structural ONLY
+ * at line-start (a bullet `- `/`+ ` or an ordered-list `1. `), and every
+ * fragment this function receives is {@link oneLine}d (newline-free) and
+ * interpolated MID-LINE, so none can ever sit at a line-start. Escaping them
+ * only littered hyphenated identifiers/versions (`incident-1`, `v1.2.3`).
+ *
+ * ALL mid-line-active metacharacters remain escaped: a forged heading (`## `), a
+ * link (`](http…)`), emphasis, code, a table, or a blockquote is still
+ * neutralized (the C3 vision-guard asserts this).
  *
  * Input is expected to already be {@link oneLine}d (single line, control-byte
  * free): so a forged `\n## Heading` cannot survive (the newline is gone), and
@@ -206,7 +214,7 @@ export function oneLine(s: string): string {
  * not themselves re-escaped.
  */
 export function mdInert(s: string): string {
-  return s.replace(/[\\`*_{}[\]()#!|>]/g, "\\$&");
+  return s.replace(/[\\`*_{}[\]#!|>]/g, "\\$&");
 }
 
 /**

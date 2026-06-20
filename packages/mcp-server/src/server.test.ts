@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -696,5 +697,109 @@ describe("CAU-12 — channel tools are listed with convention-bearing descriptio
     expect(join?.description).toMatch(/read cursor/i);
     expect(join?.description).toMatch(/allowed to post|authorizes|post into it/i);
     expect(join?.description).toMatch(/per-call override/i);
+  });
+});
+
+// CAU-123 — the SDK's default tools/call handler surfaces a raw -32602 "Input
+// validation error: …[JSON issue dump]…" for a bad arg. registry.ts supersedes
+// that handler with a friendly, leak-free message naming the offending argument.
+// These exercise it end-to-end through a real client over the in-memory transport.
+describe("createCaucusServer (CAU-123 — friendly arg-validation messages)", () => {
+  it("maps a missing required argument to a clear, leak-free message", async () => {
+    const tool: CaucusTool = {
+      name: "test_needs_target",
+      description: "test-only",
+      inputSchema: { target: z.string().min(1) },
+      handle(): Promise<CallToolResult> {
+        return Promise.resolve({ content: [{ type: "text", text: "ok" }] });
+      },
+    };
+    const client = await connectClient(new InMemoryBackbone(), [tool]);
+    const result = (await client.callTool({
+      name: "test_needs_target",
+      arguments: {},
+    })) as CallToolResult;
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { type: "text"; text: string }).text;
+    expect(text).toContain("`target` is required");
+    // NOT the raw SDK dump.
+    expect(text).not.toContain("Input validation error");
+    expect(text).not.toContain("[\n");
+    expect(text).not.toContain('"code"');
+  });
+
+  it("maps a wrong-enum value to the allowed options, never echoing the bad value", async () => {
+    const SECRET = "tok_sensitive_value_should_not_appear";
+    const tool: CaucusTool = {
+      name: "test_enum",
+      description: "test-only",
+      inputSchema: { format: z.enum(["structured", "markdown"]) },
+      handle(): Promise<CallToolResult> {
+        return Promise.resolve({ content: [{ type: "text", text: "ok" }] });
+      },
+    };
+    const client = await connectClient(new InMemoryBackbone(), [tool]);
+    const result = (await client.callTool({
+      name: "test_enum",
+      arguments: { format: SECRET },
+    })) as CallToolResult;
+
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { type: "text"; text: string }).text;
+    expect(text).toContain("`format` must be one of");
+    expect(text).toContain("`structured`");
+    expect(text).toContain("`markdown`");
+    // Leak-free: the rejected value is NEVER echoed (ADR-C12).
+    expect(text).not.toContain(SECRET);
+    expect(text).not.toContain("Input validation error");
+  });
+
+  it("maps a wrong-type argument and still serves valid calls + listTools", async () => {
+    const tool: CaucusTool = {
+      name: "test_typed",
+      description: "test-only",
+      inputSchema: { n: z.number().int(), label: z.string().optional() },
+      handle(_s, args): Promise<CallToolResult> {
+        return Promise.resolve({
+          content: [{ type: "text", text: `n=${String(args.n)}` }],
+        });
+      },
+    };
+    const client = await connectClient(new InMemoryBackbone(), [tool]);
+
+    const bad = (await client.callTool({
+      name: "test_typed",
+      arguments: { n: "not-a-number" },
+    })) as CallToolResult;
+    expect(bad.isError).toBe(true);
+    const badText = (bad.content[0] as { type: "text"; text: string }).text;
+    expect(badText).toContain("`n` must be a");
+
+    // A valid call still goes through (defaults/parse applied), proving dispatch
+    // is intact, not just the error path.
+    const good = (await client.callTool({
+      name: "test_typed",
+      arguments: { n: 7 },
+    })) as CallToolResult;
+    expect(good.isError).toBeFalsy();
+    expect((good.content[0] as { type: "text"; text: string }).text).toBe("n=7");
+
+    // Advertisement is untouched: the tool is still listed with its schema.
+    const { tools } = await client.listTools();
+    const t = tools.find((x) => x.name === "test_typed");
+    expect(t?.inputSchema.type).toBe("object");
+  });
+
+  it("a real tool (caucus_catch_me_up) gets the friendly enum message", async () => {
+    const client = await connectClient(new InMemoryBackbone());
+    const result = (await client.callTool({
+      name: "caucus_catch_me_up",
+      arguments: { format: "bogus" },
+    })) as CallToolResult;
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as { type: "text"; text: string }).text;
+    expect(text).toContain("`format` must be one of");
+    expect(text).not.toContain("Input validation error");
   });
 });
