@@ -179,11 +179,15 @@ export function createIssuer(seed: TokenMap): TokenIssuer {
     },
 
     rotate(target: RevokeTarget, identity: TokenIdentity): MintResult {
-      // Mint-new + revoke-old. Mint first so the new credential exists before the
-      // old one is torn down; both touch only the in-memory dynamic map, so the
-      // pair is atomic within this synchronous call (no await between them).
+      // Mint-new + revoke-old. Resolve the OLD target's digest BEFORE minting:
+      // when `target` names an agent_id, minting the new token first would add a
+      // dynamic entry with the SAME agent_id, and an after-the-fact
+      // `dynamicDigestFor(target)` could pick up the JUST-MINTED entry instead of
+      // the old one — revoking the new token and leaving the old one live. By
+      // capturing the old digest first, we always revoke exactly the old entry.
+      const oldDigest = dynamicDigestFor(target);
       const minted = this.mint(identity);
-      this.revoke(target);
+      if (oldDigest !== undefined) this.revoke({ digest: oldDigest });
       return minted;
     },
   };

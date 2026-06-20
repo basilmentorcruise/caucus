@@ -439,6 +439,28 @@ Seed (`CAUCUS_TOKENS`) entries are **non-revocable**: they are the immutable off
 re-established on every restart. To retire a seeded credential, remove it from `CAUCUS_TOKENS` and
 restart; runtime tokens are the rotatable layer.
 
+**Accepted residual risks (security review, CAU-20).** These are known, deliberate limitations of
+this slice — documented so an operator and an incident responder are not surprised:
+
+- **A leaked *seeded* (`CAUCUS_TOKENS`) token cannot be revoked at runtime.** Seed entries are
+  **non-revocable by design** — `revoke`/`rotate` only touch the runtime (dynamic) layer; naming a
+  seed `agent_id` or its exact digest is a clean no-op (no oracle), not a revocation. **Incident
+  responders must know this:** if a seeded credential leaks, the *only* remediation is to **remove it
+  from `CAUCUS_TOKENS` and restart the server** — there is no live kill-switch for it. Prefer minting
+  runtime tokens (the rotatable layer) for day-to-day onboarding so leaks can be revoked without a
+  restart. (See the [Secrets operator runbook](docs/SECRETS_RUNBOOK.md).)
+- **Runtime minting is unbounded.** There is no cap on the number of live runtime-minted tokens held
+  in memory, so a sustained mint loop could grow the in-process store without limit. This is
+  **accepted** because minting is loopback-only **and** admin-gated: exhausting memory requires an
+  actor who already holds the `CAUCUS_ADMIN_TOKEN` **and** a shell on the host — a position from which
+  they already have far stronger capabilities. (Resource caps under ADR-C8/C9 target cooperative
+  abuse, not a hostile admin-credential holder.)
+- **Control-plane ops produce no audit trail.** Mint/revoke/rotate emit **no log line** by design —
+  this slice has no clock or persistence — so a compromised admin token can mint a rogue identity
+  **silently**. This is documented as an **accepted residual risk**. A future ticket may add stderr
+  audit lines for control-plane ops carrying only the **digest + `agent_id`** (never the token itself,
+  ADR-C12).
+
 ### 5. Routing integrity via AEAD associated-data binding — **NOT YET IMPLEMENTED**
 
 As a planned **design intent** for the backbone, the message schema will bind a message's

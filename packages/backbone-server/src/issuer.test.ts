@@ -133,6 +133,16 @@ describe("TokenIssuer.rotate", () => {
     expect(issuer.resolve(old.token)).toBeUndefined();
   });
 
+  it("rotate of an agent with NO prior dynamic entry mints a token that resolves", () => {
+    // Regression: the route's normal case names an agent_id. With no prior
+    // dynamic entry for that agent, an after-the-fact dynamicDigestFor(target)
+    // would resolve the JUST-MINTED entry and revoke it — leaving the returned
+    // token dead. The new token MUST resolve (authorize an append).
+    const { issuer } = seededIssuer();
+    const minted = issuer.rotate({ agent_id: "fresh" }, { agent_id: "fresh", owner: "frank" });
+    expect(issuer.resolve(minted.token)).toEqual({ agent_id: "fresh", owner: "frank" });
+  });
+
   it("rotate can re-anchor to a new identity", () => {
     const { issuer } = seededIssuer();
     const old = issuer.mint({ agent_id: "a", owner: "alice" });

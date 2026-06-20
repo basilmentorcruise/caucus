@@ -1438,6 +1438,20 @@ describe("issuer control routes (CAU-20) — dispatch level", () => {
     );
     expect(res.status).toBe(401);
   });
+
+  it("loopback guard: the admin surface STILL serves on boundHost localhost (config-supported loopback)", async () => {
+    // config.ts treats HOST=localhost as a warning-free loopback bind; the admin
+    // guard must accept it too, or HOST=localhost silently 401s the whole surface.
+    const bb = await seeded();
+    const res = await dispatch(
+      bb,
+      "POST",
+      "/admin/tokens",
+      { agent_id: "x", owner: "xavier" },
+      { ...adminAuth(ADMIN_TOKEN), boundHost: "localhost" },
+    );
+    expect(res.status).toBe(201);
+  });
 });
 
 describe("issuer control routes (CAU-20) — over a real socket", () => {

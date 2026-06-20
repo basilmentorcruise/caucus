@@ -309,13 +309,23 @@ function requireIdentity(auth: AuthContext): TokenIdentity {
 const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1"]);
 
 /**
+ * Loopback HOST values the admin surface accepts — the SAME set `config.ts`'s
+ * `isLoopbackHost` treats as a warning-free on-host bind, INCLUDING the
+ * `localhost` hostname. Kept in sync with config so a documented loopback bind
+ * (`HOST=localhost`) does not silently disable the admin control surface with an
+ * indiagnosable 401. Compared lowercased, since hostnames are case-insensitive.
+ */
+const ADMIN_LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+
+/**
  * Whether the admin control surface may serve on this bind (CAU-20). The routes
  * are loopback-only as defense-in-depth: even if an operator widens `HOST`, the
  * mint/revoke/rotate surface must NOT answer off-loopback. An `undefined`
  * `boundHost` (a unit test driving `dispatch` directly) is treated as loopback.
+ * `localhost` is allowed — it is a documented loopback bind in `config.ts`.
  */
 function adminAllowedOnHost(boundHost: string | undefined): boolean {
-  return boundHost === undefined || LOOPBACK_ADDRESSES.has(boundHost);
+  return boundHost === undefined || ADMIN_LOOPBACK_HOSTS.has(boundHost.toLowerCase());
 }
 
 /**
@@ -342,8 +352,11 @@ function requireAdmin(auth: AuthContext): void {
   if (auth.bearer === undefined || auth.bearer === "") {
     throw new UnauthorizedError();
   }
-  // Compare digests, never the raw secret bytes — same timing-safe posture as
-  // the write-token lookup. A mismatch (including any regular write token) 401s.
+  // Compare digests, never the raw secret bytes — digest-compared (same posture
+  // as the write-token lookup). The `!==` on hex strings is not constant-time;
+  // that is accepted, since the compared value is the SHA-256 digest of the
+  // presented bearer, not the secret itself. A mismatch (including any regular
+  // write token) 401s.
   if (tokenDigest(auth.bearer) !== auth.adminTokenDigest) {
     throw new UnauthorizedError();
   }
