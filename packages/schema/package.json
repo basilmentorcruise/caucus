@@ -1,6 +1,6 @@
 {
   "name": "@caucus/schema",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Versioned typed-message schema + codec for Caucus (shared).",
   "license": "MIT",
   "author": "Caucus contributors",
@@ -22,7 +22,9 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "publishConfig": {
     "access": "public"
   },

@@ -1,6 +1,6 @@
 {
   "name": "@caucus/backbone",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Caucus channel service: append-only log, first-write-wins claim ledger, cursors, seatbelts.",
   "license": "MIT",
   "author": "Caucus contributors",
@@ -22,7 +22,9 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "publishConfig": {
     "access": "public"
   },
