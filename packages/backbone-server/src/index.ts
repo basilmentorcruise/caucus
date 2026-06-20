@@ -28,6 +28,9 @@ export {
   startServer,
   DEFAULT_PORT,
   MAX_BODY_BYTES,
+  MAX_CONCURRENT_STREAMS,
+  STREAM_POLL_INTERVAL_MS,
+  STREAM_HEARTBEAT_INTERVAL_MS,
 } from "./server.js";
 export { HttpBackbone, type HttpBackboneOptions } from "./http-client.js";
 export { parseEnvConfig, type EnvConfig } from "./config.js";
