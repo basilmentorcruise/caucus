@@ -438,6 +438,14 @@ The control surface and its guarantees:
   disk persistence, no TTL, and no auto-expiry.
 - **Quiet (ADR-C6).** A mint/revoke/rotate is a control-plane op and **never** posts to the channel
   log — it is not a finding or a claim.
+- **Revoke/rotate by `agent_id` affect ALL of that agent's dynamic tokens (CAU-122).** If the same
+  `agent_id` was minted more than once (two or more live bearers), a single `revoke {agent_id}`
+  removes **every** dynamic token anchored to that agent — there is no stray surviving token — and
+  `rotate {agent_id}` sweeps **all** of them before minting one replacement, so the agent ends with
+  **exactly one** valid token. **Revoke/rotate by `digest` is the precise single-token primitive** —
+  it removes exactly the one named entry and leaves any sibling tokens for the same agent live.
+  Revoking an `agent_id` with no dynamic tokens is a clean `{ revoked: false }` no-op with the same
+  shape as any other miss (no enumeration oracle).
 
 Seed (`CAUCUS_TOKENS`) entries are **non-revocable**: they are the immutable offline path and are
 re-established on every restart. To retire a seeded credential, remove it from `CAUCUS_TOKENS` and
