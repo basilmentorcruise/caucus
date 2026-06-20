@@ -47,7 +47,8 @@ import { InMemoryBackbone, MAX_ARTIFACT_BYTES } from "@caucus/backbone";
 import type { MessageInput } from "@caucus/schema";
 import { sanitizeErrorFragment } from "@caucus/schema";
 
-import { resolveToken, type TokenIdentity, type TokenMap } from "./tokens.js";
+import { createIssuer, type TokenIssuer } from "./issuer.js";
+import { tokenDigest, type TokenIdentity, type TokenMap } from "./tokens.js";
 import { mapError, UnauthorizedError, type WireErrorBody } from "./wire-errors.js";
 
 /** Max raw request body the server will buffer before rejecting with 413. */
@@ -84,26 +85,55 @@ export interface ServerOptions {
   /** Bind host. Defaults to `127.0.0.1` (localhost only). */
   readonly host?: string;
   /**
-   * Bearer-token → identity map gating the three write routes (CAU-13). Omitted
-   * or empty ⇒ fail-closed: every write returns `401` (see the module doc).
-   * Reads ignore it.
+   * Bearer-token → identity map SEEDING the issuer (CAU-13/CAU-20). These are the
+   * immutable, non-revocable boot entries (parsed from `CAUCUS_TOKENS`); the
+   * issuer layers runtime-minted entries over them. Omitted or empty ⇒
+   * fail-closed: with nothing seeded and nothing minted every write returns
+   * `401` (see the module doc). Reads ignore it.
    */
   readonly tokens?: TokenMap;
+  /**
+   * SHA-256 digest of `CAUCUS_ADMIN_TOKEN` — the credential gating the issuer's
+   * mint/revoke/rotate control routes (CAU-20). Omitted ⇒ the control surface is
+   * DISABLED (fail-closed: admin routes return `401`). Only the digest is held,
+   * never the plaintext (ADR-C12).
+   */
+  readonly adminTokenDigest?: string;
 }
 
 /**
- * Per-request authorization context threaded into {@link dispatch}: the
- * configured token map plus the bearer token extracted from the request (the
- * `Authorization` header with its case-insensitive `Bearer ` prefix stripped).
- * Header extraction happens in {@link createServer} so `dispatch` stays
- * socket-free. Both fields are optional: an absent map ⇒ fail-closed (no writes
- * authorized); an absent bearer ⇒ the write is unauthenticated.
+ * Per-request authorization context threaded into {@link dispatch}: the live
+ * {@link TokenIssuer} (the unified seed+dynamic resolver, CAU-20) plus the
+ * bearer token extracted from the request (the `Authorization` header with its
+ * case-insensitive `Bearer ` prefix stripped). Header extraction happens in
+ * {@link createServer} so `dispatch` stays socket-free.
+ *
+ * All fields are optional so a bare `dispatch(...)` test stays fail-closed: an
+ * absent `issuer` ⇒ no writes authorized; an absent `bearer` ⇒ the write is
+ * unauthenticated; an absent `adminTokenDigest` ⇒ the control surface is
+ * disabled. `boundHost` lets the admin routes refuse a non-loopback bind as
+ * defense-in-depth.
  */
 export interface AuthContext {
-  /** The configured token map; `undefined`/empty ⇒ all writes 401. */
-  readonly tokens?: TokenMap;
+  /**
+   * The live issuer resolving a bearer to its anchored identity (CAU-20).
+   * `undefined` ⇒ fail-closed (all writes 401). The seed + any minted tokens are
+   * inside it; `dispatch` never sees the raw {@link TokenMap}.
+   */
+  readonly issuer?: TokenIssuer;
   /** The presented bearer token, prefix-stripped; `undefined` ⇒ none sent. */
   readonly bearer?: string;
+  /**
+   * SHA-256 digest of the admin credential gating the control routes (CAU-20).
+   * `undefined` ⇒ the control surface is disabled (admin routes 401).
+   */
+  readonly adminTokenDigest?: string;
+  /**
+   * The interface the listener is bound to, for the admin routes' loopback
+   * defense-in-depth guard. `undefined` (e.g. a unit test calling `dispatch`
+   * directly) is treated as loopback — the unit tests run in-process.
+   */
+  readonly boundHost?: string;
 }
 
 /** A started server with its resolved URL and a clean shutdown. */
@@ -259,17 +289,64 @@ function bearerFromHeader(header: string | undefined): string | undefined {
 
 /**
  * Resolve the bearer in `auth` to its identity, or throw {@link
- * UnauthorizedError} when it is missing, empty, or unknown (CAU-13). The throw
- * is mapped to an IDENTICAL `401` by `mapError`, so the response is the same for
- * "no token" and "unknown token" — no oracle. A `undefined`/empty token map
- * resolves nothing, which is the fail-closed default (all writes 401).
+ * UnauthorizedError} when it is missing, empty, unknown, or revoked (CAU-13,
+ * CAU-20). The throw is mapped to an IDENTICAL `401` by `mapError`, so the
+ * response is the same for "no token" and "unknown token" — no oracle. An absent
+ * issuer resolves nothing, which is the fail-closed default (all writes 401).
+ * The resolution is delegated to the issuer's unified seed+dynamic
+ * {@link TokenIssuer.resolve}, so a minted token authorizes here exactly like a
+ * seeded one — the anchoring code below is unchanged.
  */
 function requireIdentity(auth: AuthContext): TokenIdentity {
-  const identity = resolveToken(auth.tokens ?? new Map(), auth.bearer);
+  const identity = auth.issuer?.resolve(auth.bearer);
   if (identity === undefined) {
     throw new UnauthorizedError();
   }
   return identity;
+}
+
+/** Interface addresses that keep the listener reachable on-host only (CAU-75). */
+const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1"]);
+
+/**
+ * Whether the admin control surface may serve on this bind (CAU-20). The routes
+ * are loopback-only as defense-in-depth: even if an operator widens `HOST`, the
+ * mint/revoke/rotate surface must NOT answer off-loopback. An `undefined`
+ * `boundHost` (a unit test driving `dispatch` directly) is treated as loopback.
+ */
+function adminAllowedOnHost(boundHost: string | undefined): boolean {
+  return boundHost === undefined || LOOPBACK_ADDRESSES.has(boundHost);
+}
+
+/**
+ * Gate the admin control routes (CAU-20) on the `CAUCUS_ADMIN_TOKEN` digest.
+ * Throws {@link UnauthorizedError} — the SAME no-oracle `401` as
+ * {@link requireIdentity} — when the control surface is disabled (no admin
+ * digest configured), the bind is non-loopback, or the presented bearer's digest
+ * does not match the admin digest. "Disabled", "wrong token", and "missing
+ * token" are deliberately indistinguishable (no oracle, no enumeration). A
+ * regular write token can never satisfy this: a write token's digest is in the
+ * issuer, NOT equal to the admin digest, so it is rejected here.
+ */
+function requireAdmin(auth: AuthContext): void {
+  // Fail-closed: an unset admin digest disables the whole control surface.
+  if (auth.adminTokenDigest === undefined) {
+    throw new UnauthorizedError();
+  }
+  // Defense-in-depth: refuse the control surface off-loopback regardless of the
+  // credential. ADR-C9 keeps the server loopback-bound; this holds even if HOST
+  // is widened.
+  if (!adminAllowedOnHost(auth.boundHost)) {
+    throw new UnauthorizedError();
+  }
+  if (auth.bearer === undefined || auth.bearer === "") {
+    throw new UnauthorizedError();
+  }
+  // Compare digests, never the raw secret bytes — same timing-safe posture as
+  // the write-token lookup. A mismatch (including any regular write token) 401s.
+  if (tokenDigest(auth.bearer) !== auth.adminTokenDigest) {
+    throw new UnauthorizedError();
+  }
 }
 
 /**
@@ -412,6 +489,122 @@ async function handleArtifactRoute(
   return false;
 }
 
+/** Reusable 400 for a mint body missing a well-formed `agent_id`/`owner` (CAU-20). */
+const MINT_IDENTITY_REQUIRED =
+  "mint requires a non-empty agent_id and owner";
+
+/** Reusable 400 for a revoke/rotate body that names no `agent_id` or `digest` (CAU-20). */
+const REVOKE_TARGET_REQUIRED =
+  "revoke requires an agent_id or digest";
+
+/**
+ * Extract a well-formed {@link TokenIdentity} from a control-route body, or
+ * `undefined` when `agent_id`/`owner` are absent or empty (→ a value-free 400).
+ * The body's fields are NEVER echoed back into the error (ADR-C12). Only these
+ * two fields are honored — the issued token anchors EXACTLY to them.
+ */
+function mintIdentityFromBody(body: unknown): TokenIdentity | undefined {
+  if (!isPlainObject(body)) return undefined;
+  const { agent_id, owner } = body;
+  if (
+    typeof agent_id !== "string" ||
+    agent_id.length === 0 ||
+    typeof owner !== "string" ||
+    owner.length === 0
+  ) {
+    return undefined;
+  }
+  return { agent_id, owner };
+}
+
+/**
+ * Extract a {@link import("./issuer.js").RevokeTarget} from a revoke/rotate
+ * body, or `undefined` when it names neither a non-empty `agent_id` nor a
+ * non-empty `digest`. The values are never echoed in the error (ADR-C12).
+ */
+function revokeTargetFromBody(
+  body: unknown,
+): { agent_id?: string; digest?: string } | undefined {
+  if (!isPlainObject(body)) return undefined;
+  const agent_id = typeof body.agent_id === "string" ? body.agent_id : undefined;
+  const digest = typeof body.digest === "string" ? body.digest : undefined;
+  const hasAgent = agent_id !== undefined && agent_id.length > 0;
+  const hasDigest = digest !== undefined && digest.length > 0;
+  if (!hasAgent && !hasDigest) return undefined;
+  const target: { agent_id?: string; digest?: string } = {};
+  if (hasAgent) target.agent_id = agent_id;
+  if (hasDigest) target.digest = digest;
+  return target;
+}
+
+/**
+ * Dispatch the issuer control routes (CAU-20): `POST /admin/tokens` (mint),
+ * `/admin/tokens/revoke`, `/admin/tokens/rotate`. Every route is admin-gated and
+ * loopback-only via {@link requireAdmin}, called BEFORE any validation or
+ * mutation so an unauthorized request has no side effect and the same no-oracle
+ * `401` as the write routes. NONE of these post to the channel log (ADR-C6).
+ *
+ * A minted token is returned ONCE in the response and never re-readable (the
+ * issuer keeps only its digest, ADR-C12). The revoke response is a bare
+ * `{ revoked: bool }` — never naming a token or distinguishing unknown from
+ * seeded (no enumeration oracle). Errors are value-free.
+ *
+ * Throws flow through the outer {@link dispatch} catch → {@link mapError}; the
+ * `UnauthorizedError` from `requireAdmin` maps to the standard `401` envelope.
+ */
+function dispatchAdmin(
+  segments: readonly string[],
+  method: string,
+  body: unknown,
+  auth: AuthContext,
+): DispatchResult {
+  // POST /admin/tokens — mint
+  if (segments.length === 2) {
+    if (method !== "POST") return methodNotAllowed();
+    requireAdmin(auth);
+    if (auth.issuer === undefined) throw new UnauthorizedError();
+    const identity = mintIdentityFromBody(body);
+    if (identity === undefined) return invalidRequest(MINT_IDENTITY_REQUIRED);
+    const minted = auth.issuer.mint(identity);
+    // Returned ONCE — the raw token is never retained or re-readable.
+    return {
+      status: 201,
+      json: { token: minted.token, agent_id: minted.agent_id, owner: minted.owner },
+    };
+  }
+
+  // POST /admin/tokens/:action — revoke | rotate
+  if (segments.length === 3) {
+    if (method !== "POST") return methodNotAllowed();
+    const action = segments[2];
+    if (action === "revoke") {
+      requireAdmin(auth);
+      if (auth.issuer === undefined) throw new UnauthorizedError();
+      const target = revokeTargetFromBody(body);
+      if (target === undefined) return invalidRequest(REVOKE_TARGET_REQUIRED);
+      const result = auth.issuer.revoke(target);
+      // Bare boolean — no token named, unknown/seeded indistinguishable.
+      return { status: 200, json: { revoked: result.revoked } };
+    }
+    if (action === "rotate") {
+      requireAdmin(auth);
+      if (auth.issuer === undefined) throw new UnauthorizedError();
+      const target = revokeTargetFromBody(body);
+      if (target === undefined) return invalidRequest(REVOKE_TARGET_REQUIRED);
+      const identity = mintIdentityFromBody(body);
+      if (identity === undefined) return invalidRequest(MINT_IDENTITY_REQUIRED);
+      const minted = auth.issuer.rotate(target, identity);
+      return {
+        status: 201,
+        json: { token: minted.token, agent_id: minted.agent_id, owner: minted.owner },
+      };
+    }
+    return notFound();
+  }
+
+  return notFound();
+}
+
 /**
  * Pure request dispatch — NO sockets. Given a method, path, already-parsed JSON
  * body (or `undefined` when there was no body), and the per-request
@@ -450,6 +643,15 @@ export async function dispatch(
     if (segments.length === 1 && segments[0] === "healthz") {
       if (method !== "GET") return methodNotAllowed();
       return { status: 200, json: { ok: true } };
+    }
+
+    // /admin/tokens ... — the issuer control surface (CAU-20). Admin-gated and
+    // loopback-only; these routes mutate the token store but NEVER touch the
+    // channel log (ADR-C6 — a mint is not a finding/claim). Every branch calls
+    // `requireAdmin` FIRST, so a missing/wrong/regular token or a disabled
+    // surface 401s before any side effect.
+    if (segments[0] === "admin" && segments[1] === "tokens") {
+      return dispatchAdmin(segments, method, body, auth);
     }
 
     // /channels ...
@@ -639,7 +841,15 @@ export async function dispatch(
  */
 export function createServer(opts: ServerOptions = {}): Server {
   const backbone = opts.backbone ?? new InMemoryBackbone();
-  const tokens = opts.tokens;
+  // The issuer is the single live token source (CAU-20): the seed (CAUCUS_TOKENS)
+  // plus any runtime-minted entries, behind one resolver. `dispatch` only ever
+  // sees the issuer, never the raw seed map.
+  const issuer = createIssuer(opts.tokens ?? new Map());
+  const adminTokenDigest = opts.adminTokenDigest;
+  // The configured bind for the admin routes' loopback defense-in-depth guard.
+  // Unset HOST defaults to loopback (DEFAULT_HOST); a wildcard/non-loopback HOST
+  // makes the control surface refuse regardless of the admin credential.
+  const boundHost = opts.host ?? DEFAULT_HOST;
 
   // `connectionsCheckingInterval` is a creation option (the others are plain
   // instance properties, set after construction below): it tunes how often Node
@@ -669,8 +879,10 @@ export function createServer(opts: ServerOptions = {}): Server {
         const route = artifactRoute;
         void (async () => {
           const handled = await handleArtifactRoute(backbone, route, req, res, {
-            tokens,
+            issuer,
             bearer: bearerFromHeader(req.headers.authorization),
+            adminTokenDigest,
+            boundHost,
           });
           if (!handled && !res.writableEnded) {
             sendArtifactJson(res, 405, {
@@ -733,7 +945,12 @@ export function createServer(opts: ServerOptions = {}): Server {
             req.method ?? "GET",
             req.url ?? "/",
             parsed,
-            { tokens, bearer: bearerFromHeader(req.headers.authorization) },
+            {
+              issuer,
+              bearer: bearerFromHeader(req.headers.authorization),
+              adminTokenDigest,
+              boundHost,
+            },
           );
           send(result.status, result.json);
         })().catch((err: unknown) => {
@@ -798,9 +1015,6 @@ export function startServer(opts: ServerOptions = {}): Promise<RunningServer> {
     });
   });
 }
-
-/** Interface addresses that keep the listener reachable on-host only. */
-const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1"]);
 
 /**
  * The startup warning for a non-loopback bind, or `undefined` for a loopback

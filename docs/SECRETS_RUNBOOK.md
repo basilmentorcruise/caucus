@@ -20,7 +20,7 @@ The two load-bearing facts that shape everything below:
    [Rotation & revocation](#rotation--revocation).
 2. **The channel is a shared, persisted, append-only log.** A posted secret propagates to every
    joined session and **does not un-leak** ([ADR-C12](DECISIONS.md#adr-c12--secret-leak-hygiene-is-a-first-class-concern-)).
-   Identity anchoring ([ADR-C7](DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer))
+   Identity anchoring ([ADR-C7](DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side-))
    tells you *who* posted it; it does not stop the leak.
 
 ---
@@ -57,7 +57,7 @@ revocation. Revocation is "rotate the config and restart the process."**
   `TokenMap`. Keys are the **SHA-256 digest** of each token; the raw secret is never stored.
 - On every write, the server resolves the presented bearer against that map (timing-safe digest
   lookup) and **overwrites** the message's `agent_id`/`owner` with the token's identity before storing
-  — this is the [ADR-C7](DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer)
+  — this is the [ADR-C7](DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side-)
   anchoring (CAU-13).
 - There is **no** `revoke` endpoint, **no** revocation list, **no** per-token expiry, **no** config
   hot-reload, and **no** signal handler that re-reads `CAUCUS_TOKENS`. The map is fixed for the life

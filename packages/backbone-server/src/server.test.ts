@@ -26,7 +26,8 @@ import {
   type AuthContext,
   type RunningServer,
 } from "./server.js";
-import { parseTokenMap } from "./tokens.js";
+import { createIssuer } from "./issuer.js";
+import { parseTokenMap, tokenDigest } from "./tokens.js";
 import { createHash } from "node:crypto";
 
 /** Read a JSON response body as an arbitrary record (test-only convenience). */
@@ -47,10 +48,12 @@ const CONTROL_CHARS = /[\x00-\x1f\x7f-\x9f]/;
  * the gate is exercised.
  */
 const TOKENS = parseTokenMap("tok-a:a:alice,tok-b:b:bob");
+/** The unified issuer over the seed (CAU-20) — `dispatch` resolves through this. */
+const ISSUER = createIssuer(TOKENS);
 /** Authorized as alice (`agent_id "a"`, `owner "alice"`). */
-const AUTH: AuthContext = { tokens: TOKENS, bearer: "tok-a" };
+const AUTH: AuthContext = { issuer: ISSUER, bearer: "tok-a" };
 /** Authorized as bob (`agent_id "b"`, `owner "bob"`). */
-const AUTH_B: AuthContext = { tokens: TOKENS, bearer: "tok-b" };
+const AUTH_B: AuthContext = { issuer: ISSUER, bearer: "tok-b" };
 /** A valid Authorization header for the socket-level (fetch) write tests. */
 const BEARER_A = { authorization: "Bearer tok-a" } as const;
 
@@ -732,7 +735,7 @@ describe("dispatch — identity anchoring + auth gate (CAU-13)", () => {
       ["/channels/c1/append", spoofedFinding()],
       ["/channels/c1/claim", spoofedClaim("db")],
     ] as const) {
-      const res = await dispatch(bb, "POST", path, b, { tokens: TOKENS });
+      const res = await dispatch(bb, "POST", path, b, { issuer: ISSUER });
       expect(res.status).toBe(401);
       expect(res.json).toMatchObject({
         error: { code: "unauthorized", message: "missing or invalid token" },
@@ -743,10 +746,10 @@ describe("dispatch — identity anchoring + auth gate (CAU-13)", () => {
   it("a write with an UNKNOWN bearer → 401 with the IDENTICAL body (no oracle)", async () => {
     const bb = await seeded();
     const missing = await dispatch(bb, "POST", "/channels/c1/append", spoofedFinding(), {
-      tokens: TOKENS,
+      issuer: ISSUER,
     });
     const unknown = await dispatch(bb, "POST", "/channels/c1/append", spoofedFinding(), {
-      tokens: TOKENS,
+      issuer: ISSUER,
       bearer: "not-a-real-token",
     });
     expect(missing.status).toBe(401);
@@ -1278,5 +1281,236 @@ describe("artifact routes — raw-bytes PUT/GET (ADR-C14 / CAU-100)", () => {
       { method: "POST", headers: BEARER_A, body: new Uint8Array([1]) },
     );
     expect(res.status).toBe(405);
+  });
+});
+
+/**
+ * The issuer control surface (CAU-20). Mostly dispatch-level (the socket-free
+ * pattern) with an admin AuthContext; the loopback-guard and a full
+ * mint→use→revoke round-trip run over a real socket. The admin secret is
+ * `admin-secret` (digest below); a regular write token (`tok-a`) must NEVER
+ * satisfy the admin gate.
+ */
+const ADMIN_TOKEN = "admin-secret";
+const ADMIN_DIGEST = tokenDigest(ADMIN_TOKEN);
+
+/** A fresh issuer + admin AuthContext per test, so minted state never leaks across tests. */
+function adminAuth(bearer: string): AuthContext {
+  return {
+    issuer: createIssuer(parseTokenMap("tok-a:a:alice,tok-b:b:bob")),
+    bearer,
+    adminTokenDigest: ADMIN_DIGEST,
+  };
+}
+
+describe("issuer control routes (CAU-20) — dispatch level", () => {
+  it("POST /admin/tokens mints 201 {token,agent_id,owner} and the token then authorizes an anchored append", async () => {
+    const bb = await seeded();
+    const auth = adminAuth(ADMIN_TOKEN);
+    const mint = await dispatch(bb, "POST", "/admin/tokens", { agent_id: "x", owner: "xavier" }, auth);
+    expect(mint.status).toBe(201);
+    const body = mint.json as { token: string; agent_id: string; owner: string };
+    expect(body.agent_id).toBe("x");
+    expect(body.owner).toBe("xavier");
+    expect(typeof body.token).toBe("string");
+
+    // The minted token now authorizes an append, anchored to the minted identity
+    // — even though the body claims to be someone else.
+    const append = await dispatch(
+      bb,
+      "POST",
+      "/channels/c1/append",
+      { type: "finding", agent_id: "forged", owner: "forged", msg_id: newMsgId(), body: "hi" },
+      { ...auth, bearer: body.token },
+    );
+    expect(append.status).toBe(201);
+    expect((append.json as { message: { owner: string; agent_id: string } }).message).toMatchObject({
+      owner: "xavier",
+      agent_id: "x",
+    });
+  });
+
+  it("mint WITHOUT the admin token → 401 (no-oracle), no token issued", async () => {
+    const bb = await seeded();
+    const res = await dispatch(bb, "POST", "/admin/tokens", { agent_id: "x", owner: "x" }, adminAuth(undefined as unknown as string));
+    expect(res.status).toBe(401);
+    expect(res.json).toMatchObject({ error: { code: "unauthorized", message: "missing or invalid token" } });
+  });
+
+  it("a REGULAR write token cannot mint → 401", async () => {
+    const bb = await seeded();
+    const res = await dispatch(bb, "POST", "/admin/tokens", { agent_id: "x", owner: "x" }, adminAuth("tok-a"));
+    expect(res.status).toBe(401);
+    expect(res.json).toMatchObject({ error: { code: "unauthorized" } });
+  });
+
+  it("admin DISABLED when no adminTokenDigest is configured → 401 even with a bearer", async () => {
+    const bb = await seeded();
+    const res = await dispatch(
+      bb,
+      "POST",
+      "/admin/tokens",
+      { agent_id: "x", owner: "x" },
+      { issuer: createIssuer(new Map()), bearer: ADMIN_TOKEN },
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("a wrong admin token and a missing one are INDISTINGUISHABLE (no oracle)", async () => {
+    const bb = await seeded();
+    const missing = await dispatch(bb, "POST", "/admin/tokens", { agent_id: "x", owner: "x" }, { ...adminAuth(ADMIN_TOKEN), bearer: undefined });
+    const wrong = await dispatch(bb, "POST", "/admin/tokens", { agent_id: "x", owner: "x" }, adminAuth("wrong-admin"));
+    expect(missing.status).toBe(401);
+    expect(wrong.status).toBe(401);
+    expect(JSON.stringify(wrong.json)).toBe(JSON.stringify(missing.json));
+  });
+
+  it("revoke → the revoked token no longer authorizes an append (401)", async () => {
+    const bb = await seeded();
+    const auth = adminAuth(ADMIN_TOKEN);
+    const mint = (await dispatch(bb, "POST", "/admin/tokens", { agent_id: "x", owner: "xavier" }, auth)).json as { token: string };
+    // Works before revoke.
+    const before = await dispatch(bb, "POST", "/channels/c1/append", { type: "finding", agent_id: "x", owner: "xavier", msg_id: newMsgId(), body: "a" }, { ...auth, bearer: mint.token });
+    expect(before.status).toBe(201);
+    // Revoke by agent_id.
+    const rev = await dispatch(bb, "POST", "/admin/tokens/revoke", { agent_id: "x" }, auth);
+    expect(rev.status).toBe(200);
+    expect(rev.json).toEqual({ revoked: true });
+    // Now the bearer 401s.
+    const after = await dispatch(bb, "POST", "/channels/c1/append", { type: "finding", agent_id: "x", owner: "xavier", msg_id: newMsgId(), body: "b" }, { ...auth, bearer: mint.token });
+    expect(after.status).toBe(401);
+  });
+
+  it("rotate → old token 401s, new token 201s", async () => {
+    const bb = await seeded();
+    const auth = adminAuth(ADMIN_TOKEN);
+    const old = (await dispatch(bb, "POST", "/admin/tokens", { agent_id: "x", owner: "xavier" }, auth)).json as { token: string };
+    const rotated = await dispatch(bb, "POST", "/admin/tokens/rotate", { agent_id: "x", owner: "xavier" }, auth);
+    expect(rotated.status).toBe(201);
+    const next = rotated.json as { token: string };
+    expect(next.token).not.toBe(old.token);
+    // Old bearer 401s.
+    const oldAppend = await dispatch(bb, "POST", "/channels/c1/append", { type: "finding", agent_id: "x", owner: "xavier", msg_id: newMsgId(), body: "a" }, { ...auth, bearer: old.token });
+    expect(oldAppend.status).toBe(401);
+    // New bearer 201s, anchored.
+    const newAppend = await dispatch(bb, "POST", "/channels/c1/append", { type: "finding", agent_id: "forged", owner: "forged", msg_id: newMsgId(), body: "b" }, { ...auth, bearer: next.token });
+    expect(newAppend.status).toBe(201);
+    expect((newAppend.json as { message: { owner: string } }).message.owner).toBe("xavier");
+  });
+
+  it("malformed mint/revoke bodies → value-free 400; the admin secret never appears in any error/response", async () => {
+    const bb = await seeded();
+    const auth = adminAuth(ADMIN_TOKEN);
+    const badMint = await dispatch(bb, "POST", "/admin/tokens", { agent_id: "" }, auth);
+    expect(badMint.status).toBe(400);
+    const badRevoke = await dispatch(bb, "POST", "/admin/tokens/revoke", {}, auth);
+    expect(badRevoke.status).toBe(400);
+    // No echo of the admin secret in either body.
+    expect(JSON.stringify(badMint.json)).not.toContain(ADMIN_TOKEN);
+    expect(JSON.stringify(badRevoke.json)).not.toContain(ADMIN_TOKEN);
+  });
+
+  it("a successful mint/revoke response never echoes the admin secret", async () => {
+    const bb = await seeded();
+    const auth = adminAuth(ADMIN_TOKEN);
+    const mint = await dispatch(bb, "POST", "/admin/tokens", { agent_id: "x", owner: "xavier" }, auth);
+    const rev = await dispatch(bb, "POST", "/admin/tokens/revoke", { agent_id: "x" }, auth);
+    expect(JSON.stringify(mint.json)).not.toContain(ADMIN_TOKEN);
+    expect(JSON.stringify(rev.json)).not.toContain(ADMIN_TOKEN);
+  });
+
+  it("non-POST on the admin routes → 405; unknown admin sub-route → 404", async () => {
+    const bb = await seeded();
+    const auth = adminAuth(ADMIN_TOKEN);
+    expect((await dispatch(bb, "GET", "/admin/tokens", undefined, auth)).status).toBe(405);
+    expect((await dispatch(bb, "GET", "/admin/tokens/revoke", undefined, auth)).status).toBe(405);
+    expect((await dispatch(bb, "POST", "/admin/tokens/bogus", {}, auth)).status).toBe(404);
+  });
+
+  it("loopback guard: the admin surface refuses off a non-loopback bind", async () => {
+    const bb = await seeded();
+    const res = await dispatch(
+      bb,
+      "POST",
+      "/admin/tokens",
+      { agent_id: "x", owner: "x" },
+      { ...adminAuth(ADMIN_TOKEN), boundHost: "0.0.0.0" },
+    );
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("issuer control routes (CAU-20) — over a real socket", () => {
+  let running: RunningServer | undefined;
+
+  afterEach(async () => {
+    if (running) {
+      await running.close();
+      running = undefined;
+    }
+  });
+
+  it("mint → use → revoke → rejected, with anchored identity in the read-back", async () => {
+    const bb = new InMemoryBackbone();
+    await bb.createChannel({ channel: "c1", purpose: "p", created_by: "alice" });
+    running = await startServer({
+      port: 0,
+      backbone: bb,
+      tokens: TOKENS,
+      adminTokenDigest: ADMIN_DIGEST,
+    });
+
+    // Mint a token for { x, xavier }.
+    const mintRes = await fetch(`${running.url}/admin/tokens`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${ADMIN_TOKEN}` },
+      body: JSON.stringify({ agent_id: "x", owner: "xavier" }),
+    });
+    expect(mintRes.status).toBe(201);
+    const minted = (await mintRes.json()) as { token: string };
+
+    // Use it to append, spoofing the body identity.
+    const appendRes = await fetch(`${running.url}/channels/c1/append`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${minted.token}` },
+      body: JSON.stringify({ type: "finding", agent_id: "forged", owner: "forged", msg_id: newMsgId(), body: "from-minted" }),
+    });
+    expect(appendRes.status).toBe(201);
+
+    // Read back: the stored identity is anchored to the minted identity, not the body.
+    const readRes = await fetch(`${running.url}/channels/c1/read`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cursor: 0 }),
+    });
+    const log = (await readRes.json()) as { messages: { owner: string; agent_id: string }[] };
+    const posted = log.messages.find((m) => m.agent_id === "x");
+    expect(posted?.owner).toBe("xavier");
+
+    // Revoke, then the same bearer is rejected.
+    const revRes = await fetch(`${running.url}/admin/tokens/revoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${ADMIN_TOKEN}` },
+      body: JSON.stringify({ agent_id: "x" }),
+    });
+    expect(revRes.status).toBe(200);
+    const after = await fetch(`${running.url}/channels/c1/append`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${minted.token}` },
+      body: JSON.stringify({ type: "finding", agent_id: "x", owner: "xavier", msg_id: newMsgId(), body: "after-revoke" }),
+    });
+    expect(after.status).toBe(401);
+  });
+
+  it("a control op does NOT post to the channel log (ADR-C6)", async () => {
+    const bb = new InMemoryBackbone();
+    await bb.createChannel({ channel: "c1", purpose: "p", created_by: "alice" });
+    running = await startServer({ port: 0, backbone: bb, tokens: TOKENS, adminTokenDigest: ADMIN_DIGEST });
+    const head = (await bb.describeChannel("c1")).head;
+    // Mint + revoke + rotate — none should append a message.
+    await fetch(`${running.url}/admin/tokens`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${ADMIN_TOKEN}` }, body: JSON.stringify({ agent_id: "x", owner: "xavier" }) });
+    await fetch(`${running.url}/admin/tokens/rotate`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${ADMIN_TOKEN}` }, body: JSON.stringify({ agent_id: "x", owner: "xavier" }) });
+    await fetch(`${running.url}/admin/tokens/revoke`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${ADMIN_TOKEN}` }, body: JSON.stringify({ agent_id: "x" }) });
+    expect((await bb.describeChannel("c1")).head).toBe(head);
   });
 });

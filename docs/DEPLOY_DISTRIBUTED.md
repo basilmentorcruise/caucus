@@ -28,7 +28,7 @@ itself.
   token; the server resolves it against its `CAUCUS_TOKENS` map and **overwrites the message's
   `agent_id`/`owner` with the token's identity** before storing — a client's claimed identity never
   reaches the log
-  ([ADR-C7](DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer)).
+  ([ADR-C7](DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side-)).
   With `CAUCUS_TOKENS` unset the server is **fail-closed**: every write is rejected `401`.
 - **Reads are tokenless within the trust boundary.** A read carries no token at all — so *the
   effective read boundary is the network bind*. On the default `127.0.0.1` bind that means
@@ -222,7 +222,7 @@ ADR-C12) and never in the repo.
 On every write the server **resolves the bearer token and overwrites the message's
 `agent_id`/`owner`** with the triple's identity before storing — there is no code path where a
 client-asserted owner reaches the log
-([ADR-C7](DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer)).
+([ADR-C7](DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side-)).
 So a participant **cannot forge another teammate's owner**: even a hand-crafted client setting an
 arbitrary `agent_id`/`owner` has those fields replaced by whatever their token maps to. This is the
 property that makes the war-room record reliably attributable.
