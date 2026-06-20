@@ -1,6 +1,6 @@
 {
   "name": "@caucus/backbone-server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Caucus standalone HTTP backbone service + HTTP client.",
   "license": "MIT",
   "author": "Caucus contributors",
@@ -25,7 +25,9 @@
   "bin": {
     "caucus-backbone": "./dist/bin.js"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "publishConfig": {
     "access": "public"
   },

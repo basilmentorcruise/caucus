@@ -1,6 +1,6 @@
 {
   "name": "@caucus/mcp-server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Caucus MCP server over the backbone interface.",
   "license": "MIT",
   "author": "Caucus contributors",

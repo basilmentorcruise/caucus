@@ -1,6 +1,6 @@
 {
   "name": "@caucus/hook",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Caucus Claude Code turn-start awareness hook.",
   "license": "MIT",
   "author": "Caucus contributors",
@@ -26,7 +26,9 @@
   "bin": {
     "caucus-hook": "./dist/bin.js"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "publishConfig": {
     "access": "public"
   },
