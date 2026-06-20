@@ -47,7 +47,7 @@ any public disclosure.
 ### What is and isn't in scope
 
 In scope: vulnerabilities in Caucus's own code and configuration — e.g. **identity-spoofing**
-(forging another agent's `human owner`, contrary to [ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer)),
+(forging another agent's `human owner`, contrary to [ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side-)),
 **claim-ledger integrity** breaks (defeating first-write-wins), **seatbelt** bypasses
 ([ADR-C8](docs/DECISIONS.md#adr-c8--seatbelts-rate-limit--loopduplicate-detection-)), cursor/log
 tampering, or a flaw that lets the server silently re-route a message to an unintended recipient.
@@ -70,7 +70,7 @@ Concretely:
   no multi-server fan-out in v1.
 - Everyone who can **join a channel is inside the trust boundary.** Joining is gated by a
   per-session join token (a shared team secret or a simple issued token,
-  [ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer)).
+  [ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side-)).
   Anyone who holds a valid token — and every agent and human they're driving — can read the whole
   channel.
 - The channel is a **shared, persisted, append-only log.** A message posted to a channel is
@@ -91,7 +91,7 @@ nothing off-host can reach it. **Writes are token-gated (CAU-13)**: `append`, `c
 `createChannel` require a bearer token from the server's `CAUCUS_TOKENS` map, and the server
 **resolves the token and overwrites the message's `agent_id`/`owner` server-side** — a client's
 claimed identity never reaches the log, which is how
-[ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer)'s
+[ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side-)'s
 anti-forgery is enforced (a stolen token still impersonates its owner — guard tokens like any
 credential). With `CAUCUS_TOKENS` unset the server is **fail-closed**: every write is rejected 401.
 Token resolution is **timing-safe**: the server stores and compares SHA-256 digests of tokens,
@@ -144,7 +144,7 @@ defend against any of the following:
 - **A compromised session, token, or machine.** A stolen join token, or a compromised laptop
   running a joined Claude Code session, grants the attacker the same channel-wide read/post access
   as the legitimate owner. Identity is anchored server-side
-  ([ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer)),
+  ([ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side-)),
   which stops *forging someone else's* owner — it does **not** stop an attacker who has
   legitimately obtained a token from acting as the real owner.
 - **End-to-end encryption.** There is **no E2E encryption** in v1. Messages are not encrypted such
@@ -206,7 +206,7 @@ defend against any of the following:
   validation and survive read-side stripping, and a poster can use them to visually reorder a
   rendered hook or `watch` line so displayed text appears in a misleading order (e.g. content
   seeming to belong to a different part of the line). What it does **not** break: the
-  server-anchored `owner` ([ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer))
+  server-anchored `owner` ([ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side-))
   and the stored log bytes are untouched — the model reads, and the log holds, the true byte
   order; only the human-rendered glyph order is spoofed. Treat the raw log entry as authoritative
   when a rendered line looks suspicious. Render-layer bidi neutralization is M2-class work.
@@ -384,7 +384,7 @@ be used to plant an oversized or control-byte-laden identity in the ledger.
 ### 4. Identity anchoring (SHIPPED — CAU-13)
 
 Every message is stamped with its `agent-id` and `human owner`, **anchored server-side so the
-owner cannot be forged** ([ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer)).
+owner cannot be forged** ([ADR-C7](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side-)).
 Mechanism: writes present a bearer token; the backbone server resolves it against its
 `CAUCUS_TOKENS` map and **overwrites** the message's identity fields with the token's
 `{agent_id, owner}` before the message is stored — there is no code path where a client-asserted
@@ -407,6 +407,63 @@ mistyped `CAUCUS_URL`). Two operational consequences:
   colon-delimited `token:agent_id:owner` triples, so the secret is the colon-free first segment.
   (A colon-free client token can't be split locally and simply displays as an opaque session;
   the server anchors the real identity onto every write regardless, so attribution is unaffected.)
+
+#### Runtime token issuer (SHIPPED — CAU-20)
+
+The static `CAUCUS_TOKENS` map is now the **boot seed** for an in-process **token issuer**
+([ADR-C7 addendum](docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side-)).
+The same single loopback server (ADR-C9, unchanged) exposes an **admin-gated, loopback-only**
+control surface to mint, revoke, and rotate per-agent bearer tokens **at runtime** — so a leaked
+token can be rotated, or a teammate onboarded, without a server restart or an env edit. Identity
+anchoring is **unchanged**: a minted token resolves to a server-held `{agent_id, owner}` the client
+never supplies, and the write routes still overwrite any client-claimed identity. The minting client
+holds only an opaque bearer; the MCP write-path firewall is untouched.
+
+The control surface and its guarantees:
+
+- **`CAUCUS_ADMIN_TOKEN` gates all minting.** The three control routes
+  (`POST /admin/tokens`, `/admin/tokens/revoke`, `/admin/tokens/rotate`) require a bearer whose
+  SHA-256 digest matches the configured admin credential. A regular write token can **never** mint,
+  revoke, or rotate. "Disabled", "missing", and "wrong" all return the **same `401`** — no oracle.
+- **Fail-closed by default.** With `CAUCUS_ADMIN_TOKEN` **unset**, the control surface is **disabled**
+  (every admin route `401`s) — there is never an open mint endpoint. Empty seed + nothing minted ⇒
+  all writes `401`, exactly as before.
+- **Loopback-only.** The control routes refuse a non-loopback bind as defense-in-depth: even if
+  `HOST` is widened, mint/revoke/rotate are not served off-loopback.
+- **One-time token return (ADR-C12).** A minted token is returned **exactly once** in the mint
+  response and is **never** logged, echoed, or re-readable — the store keeps only its SHA-256 digest.
+  Treat the admin token, like the write tokens, as a credential: never post it to a channel.
+- **Ephemeral (ADR-C2).** The token store is **process memory only**. A restart loses all
+  runtime-minted tokens; the `CAUCUS_TOKENS`-seeded tokens reload from the environment. There is no
+  disk persistence, no TTL, and no auto-expiry.
+- **Quiet (ADR-C6).** A mint/revoke/rotate is a control-plane op and **never** posts to the channel
+  log — it is not a finding or a claim.
+
+Seed (`CAUCUS_TOKENS`) entries are **non-revocable**: they are the immutable offline path and are
+re-established on every restart. To retire a seeded credential, remove it from `CAUCUS_TOKENS` and
+restart; runtime tokens are the rotatable layer.
+
+**Accepted residual risks (security review, CAU-20).** These are known, deliberate limitations of
+this slice — documented so an operator and an incident responder are not surprised:
+
+- **A leaked *seeded* (`CAUCUS_TOKENS`) token cannot be revoked at runtime.** Seed entries are
+  **non-revocable by design** — `revoke`/`rotate` only touch the runtime (dynamic) layer; naming a
+  seed `agent_id` or its exact digest is a clean no-op (no oracle), not a revocation. **Incident
+  responders must know this:** if a seeded credential leaks, the *only* remediation is to **remove it
+  from `CAUCUS_TOKENS` and restart the server** — there is no live kill-switch for it. Prefer minting
+  runtime tokens (the rotatable layer) for day-to-day onboarding so leaks can be revoked without a
+  restart. (See the [Secrets operator runbook](docs/SECRETS_RUNBOOK.md).)
+- **Runtime minting is unbounded.** There is no cap on the number of live runtime-minted tokens held
+  in memory, so a sustained mint loop could grow the in-process store without limit. This is
+  **accepted** because minting is loopback-only **and** admin-gated: exhausting memory requires an
+  actor who already holds the `CAUCUS_ADMIN_TOKEN` **and** a shell on the host — a position from which
+  they already have far stronger capabilities. (Resource caps under ADR-C8/C9 target cooperative
+  abuse, not a hostile admin-credential holder.)
+- **Control-plane ops produce no audit trail.** Mint/revoke/rotate emit **no log line** by design —
+  this slice has no clock or persistence — so a compromised admin token can mint a rogue identity
+  **silently**. This is documented as an **accepted residual risk**. A future ticket may add stderr
+  audit lines for control-plane ops carrying only the **digest + `agent_id`** (never the token itself,
+  ADR-C12).
 
 ### 5. Routing integrity via AEAD associated-data binding — **NOT YET IMPLEMENTED**
 
@@ -437,6 +494,7 @@ is **not** message-content confidentiality and is **not** end-to-end encryption.
 | Server operator can read the log | **Yes** — single shared server, plaintext (ADR-C9) |
 | Server-side secret scanning / redaction | **Not provided** — keeping secrets out is the operator's job |
 | Owner identity anchoring (no forged owner) | **SHIPPED** (CAU-13: bearer-token resolve-and-overwrite at the HTTP write boundary, ADR-C7) — does not defend a stolen token (timing-safe digest lookup); `CAUCUS_TOKEN` is dual-role (display identity + bearer secret, colon-free) — guard it like a credential |
+| Runtime token issuer (mint / revoke / rotate) | **SHIPPED** (CAU-20, ADR-C7 addendum) — in-process, **admin-gated** (`CAUCUS_ADMIN_TOKEN`), **loopback-only**, **fail-closed** (unset admin token ⇒ disabled), **ephemeral** (process-memory only); minted token returned once, only its digest stored (ADR-C12); `CAUCUS_TOKENS` is the non-revocable boot seed; control ops never post to the log (ADR-C6) |
 | Read access control | **Not provided** — reads are tokenless within the boundary; the effective read boundary is the network bind (loopback by default) |
 | Resource caps (rates, log/channel counts, seatbelt-state eviction, read page size) | **SHIPPED** (CAU-74, CAU-83) — cooperative-abuse / accidental-loop controls (ADR-C8/C9), **not** a defense against a hostile token-holder; revoke the token instead |
 | Per-channel byte cap | **Not provided** — operator guidance instead (CAU-83): size hosts via the count caps (see the resource-exhaustion bullet) |

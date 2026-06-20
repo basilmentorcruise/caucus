@@ -69,9 +69,9 @@ export interface ServerProcess {
  * Spawn the backbone-server bin as its own OS process on an ephemeral port and
  * resolve once it prints its listening URL.
  *
- * @param env extra child environment (typically `CAUCUS_TOKENS`); merged over
- * the parent env with `PORT=0` / `HOST=127.0.0.1` defaults a caller can
- * override.
+ * @param env extra child environment (typically `CAUCUS_TOKENS`, and
+ * `CAUCUS_ADMIN_TOKEN` for the issuer control surface, CAU-20); merged over the
+ * parent env with `PORT=0` / `HOST=127.0.0.1` defaults a caller can override.
  */
 export function startServerProcess(
   env: Record<string, string> = {},

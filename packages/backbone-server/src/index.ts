@@ -43,6 +43,13 @@ export {
   type TokenMap,
 } from "./tokens.js";
 export {
+  createIssuer,
+  type TokenIssuer,
+  type MintResult,
+  type RevokeTarget,
+  type RevokeResult,
+} from "./issuer.js";
+export {
   mapError,
   backboneErrorFromWire,
   UnauthorizedError,

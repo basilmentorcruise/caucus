@@ -6,10 +6,13 @@
  */
 import type { ServerOptions } from "./server.js";
 import { DEFAULT_PORT } from "./server.js";
-import { parseTokenMap } from "./tokens.js";
+import { parseTokenMap, tokenDigest } from "./tokens.js";
 
 /** The subset of `ServerOptions` derivable from the environment. */
-export type EnvConfig = Pick<ServerOptions, "port" | "host" | "tokens">;
+export type EnvConfig = Pick<
+  ServerOptions,
+  "port" | "host" | "tokens" | "adminTokenDigest"
+>;
 
 /** Hosts that keep the (unauthenticated) backbone reachable only on-host. */
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -37,12 +40,25 @@ function isLoopbackHost(host: string): boolean {
  * interface. The warning is sharpened when NO tokens are configured, since then
  * the box is reachable AND every write would 401 (a likely misconfiguration).
  * `warn` is injectable for tests; it defaults to `console.error` (stderr).
+ *
+ * **Admin control surface (CAU-20).** `CAUCUS_ADMIN_TOKEN` gates the issuer's
+ * mint/revoke/rotate routes. It is DIGESTED here (never carried in plaintext
+ * past this function) and surfaced as `adminTokenDigest`; an absent/empty value
+ * leaves it `undefined`, which fail-closes the control surface (routes 401, see
+ * `server.ts`). The admin secret is NEVER echoed in any thrown message (it is a
+ * secret like the write tokens, ADR-C12) — this function never includes its
+ * value in an error.
  */
 export function parseEnvConfig(
   env: Record<string, string | undefined> = process.env,
   warn: (message: string) => void = (m) => console.error(m),
 ): EnvConfig {
-  const config: { port: number; host?: string; tokens?: ReturnType<typeof parseTokenMap> } = {
+  const config: {
+    port: number;
+    host?: string;
+    tokens?: ReturnType<typeof parseTokenMap>;
+    adminTokenDigest?: string;
+  } = {
     port: DEFAULT_PORT,
   };
 
@@ -61,6 +77,15 @@ export function parseEnvConfig(
   // is fail-closed by construction: no tokens ⇒ every write 401.
   const tokens = parseTokenMap(env.CAUCUS_TOKENS);
   config.tokens = tokens;
+
+  // The admin credential gating the issuer control surface (CAU-20). Digest it
+  // immediately so the plaintext never travels in the config object; an absent
+  // or empty value leaves it undefined ⇒ the control routes are disabled
+  // (fail-closed). The secret is never named in any error here (ADR-C12).
+  const rawAdmin = env.CAUCUS_ADMIN_TOKEN;
+  if (rawAdmin !== undefined && rawAdmin !== "") {
+    config.adminTokenDigest = tokenDigest(rawAdmin);
+  }
 
   const rawHost = env.HOST;
   if (rawHost !== undefined && rawHost !== "") {

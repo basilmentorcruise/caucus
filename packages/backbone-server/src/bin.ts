@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 /**
  * `caucus-backbone` — boot the standalone HTTP backbone server (CAU-5). Reads
- * `PORT` / `HOST` / `CAUCUS_TOKENS` from the environment (see
- * {@link parseEnvConfig}) and logs the dial URL, plus an explicit warning
+ * `PORT` / `HOST` / `CAUCUS_TOKENS` / `CAUCUS_ADMIN_TOKEN` from the environment
+ * (see {@link parseEnvConfig}) and logs the dial URL, plus an explicit warning
  * naming the REAL bind when it is non-loopback (CAU-75). All logic lives in
- * `config.ts` / `server.ts`; this stays a thin shim. Localhost-only;
+ * `config.ts` / `server.ts`; this stays a thin shim. `parseEnvConfig` digests
+ * the admin token and threads it through `startServer` as `adminTokenDigest`
+ * (CAU-20) — the plaintext never reaches this shim. Localhost-only;
  * write-token-gated, reads open (fail-closed: no `CAUCUS_TOKENS` ⇒ all writes
- * 401) — see `server.ts`.
+ * 401; no `CAUCUS_ADMIN_TOKEN` ⇒ the issuer control surface is disabled) — see
+ * `server.ts`.
  */
 import { parseEnvConfig } from "./config.js";
 import { bindExposureWarning, startServer } from "./server.js";

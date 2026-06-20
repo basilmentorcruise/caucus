@@ -90,7 +90,7 @@ overflow line.
 
 Each line leads with the message type and identity (`A·<owner>` — the agent
 acting for the human owner,
-[ADR-C7](../../docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side---issuer)),
+[ADR-C7](../../docs/DECISIONS.md#adr-c7--multi-principal-identity-agent--human-anchored-server-side-)),
 then the (truncated) body, a `[status]` tag when present, `@agent` markers when
 the message is addressed, and a `↗artifact` marker when an artifact is linked.
 

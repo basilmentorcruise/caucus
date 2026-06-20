@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { parseEnvConfig } from "./config.js";
 import { DEFAULT_PORT } from "./server.js";
+import { tokenDigest } from "./tokens.js";
 
 describe("parseEnvConfig", () => {
   it("defaults to DEFAULT_PORT and no host when env is empty", () => {
@@ -69,5 +70,31 @@ describe("parseEnvConfig", () => {
     const warnings: string[] = [];
     parseEnvConfig({}, (m) => warnings.push(m));
     expect(warnings).toHaveLength(0);
+  });
+
+  // CAU-20: the admin credential gating the issuer control surface.
+  it("parses and DIGESTS CAUCUS_ADMIN_TOKEN (never the plaintext)", () => {
+    const cfg = parseEnvConfig({ CAUCUS_ADMIN_TOKEN: "super-secret-admin" });
+    expect(cfg.adminTokenDigest).toBe(tokenDigest("super-secret-admin"));
+    // The plaintext never appears in the parsed config.
+    expect(JSON.stringify(cfg)).not.toContain("super-secret-admin");
+  });
+
+  it("leaves adminTokenDigest undefined when CAUCUS_ADMIN_TOKEN is absent (control disabled)", () => {
+    expect(parseEnvConfig({}).adminTokenDigest).toBeUndefined();
+  });
+
+  it("treats an empty-string CAUCUS_ADMIN_TOKEN as unset (control disabled)", () => {
+    expect(parseEnvConfig({ CAUCUS_ADMIN_TOKEN: "" }).adminTokenDigest).toBeUndefined();
+  });
+
+  it("never names the admin secret in a thrown PORT error (ADR-C12)", () => {
+    // A bad PORT throws; the admin secret must not ride along in the message.
+    try {
+      parseEnvConfig({ PORT: "nope", CAUCUS_ADMIN_TOKEN: "leak-me-admin" });
+      throw new Error("expected parseEnvConfig to throw");
+    } catch (err) {
+      expect((err as Error).message).not.toContain("leak-me-admin");
+    }
   });
 });
