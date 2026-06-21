@@ -52,20 +52,28 @@ export interface MintResult {
  * Identify a token to {@link TokenIssuer.revoke} / {@link TokenIssuer.rotate}:
  * by the `agent_id` it anchors to, or directly by its stored `digest`. Exactly
  * one is honored — `digest` takes precedence when both are present.
+ *
+ * The two selectors have different cardinality on purpose (CAU-122):
+ *  - `agent_id` selects **every** dynamic token anchored to that agent — revoking
+ *    or rotating by `agent_id` sweeps them all, so an agent that was minted twice
+ *    cannot leave a stray live token behind.
+ *  - `digest` selects exactly **one** entry — it is the precise single-token
+ *    primitive for removing one specific bearer.
  */
 export interface RevokeTarget {
-  /** Revoke the (dynamic) token anchored to this agent_id, if any. */
+  /** Revoke EVERY (dynamic) token anchored to this agent_id (CAU-122). */
   readonly agent_id?: string;
-  /** Revoke the token with this exact SHA-256 digest, if it is dynamic. */
+  /** Revoke the single token with this exact SHA-256 digest, if it is dynamic. */
   readonly digest?: string;
 }
 
 /**
- * The outcome of a {@link TokenIssuer.revoke}. `revoked` is `true` only when a
- * DYNAMIC entry was actually removed. Revoking an unknown target, or a SEED
+ * The outcome of a {@link TokenIssuer.revoke}. `revoked` is `true` when at least
+ * one DYNAMIC entry was actually removed. Revoking an unknown target, or a SEED
  * entry (non-revocable), both yield `false` with NO mutation and the SAME shape
  * — so the response is not an enumeration oracle distinguishing "unknown" from
- * "seeded" from "not a real token".
+ * "seeded" from "not a real token", and is the same shape whether `agent_id`
+ * matched zero or many tokens.
  */
 export interface RevokeResult {
   readonly revoked: boolean;
@@ -88,16 +96,20 @@ export interface TokenIssuer {
    */
   mint(identity: TokenIdentity): MintResult;
   /**
-   * Remove a DYNAMIC entry by `agent_id` or `digest`. Seed entries are
-   * non-revocable; an unknown target is a clean no-op. Idempotent — the same
-   * call twice yields `{ revoked: false }` the second time. See
+   * Remove DYNAMIC entries by `agent_id` or `digest`. Revoking by `agent_id`
+   * removes **every** dynamic token anchored to that agent (CAU-122); revoking
+   * by `digest` removes exactly that one entry. Seed entries are non-revocable;
+   * an unknown target is a clean no-op. Idempotent — a repeated call yields
+   * `{ revoked: false }` once the matching entries are gone. See
    * {@link RevokeResult} for the no-oracle guarantee.
    */
   revoke(target: RevokeTarget): RevokeResult;
   /**
-   * Mint a new token for `identity` and revoke the OLD one in a single call
-   * (mint-new + revoke-old). The new token resolves immediately; the old one
-   * (named by `target`) no longer does. Returns the new token ONCE.
+   * Mint a new token for `identity` and revoke the OLD one(s) in a single call
+   * (mint-new + revoke-old). When `target` names an `agent_id`, **all** existing
+   * dynamic tokens for that agent are swept, so the agent ends with exactly one
+   * valid token — the freshly minted one. The new token resolves immediately.
+   * Returns the new token ONCE.
    */
   rotate(target: RevokeTarget, identity: TokenIdentity): MintResult;
 }
@@ -131,18 +143,27 @@ export function createIssuer(seed: TokenMap): TokenIssuer {
   // live in their own map, layered OVER the seed by `resolve`.
   const dynamic = new Map<string, TokenIdentity>();
 
-  /** Resolve a target {@link RevokeTarget} to the dynamic digest it names, or undefined. */
-  function dynamicDigestFor(target: RevokeTarget): string | undefined {
+  /**
+   * Resolve a {@link RevokeTarget} to the dynamic digest(s) it names. `digest`
+   * is authoritative and names AT MOST ONE entry (the precise single-token
+   * primitive); `agent_id` names EVERY dynamic entry anchored to that agent
+   * (CAU-122), so revoking/rotating by agent_id sweeps them all and never leaves
+   * a stray live token for an agent that was minted more than once. Returns an
+   * empty array when nothing matches (unknown, seeded, or already-revoked).
+   */
+  function dynamicDigestsFor(target: RevokeTarget): string[] {
     // `digest` is authoritative when present — it names the exact entry.
     if (target.digest !== undefined && target.digest !== "") {
-      return dynamic.has(target.digest) ? target.digest : undefined;
+      return dynamic.has(target.digest) ? [target.digest] : [];
     }
     if (target.agent_id !== undefined && target.agent_id !== "") {
+      const digests: string[] = [];
       for (const [digest, identity] of dynamic) {
-        if (identity.agent_id === target.agent_id) return digest;
+        if (identity.agent_id === target.agent_id) digests.push(digest);
       }
+      return digests;
     }
-    return undefined;
+    return [];
   }
 
   return {
@@ -168,26 +189,31 @@ export function createIssuer(seed: TokenMap): TokenIssuer {
     },
 
     revoke(target: RevokeTarget): RevokeResult {
-      const digest = dynamicDigestFor(target);
-      if (digest === undefined) {
+      const digests = dynamicDigestsFor(target);
+      if (digests.length === 0) {
         // Unknown, seeded (non-revocable), or already-revoked — all the SAME
-        // no-mutation response, so revoke is never an enumeration oracle.
+        // no-mutation response, so revoke is never an enumeration oracle. A
+        // by-agent_id target that matched zero tokens returns this same shape.
         return { revoked: false };
       }
-      dynamic.delete(digest);
+      // By agent_id this sweeps EVERY dynamic token for that agent (CAU-122); by
+      // digest it is the single named entry. revoked:true once ≥1 was removed.
+      for (const digest of digests) dynamic.delete(digest);
       return { revoked: true };
     },
 
     rotate(target: RevokeTarget, identity: TokenIdentity): MintResult {
-      // Mint-new + revoke-old. Resolve the OLD target's digest BEFORE minting:
+      // Mint-new + revoke-old. Resolve the OLD target's digest(s) BEFORE minting:
       // when `target` names an agent_id, minting the new token first would add a
       // dynamic entry with the SAME agent_id, and an after-the-fact
-      // `dynamicDigestFor(target)` could pick up the JUST-MINTED entry instead of
-      // the old one — revoking the new token and leaving the old one live. By
-      // capturing the old digest first, we always revoke exactly the old entry.
-      const oldDigest = dynamicDigestFor(target);
+      // `dynamicDigestsFor(target)` would pick up the JUST-MINTED entry too —
+      // sweeping the new token along with the old ones and leaving the agent with
+      // NO live token. By capturing the old digests first, we revoke exactly the
+      // pre-existing entries and the agent ends with a single valid token: the
+      // one we just minted. By agent_id, ALL prior dynamic tokens are swept.
+      const oldDigests = dynamicDigestsFor(target);
       const minted = this.mint(identity);
-      if (oldDigest !== undefined) this.revoke({ digest: oldDigest });
+      for (const digest of oldDigests) this.revoke({ digest });
       return minted;
     },
   };

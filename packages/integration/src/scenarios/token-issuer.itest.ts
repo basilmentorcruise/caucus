@@ -108,6 +108,39 @@ describe("token issuer (CAU-20) — over a real backbone process", () => {
     expect(afterStatus).toBe(401);
   });
 
+  it("revoke by agent_id kills BOTH tokens minted for one agent_id (CAU-122)", async () => {
+    // Mint the SAME agent_id twice → two live bearers over the wire.
+    const [, first] = await postJson(`${url}/admin/tokens`, ADMIN_TOKEN, { agent_id: "twin", owner: "tina" });
+    const [, second] = await postJson(`${url}/admin/tokens`, ADMIN_TOKEN, { agent_id: "twin", owner: "tina" });
+    const firstTok = first.token as string;
+    const secondTok = second.token as string;
+    expect(firstTok).not.toBe(secondTok);
+
+    // Both authorize an append before revoke.
+    const [a1] = await postJson(`${url}/channels/${CH}/append`, firstTok, {
+      type: "finding", agent_id: "twin", owner: "tina", msg_id: newMsgId(), body: "twin-1",
+    });
+    const [a2] = await postJson(`${url}/channels/${CH}/append`, secondTok, {
+      type: "finding", agent_id: "twin", owner: "tina", msg_id: newMsgId(), body: "twin-2",
+    });
+    expect(a1).toBe(201);
+    expect(a2).toBe(201);
+
+    // ONE revoke-by-agent_id kills BOTH.
+    const [revStatus, revBody] = await postJson(`${url}/admin/tokens/revoke`, ADMIN_TOKEN, { agent_id: "twin" });
+    expect(revStatus).toBe(200);
+    expect(revBody).toEqual({ revoked: true });
+
+    const [after1] = await postJson(`${url}/channels/${CH}/append`, firstTok, {
+      type: "finding", agent_id: "twin", owner: "tina", msg_id: newMsgId(), body: "after-1",
+    });
+    const [after2] = await postJson(`${url}/channels/${CH}/append`, secondTok, {
+      type: "finding", agent_id: "twin", owner: "tina", msg_id: newMsgId(), body: "after-2",
+    });
+    expect(after1).toBe(401);
+    expect(after2).toBe(401);
+  });
+
   it("two-session anchoring: minted alice + bob cannot spoof each other", async () => {
     const [, aBody] = await postJson(`${url}/admin/tokens`, ADMIN_TOKEN, {
       agent_id: "two-alice",

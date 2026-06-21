@@ -121,6 +121,53 @@ describe("TokenIssuer.revoke", () => {
   });
 });
 
+describe("TokenIssuer.revoke + rotate — multiple live tokens per agent_id (CAU-122)", () => {
+  it("revoke by agent_id sweeps ALL dynamic tokens for that agent (both 401)", () => {
+    const { issuer } = seededIssuer();
+    // The same agent_id minted TWICE → two live bearers.
+    const first = issuer.mint({ agent_id: "a", owner: "alice" });
+    const second = issuer.mint({ agent_id: "a", owner: "alice" });
+    expect(first.token).not.toBe(second.token);
+    expect(issuer.resolve(first.token)).toBeDefined();
+    expect(issuer.resolve(second.token)).toBeDefined();
+    // ONE revoke-by-agent_id kills BOTH.
+    expect(issuer.revoke({ agent_id: "a" })).toEqual({ revoked: true });
+    expect(issuer.resolve(first.token)).toBeUndefined();
+    expect(issuer.resolve(second.token)).toBeUndefined();
+  });
+
+  it("revoke by digest still removes only the ONE named token (single-token primitive)", () => {
+    const { issuer } = seededIssuer();
+    const first = issuer.mint({ agent_id: "a", owner: "alice" });
+    const second = issuer.mint({ agent_id: "a", owner: "alice" });
+    // Revoke by the first token's exact digest — the second survives.
+    expect(issuer.revoke({ digest: tokenDigest(first.token) })).toEqual({ revoked: true });
+    expect(issuer.resolve(first.token)).toBeUndefined();
+    expect(issuer.resolve(second.token)).toBeDefined();
+  });
+
+  it("revoke of an agent_id with NO dynamic tokens is a no-op { revoked:false } (same shape)", () => {
+    const { issuer } = seededIssuer();
+    expect(issuer.revoke({ agent_id: "never-minted" })).toEqual({ revoked: false });
+  });
+
+  it("rotate by agent_id sweeps ALL old tokens and leaves EXACTLY ONE valid (the new) token", () => {
+    const { issuer } = seededIssuer();
+    const first = issuer.mint({ agent_id: "a", owner: "alice" });
+    const second = issuer.mint({ agent_id: "a", owner: "alice" });
+    const next = issuer.rotate({ agent_id: "a" }, { agent_id: "a", owner: "alice" });
+    // Both old bearers are dead.
+    expect(issuer.resolve(first.token)).toBeUndefined();
+    expect(issuer.resolve(second.token)).toBeUndefined();
+    // The freshly minted token is the single survivor and resolves.
+    expect(issuer.resolve(next.token)).toEqual({ agent_id: "a", owner: "alice" });
+    // A follow-up revoke-by-agent_id removes exactly that one remaining token.
+    expect(issuer.revoke({ agent_id: "a" })).toEqual({ revoked: true });
+    expect(issuer.resolve(next.token)).toBeUndefined();
+    expect(issuer.revoke({ agent_id: "a" })).toEqual({ revoked: false });
+  });
+});
+
 describe("TokenIssuer.rotate", () => {
   it("rotate issues a NEW token and revokes the OLD one atomically", () => {
     const { issuer } = seededIssuer();
