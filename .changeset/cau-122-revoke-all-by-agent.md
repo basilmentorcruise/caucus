@@ -1,0 +1,5 @@
+---
+"@caucus/backbone-server": patch
+---
+
+CAU-122: revoke/rotate by `agent_id` now affect ALL of an agent's dynamic tokens. Previously the issuer resolved only the FIRST dynamic entry matching a given `agent_id`, so if the same `agent_id` was minted twice (two live tokens) a single `revoke {agent_id}` removed only one and the other survived (same for `rotate`). Now `revoke({agent_id})` sweeps **every** dynamic token anchored to that agent (returns `{revoked:true}` if it removed ≥1, `{revoked:false}` if none), and `rotate({agent_id}, identity)` revokes **all** the agent's existing dynamic tokens before minting one replacement — so the agent ends with exactly one valid token. Revoke/rotate by exact `digest` is unchanged: it remains the precise single-token primitive that removes only the one named entry. Idempotence and the no-enumeration-oracle response shape are preserved (revoking an `agent_id` with no dynamic tokens is a clean `{revoked:false}` no-op). Seed (`CAUCUS_TOKENS`) entries remain non-revocable. No public API or schema change.

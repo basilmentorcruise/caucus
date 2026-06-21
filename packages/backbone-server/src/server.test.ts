@@ -1730,6 +1730,62 @@ describe("issuer control routes (CAU-20) — dispatch level", () => {
     expect((newAppend.json as { message: { owner: string } }).message.owner).toBe("xavier");
   });
 
+  it("revoke by agent_id kills BOTH tokens when one agent_id was minted twice (CAU-122)", async () => {
+    const bb = await seeded();
+    const auth = adminAuth(ADMIN_TOKEN);
+    // The same agent_id minted twice → two live bearers.
+    const first = (await dispatch(bb, "POST", "/admin/tokens", { agent_id: "x", owner: "xavier" }, auth)).json as { token: string };
+    const second = (await dispatch(bb, "POST", "/admin/tokens", { agent_id: "x", owner: "xavier" }, auth)).json as { token: string };
+    expect(first.token).not.toBe(second.token);
+    // Both authorize an append before revoke.
+    expect((await dispatch(bb, "POST", "/channels/c1/append", { type: "finding", agent_id: "x", owner: "xavier", msg_id: newMsgId(), body: "a" }, { ...auth, bearer: first.token })).status).toBe(201);
+    expect((await dispatch(bb, "POST", "/channels/c1/append", { type: "finding", agent_id: "x", owner: "xavier", msg_id: newMsgId(), body: "b" }, { ...auth, bearer: second.token })).status).toBe(201);
+    // ONE revoke-by-agent_id kills BOTH.
+    const rev = await dispatch(bb, "POST", "/admin/tokens/revoke", { agent_id: "x" }, auth);
+    expect(rev.json).toEqual({ revoked: true });
+    expect((await dispatch(bb, "POST", "/channels/c1/append", { type: "finding", agent_id: "x", owner: "xavier", msg_id: newMsgId(), body: "c" }, { ...auth, bearer: first.token })).status).toBe(401);
+    expect((await dispatch(bb, "POST", "/channels/c1/append", { type: "finding", agent_id: "x", owner: "xavier", msg_id: newMsgId(), body: "d" }, { ...auth, bearer: second.token })).status).toBe(401);
+  });
+
+  it("revoke by digest removes only the ONE named token when an agent_id has two (CAU-122)", async () => {
+    const bb = await seeded();
+    const auth = adminAuth(ADMIN_TOKEN);
+    const first = (await dispatch(bb, "POST", "/admin/tokens", { agent_id: "x", owner: "xavier" }, auth)).json as { token: string };
+    const second = (await dispatch(bb, "POST", "/admin/tokens", { agent_id: "x", owner: "xavier" }, auth)).json as { token: string };
+    // Revoke by the first token's exact digest — the second survives.
+    const rev = await dispatch(bb, "POST", "/admin/tokens/revoke", { digest: tokenDigest(first.token) }, auth);
+    expect(rev.json).toEqual({ revoked: true });
+    expect((await dispatch(bb, "POST", "/channels/c1/append", { type: "finding", agent_id: "x", owner: "xavier", msg_id: newMsgId(), body: "a" }, { ...auth, bearer: first.token })).status).toBe(401);
+    expect((await dispatch(bb, "POST", "/channels/c1/append", { type: "finding", agent_id: "x", owner: "xavier", msg_id: newMsgId(), body: "b" }, { ...auth, bearer: second.token })).status).toBe(201);
+  });
+
+  it("revoke of an unknown agent_id → 200 { revoked:false } (no-op, same shape) (CAU-122)", async () => {
+    const bb = await seeded();
+    const auth = adminAuth(ADMIN_TOKEN);
+    const rev = await dispatch(bb, "POST", "/admin/tokens/revoke", { agent_id: "never-minted" }, auth);
+    expect(rev.status).toBe(200);
+    expect(rev.json).toEqual({ revoked: false });
+  });
+
+  it("rotate by agent_id after two mints → both old bearers 401, exactly one new bearer works (CAU-122)", async () => {
+    const bb = await seeded();
+    const auth = adminAuth(ADMIN_TOKEN);
+    const first = (await dispatch(bb, "POST", "/admin/tokens", { agent_id: "x", owner: "xavier" }, auth)).json as { token: string };
+    const second = (await dispatch(bb, "POST", "/admin/tokens", { agent_id: "x", owner: "xavier" }, auth)).json as { token: string };
+    const rotated = await dispatch(bb, "POST", "/admin/tokens/rotate", { agent_id: "x", owner: "xavier" }, auth);
+    expect(rotated.status).toBe(201);
+    const next = (rotated.json as { token: string }).token;
+    expect(next).not.toBe(first.token);
+    expect(next).not.toBe(second.token);
+    // Both old bearers 401.
+    expect((await dispatch(bb, "POST", "/channels/c1/append", { type: "finding", agent_id: "x", owner: "xavier", msg_id: newMsgId(), body: "a" }, { ...auth, bearer: first.token })).status).toBe(401);
+    expect((await dispatch(bb, "POST", "/channels/c1/append", { type: "finding", agent_id: "x", owner: "xavier", msg_id: newMsgId(), body: "b" }, { ...auth, bearer: second.token })).status).toBe(401);
+    // The single new bearer works, anchored.
+    const newAppend = await dispatch(bb, "POST", "/channels/c1/append", { type: "finding", agent_id: "forged", owner: "forged", msg_id: newMsgId(), body: "c" }, { ...auth, bearer: next });
+    expect(newAppend.status).toBe(201);
+    expect((newAppend.json as { message: { owner: string } }).message.owner).toBe("xavier");
+  });
+
   it("malformed mint/revoke bodies → value-free 400; the admin secret never appears in any error/response", async () => {
     const bb = await seeded();
     const auth = adminAuth(ADMIN_TOKEN);
