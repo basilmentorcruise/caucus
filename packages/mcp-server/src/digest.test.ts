@@ -282,10 +282,22 @@ describe("oneLine + mdInert helpers", () => {
 
   it("mdInert escapes mid-line-active markdown metacharacters", () => {
     expect(mdInert("## heading")).toBe("\\#\\# heading");
-    expect(mdInert("[evil](http://x)")).toBe("\\[evil\\]\\(http://x\\)");
+    // Link brackets are escaped; the `](` sequence can never form, so the URL
+    // parens no longer need escaping (CAU-123).
+    expect(mdInert("[evil](http://x)")).toBe("\\[evil\\](http://x)");
     expect(mdInert("a*b_c`d|e>f")).toBe("a\\*b\\_c\\`d\\|e\\>f");
     // Backslash escaped first so escapes are not double-escaped.
     expect(mdInert("a\\b")).toBe("a\\\\b");
+  });
+
+  it("mdInert does NOT escape parens — lone parens are inert prose (CAU-123)", () => {
+    // A parenthesis is markdown-active only as a link URL delimiter (after `](`),
+    // and `[`/`]` are escaped, so a lone `(`/`)` is safe literal text. Ordinary
+    // prose stays clean rather than rendering as `\(qa5\)`.
+    expect(mdInert("auth-timeout repro (qa5)")).toBe("auth-timeout repro (qa5)");
+    expect(mdInert("(stack trace)")).toBe("(stack trace)");
+    // Even adjacent to escaped brackets, the parens themselves stay literal.
+    expect(mdInert("a]b(c)")).toBe("a\\]b(c)");
   });
 
   it("mdInert does NOT escape +, -, . (structural only at line-start; fragments are mid-line)", () => {
@@ -337,6 +349,26 @@ describe("renderDigestMarkdown — layout (C1/C2/C4)", () => {
     expect(md).toContain(
       "_Caucus digest · resume with since=4 · 4 messages in this window._",
     );
+  });
+
+  it("renders parens in body text literally, not backslash-escaped (CAU-123)", () => {
+    const messages = [
+      msg({
+        type: "finding",
+        owner: "qa",
+        agent_id: "a",
+        body: "auth-timeout repro (qa5)",
+      }),
+    ];
+    const d = buildDigest(messages, WINDOW);
+    const md = renderDigestMarkdown(d, { channel: "incident-9" });
+
+    // Parens render literally — no `\(`/`\)` noise.
+    expect(md).toContain("auth-timeout repro (qa5)");
+    expect(md).not.toContain("\\(");
+    expect(md).not.toContain("\\)");
+    // The injection guard still holds: link syntax can't form.
+    expect(md).not.toContain("](");
   });
 
   it("title fallback without purpose, and empty-section stubs", () => {
@@ -432,8 +464,11 @@ describe("renderDigestMarkdown — ADR-C12 sanitization guard (C3, vision-guard 
     expect(md).not.toContain("## Forged Heading");
     expect(md).not.toContain("## Injected Purpose");
 
-    // Link syntax is escaped — no raw `](` anywhere.
-    expect(md).not.toContain("](");
+    // Link syntax can't form: any `](` is broken by an escaped `\]` (CAU-123 no
+    // longer escapes the paren, but the `]` IS escaped, so a markdown renderer
+    // sees `\]` + `(` — not a link). Assert there is no UNESCAPED `](` (a `](`
+    // not preceded by a backslash), which is the real injection invariant.
+    expect(/(^|[^\\])\]\(/.test(md)).toBe(false);
   });
 
   it("structured JSON stays raw-but-control-stripped (no mdInert escaping)", () => {

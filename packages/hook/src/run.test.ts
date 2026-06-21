@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -274,6 +274,42 @@ describe("runHook — fail open", () => {
     });
     expect(out).toBe("");
     expect(stderrLines).toHaveLength(1);
+  });
+});
+
+describe("runHook — local checkpoint-write failure is attributed distinctly (CAU-123)", () => {
+  it("emits a checkpoint-specific value-free line, fails open, and keeps stdout clean", async () => {
+    const bb = new FakeBackbone();
+    bb.push(appended("pre-existing"));
+
+    // Force writeCheckpoint to fail with a LOCAL fs error: anchor the checkpoint
+    // path under a regular FILE rather than a directory, so mkdir(parent) throws
+    // ENOTDIR. The backbone is perfectly healthy here.
+    const filePath = join(home, "not-a-dir");
+    await writeFile(filePath, "x");
+
+    const out = await runHook({
+      backbone: bb,
+      env: { CAUCUS_CHANNEL: CHANNEL },
+      sessionId: SESSION,
+      home: filePath, // home is a file ⇒ ~/.caucus/... mkdir fails
+      stderr,
+    });
+
+    // Fails open: stdout is exactly "" (never a torn injection envelope).
+    expect(out).toBe("");
+    // Backbone WAS reached (subscribe ran) — the failure is purely local.
+    expect(bb.subscribeCalls).toBe(1);
+    // The new, distinct line — NOT the misleading "backbone unavailable" one.
+    expect(stderrLines).toHaveLength(1);
+    expect(stderrLines[0]).toBe(
+      "caucus-hook: could not persist checkpoint this turn\n",
+    );
+    expect(stderrLines[0]).not.toContain("backbone unavailable");
+    // Value-free: never the channel name, a path, or a url (ADR-C12).
+    expect(stderrLines[0]).not.toContain(CHANNEL);
+    expect(stderrLines[0]).not.toContain(filePath);
+    expect(stderrLines[0]).not.toContain("http");
   });
 });
 
