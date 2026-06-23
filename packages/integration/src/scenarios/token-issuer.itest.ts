@@ -174,12 +174,14 @@ describe("token issuer (CAU-20) — over a real backbone process", () => {
 describe("token issuer (CAU-20) — fail-closed over the wire (no tokens, no admin)", () => {
   let url: string;
   let stop: () => Promise<void>;
+  let stderrOutput: () => string;
 
   beforeAll(async () => {
     // No CAUCUS_TOKENS, no CAUCUS_ADMIN_TOKEN.
     const started = await startServerProcess({});
     url = started.url;
     stop = started.stop;
+    stderrOutput = started.stderrOutput;
   });
 
   afterAll(async () => {
@@ -199,5 +201,130 @@ describe("token issuer (CAU-20) — fail-closed over the wire (no tokens, no adm
       agent_id: "x", owner: "x",
     });
     expect(mintStatus).toBe(401);
+  });
+
+  it("admin DISABLED ⇒ NO control-plane audit line is emitted (CAU-128, fail-closed)", async () => {
+    // The mint above 401'd at the admin gate BEFORE the surface exists. With the
+    // control surface disabled the audit code path is never reached, so the
+    // child's stderr carries no `caucus.admin.audit` line — no crash, no-op.
+    const stderr = stderrOutput();
+    expect(stderr).not.toContain("caucus.admin.audit");
+  });
+});
+
+/**
+ * The control-plane audit trail over a REAL spawned backbone (CAU-128) — closes
+ * security NOTE-2. Captures the child's stderr and asserts: (1) a mint/revoke/
+ * rotate each emit one structured `caucus.admin.audit` line carrying the token
+ * DIGEST (never the token); (2) the line is on stderr ONLY — the child's stdout
+ * carries just the listening-URL banner, never an audit line; and (3) neither
+ * the minted-token bytes nor the admin-token bytes ever appear in stderr
+ * (ADR-C12 — assert by grepping captured stderr for those exact bytes).
+ */
+describe("control-plane audit trail (CAU-128) — over a real backbone process", () => {
+  const AUDIT_CH = "incident-audit";
+  let url: string;
+  let stop: () => Promise<void>;
+  let stderrOutput: () => string;
+  let stdoutOutput: () => string;
+
+  beforeAll(async () => {
+    const started = await startServerProcess({
+      CAUCUS_TOKENS: SEED_TOKENS,
+      CAUCUS_ADMIN_TOKEN: ADMIN_TOKEN,
+    });
+    url = started.url;
+    stop = started.stop;
+    stderrOutput = started.stderrOutput;
+    stdoutOutput = started.stdoutOutput;
+    const [status] = await postJson(`${url}/channels`, "seed-alice", {
+      channel: AUDIT_CH, purpose: "audit integration", created_by: "anything",
+    });
+    expect(status).toBe(201);
+  });
+
+  afterAll(async () => {
+    await stop();
+  });
+
+  /** Parse every `caucus.admin.audit` JSON line out of the child's stderr. */
+  function auditLines(): { op: string; result: string; digest?: string; agent_id?: string; ts: string }[] {
+    return stderrOutput()
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.includes("caucus.admin.audit"))
+      .map((l) => JSON.parse(l) as { kind: string; op: string; result: string; digest?: string; agent_id?: string; ts: string });
+  }
+
+  it("mint/revoke/rotate each emit one stderr audit line; the token NEVER appears in stderr (ADR-C12)", async () => {
+    // Mint — capture the plaintext token to grep for it afterward.
+    const [mintStatus, mintBody] = await postJson(`${url}/admin/tokens`, ADMIN_TOKEN, {
+      agent_id: "auditor", owner: "ava",
+    });
+    expect(mintStatus).toBe(201);
+    const token = mintBody.token as string;
+
+    // Rotate (mint-new + revoke-old) and a revoke, to exercise all three ops.
+    const [rotStatus, rotBody] = await postJson(`${url}/admin/tokens/rotate`, ADMIN_TOKEN, {
+      agent_id: "auditor", owner: "ava",
+    });
+    expect(rotStatus).toBe(201);
+    const rotated = rotBody.token as string;
+    const [revStatus] = await postJson(`${url}/admin/tokens/revoke`, ADMIN_TOKEN, {
+      agent_id: "auditor",
+    });
+    expect(revStatus).toBe(200);
+
+    // Give the child a beat to flush its stderr.
+    await new Promise((r) => setTimeout(r, 100));
+
+    const lines = auditLines();
+    const ops = lines.map((l) => l.op);
+    expect(ops).toContain("mint");
+    expect(ops).toContain("rotate");
+    expect(ops).toContain("revoke");
+
+    // Each line carries a non-empty result and a parseable ISO timestamp.
+    for (const line of lines) {
+      expect(typeof line.result).toBe("string");
+      expect(Number.isNaN(Date.parse(line.ts))).toBe(false);
+    }
+    // The mint line carries the truncated DIGEST, not the token.
+    const mintLine = lines.find((l) => l.op === "mint" && l.agent_id === "auditor");
+    expect(mintLine?.digest).toMatch(/^[0-9a-f]{12}$/);
+
+    // THE CRUX (ADR-C12): grep all captured stderr for the secret bytes.
+    const stderr = stderrOutput();
+    expect(stderr).not.toContain(token);
+    expect(stderr).not.toContain(rotated);
+    expect(stderr).not.toContain(ADMIN_TOKEN);
+    // Even a mid-token substring (past the non-secret `tok_` prefix) is absent.
+    expect(stderr).not.toContain(token.slice(4, 24));
+  });
+
+  it("audit lines go to stderr ONLY — stdout stays the listening banner (hook stdout discipline)", () => {
+    const stdout = stdoutOutput();
+    // The bin's stdout is the dial-URL banner; it must carry NO audit line.
+    expect(stdout).toContain("listening on");
+    expect(stdout).not.toContain("caucus.admin.audit");
+    // And the admin secret never leaks to stdout either.
+    expect(stdout).not.toContain(ADMIN_TOKEN);
+  });
+
+  it("a FAILED (unauthorized) mint is still audited on stderr, secret-free", async () => {
+    const before = auditLines().length;
+    // A regular seeded write token cannot mint → 401, but the attempt is recorded.
+    const [status] = await postJson(`${url}/admin/tokens`, "seed-alice", {
+      agent_id: "rogue", owner: "mallory",
+    });
+    expect(status).toBe(401);
+    await new Promise((r) => setTimeout(r, 100));
+    const lines = auditLines();
+    expect(lines.length).toBeGreaterThan(before);
+    const unauthorized = lines.find((l) => l.op === "mint" && l.result === "unauthorized" && l.agent_id === "rogue");
+    expect(unauthorized).toBeDefined();
+    // No digest on a failed mint, and the presented (wrong) bearer is absent.
+    expect(unauthorized?.digest).toBeUndefined();
+    expect(stderrOutput()).not.toContain("seed-alice");
   });
 });
