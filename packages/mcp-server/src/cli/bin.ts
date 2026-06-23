@@ -7,13 +7,15 @@
  * bin.ts convention (it can only be exercised by a spawned subprocess) and is
  * proven end-to-end by the integration scenario (`init-scaffold.itest.ts`).
  *
- * Only `caucus init` is implemented; any other subcommand prints usage.
+ * `caucus init` scaffolds a session; `caucus token` (CAU-129) wraps the loopback
+ * issuer admin routes. Any other subcommand prints usage.
  */
 import { copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { runInit } from "./init.js";
 import { resolveBins } from "./paths.js";
+import { runToken } from "./token.js";
 
 /** Read a file to UTF-8, mapping ENOENT to `undefined`. */
 async function readMaybe(path: string): Promise<string | undefined> {
@@ -40,15 +42,29 @@ async function main(): Promise<number> {
   if (sub === "--help" || sub === "-h") {
     return runInit(["--help"], deps());
   }
+  if (sub === "token") {
+    return runToken(rest, tokenDeps());
+  }
   if (sub !== "init") {
     process.stderr.write(
       sub === undefined
-        ? "usage: caucus init [options]  (run `caucus init --help`)\n"
-        : `unknown command: ${sub}\nusage: caucus init [options]  (run \`caucus init --help\`)\n`,
+        ? "usage: caucus <init|token> [options]  (run `caucus init --help` or `caucus token --help`)\n"
+        : `unknown command: ${sub}\nusage: caucus <init|token> [options]  (run \`caucus init --help\` or \`caucus token --help\`)\n`,
     );
     return 1;
   }
   return runInit(rest, deps());
+}
+
+/** The real, side-effecting dependency set for `runToken` (CAU-129). */
+function tokenDeps(): Parameters<typeof runToken>[1] {
+  return {
+    env: process.env,
+    log: (line) => process.stdout.write(line + "\n"),
+    errlog: (line) => process.stderr.write(line + "\n"),
+    // The platform fetch — narrowed to the FetchLike shape runToken consumes.
+    fetch: (url, init) => fetch(url, init),
+  };
 }
 
 /** The real, side-effecting dependency set for `runInit`. */
@@ -72,6 +88,6 @@ main()
     process.exitCode = code;
   })
   .catch((err: unknown) => {
-    process.stderr.write(`caucus init failed: ${String(err)}\n`);
+    process.stderr.write(`caucus failed: ${String(err)}\n`);
     process.exitCode = 1;
   });
