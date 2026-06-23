@@ -4,6 +4,7 @@
  * process: `bin.ts` is a ~3-line shebang shim, all logic lives here and in
  * `startServer`.
  */
+import { auditEnabled, noopAuditor } from "./audit.js";
 import type { ServerOptions } from "./server.js";
 import { DEFAULT_PORT } from "./server.js";
 import { parseTokenMap, tokenDigest } from "./tokens.js";
@@ -11,7 +12,7 @@ import { parseTokenMap, tokenDigest } from "./tokens.js";
 /** The subset of `ServerOptions` derivable from the environment. */
 export type EnvConfig = Pick<
   ServerOptions,
-  "port" | "host" | "tokens" | "adminTokenDigest"
+  "port" | "host" | "tokens" | "adminTokenDigest" | "audit"
 >;
 
 /** Hosts that keep the (unauthenticated) backbone reachable only on-host. */
@@ -48,6 +49,14 @@ function isLoopbackHost(host: string): boolean {
  * `server.ts`). The admin secret is NEVER echoed in any thrown message (it is a
  * secret like the write tokens, ADR-C12) — this function never includes its
  * value in an error.
+ *
+ * **Control-plane audit trail (CAU-128).** `CAUCUS_ADMIN_AUDIT` toggles the
+ * stderr audit line emitted per mint/revoke/rotate (closes NOTE-2). Default ON:
+ * only an explicit `0`/`false`/`off`/`no` (case-insensitive) turns it off — by
+ * handing the server the no-op auditor — and even then it is a clean no-op (no
+ * crash) when the control surface is disabled. The audit line carries only the
+ * token DIGEST (never the token, never the admin credential — ADR-C12) and goes
+ * to stderr only, never stdout, never the channel log (ADR-C6).
  */
 export function parseEnvConfig(
   env: Record<string, string | undefined> = process.env,
@@ -58,9 +67,19 @@ export function parseEnvConfig(
     host?: string;
     tokens?: ReturnType<typeof parseTokenMap>;
     adminTokenDigest?: string;
+    audit?: EnvConfig["audit"];
   } = {
     port: DEFAULT_PORT,
   };
+
+  // Control-plane audit trail (CAU-128): default ON (one secret-free stderr line
+  // per mint/revoke/rotate, closing NOTE-2). `CAUCUS_ADMIN_AUDIT=0|false|off|no`
+  // turns it off by handing the server the no-op auditor; anything else (incl.
+  // unset) leaves `audit` undefined so the server installs its default stderr
+  // auditor. Off is a no-op, never a crash, even when admin routes are disabled.
+  if (!auditEnabled(env.CAUCUS_ADMIN_AUDIT)) {
+    config.audit = noopAuditor;
+  }
 
   const rawPort = env.PORT;
   if (rawPort !== undefined && rawPort !== "") {

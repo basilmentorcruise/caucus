@@ -1842,6 +1842,196 @@ describe("issuer control routes (CAU-20) — dispatch level", () => {
   });
 });
 
+/**
+ * The control-plane audit trail (CAU-128) — closes security NOTE-2: every
+ * mint/revoke/rotate (success OR failure) emits EXACTLY ONE secret-free audit
+ * record. These tests drive `dispatch` with a CAPTURING auditor and assert the
+ * record shape, the one-line-per-op count, the result codes, and — the crux —
+ * that no minted-token or admin-token bytes ever ride along (ADR-C12). The
+ * stderr-only / stdout-untouched property is asserted in the integration suite
+ * over a real spawned process.
+ */
+type AuditEvent = {
+  op: string;
+  agent_id?: string;
+  owner?: string;
+  digest?: string;
+  ts: string;
+  result: string;
+};
+
+/** A fresh capturing auditor + the records it collects, for the audit tests. */
+function capturingAuth(bearer: string): {
+  auth: AuthContext;
+  records: AuditEvent[];
+} {
+  const records: AuditEvent[] = [];
+  const base = adminAuth(bearer);
+  return {
+    auth: {
+      ...base,
+      audit: (event) =>
+        records.push({ ...event, ts: "2026-06-20T00:00:00.000Z" } as AuditEvent),
+    },
+    records,
+  };
+}
+
+describe("control-plane audit trail (CAU-128) — dispatch level", () => {
+  it("a successful mint emits exactly ONE record with op/agent_id/owner/digest/result", async () => {
+    const bb = await seeded();
+    const { auth, records } = capturingAuth(ADMIN_TOKEN);
+    const mint = await dispatch(bb, "POST", "/admin/tokens", { agent_id: "x", owner: "xavier" }, auth);
+    expect(mint.status).toBe(201);
+    expect(records).toHaveLength(1);
+    const rec = records[0]!;
+    expect(rec.op).toBe("mint");
+    expect(rec.agent_id).toBe("x");
+    expect(rec.owner).toBe("xavier");
+    expect(rec.result).toBe("ok");
+    // The digest is a short hex prefix of the MINTED token's SHA-256 — present,
+    // hex-only, and NOT the token itself.
+    const token = (mint.json as { token: string }).token;
+    expect(rec.digest).toBe(tokenDigest(token).slice(0, 12));
+    expect(/^[0-9a-f]{12}$/.test(rec.digest!)).toBe(true);
+  });
+
+  it("the audit record NEVER carries the plaintext minted token or the admin token (ADR-C12)", async () => {
+    const bb = await seeded();
+    const { auth, records } = capturingAuth(ADMIN_TOKEN);
+    const mint = await dispatch(bb, "POST", "/admin/tokens", { agent_id: "x", owner: "xavier" }, auth);
+    const token = (mint.json as { token: string }).token;
+    // Serialize the WHOLE captured record and grep for either secret's bytes.
+    const serialized = JSON.stringify(records[0]);
+    expect(serialized.includes(token)).toBe(false);
+    expect(serialized.includes(ADMIN_TOKEN)).toBe(false);
+    // Even a substring of the minted token (after the `tok_` prefix) is absent.
+    expect(serialized.includes(token.slice(4, 20))).toBe(false);
+  });
+
+  it("a successful revoke emits one record with result=revoked", async () => {
+    const bb = await seeded();
+    const { auth, records } = capturingAuth(ADMIN_TOKEN);
+    await dispatch(bb, "POST", "/admin/tokens", { agent_id: "x", owner: "xavier" }, auth);
+    records.length = 0; // drop the mint record; isolate the revoke
+    const rev = await dispatch(bb, "POST", "/admin/tokens/revoke", { agent_id: "x" }, auth);
+    expect(rev.json).toEqual({ revoked: true });
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ op: "revoke", agent_id: "x", result: "revoked" });
+  });
+
+  it("a revoke that matches nothing emits one record with result=not_found", async () => {
+    const bb = await seeded();
+    const { auth, records } = capturingAuth(ADMIN_TOKEN);
+    const rev = await dispatch(bb, "POST", "/admin/tokens/revoke", { agent_id: "ghost" }, auth);
+    expect(rev.json).toEqual({ revoked: false });
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ op: "revoke", agent_id: "ghost", result: "not_found" });
+  });
+
+  it("a successful rotate emits one record (op=rotate, result=ok) with the NEW token's digest", async () => {
+    const bb = await seeded();
+    const { auth, records } = capturingAuth(ADMIN_TOKEN);
+    const rot = await dispatch(bb, "POST", "/admin/tokens/rotate", { agent_id: "x", owner: "xavier" }, auth);
+    expect(rot.status).toBe(201);
+    expect(records).toHaveLength(1);
+    const rec = records[0]!;
+    const token = (rot.json as { token: string }).token;
+    expect(rec).toMatchObject({ op: "rotate", agent_id: "x", owner: "xavier", result: "ok" });
+    expect(rec.digest).toBe(tokenDigest(token).slice(0, 12));
+    expect(JSON.stringify(rec).includes(token)).toBe(false);
+  });
+
+  it("an UNAUTHORIZED mint (wrong admin token) emits one record with result=unauthorized and NO digest", async () => {
+    const bb = await seeded();
+    const { auth, records } = capturingAuth("wrong-admin");
+    const res = await dispatch(bb, "POST", "/admin/tokens", { agent_id: "x", owner: "xavier" }, auth);
+    expect(res.status).toBe(401);
+    expect(records).toHaveLength(1);
+    const rec = records[0]!;
+    expect(rec.op).toBe("mint");
+    expect(rec.result).toBe("unauthorized");
+    // No token was minted, so there is no digest — but the claimed identity hint
+    // (attacker-asserted, never a secret) is captured for the operator.
+    expect(rec.digest).toBeUndefined();
+    expect(rec.agent_id).toBe("x");
+    // The presented (wrong) admin bearer is NOT in the record.
+    expect(JSON.stringify(rec).includes("wrong-admin")).toBe(false);
+  });
+
+  it("an unauthorized revoke/rotate are each audited as result=unauthorized (one line each)", async () => {
+    const bb = await seeded();
+    const { auth: revAuth, records: revRecs } = capturingAuth("tok-a"); // a regular write token
+    const rev = await dispatch(bb, "POST", "/admin/tokens/revoke", { agent_id: "x" }, revAuth);
+    expect(rev.status).toBe(401);
+    expect(revRecs).toHaveLength(1);
+    expect(revRecs[0]).toMatchObject({ op: "revoke", result: "unauthorized" });
+
+    const { auth: rotAuth, records: rotRecs } = capturingAuth(undefined as unknown as string);
+    const rot = await dispatch(bb, "POST", "/admin/tokens/rotate", { agent_id: "x", owner: "xavier" }, rotAuth);
+    expect(rot.status).toBe(401);
+    expect(rotRecs).toHaveLength(1);
+    expect(rotRecs[0]).toMatchObject({ op: "rotate", result: "unauthorized" });
+  });
+
+  it("an authorized-but-invalid body is audited as result=invalid_request (one line)", async () => {
+    const bb = await seeded();
+    const { auth, records } = capturingAuth(ADMIN_TOKEN);
+    // Admin gate passes, but the mint body has no agent_id/owner.
+    const res = await dispatch(bb, "POST", "/admin/tokens", { nope: true }, auth);
+    expect(res.status).toBe(400);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ op: "mint", result: "invalid_request" });
+    expect(records[0]!.digest).toBeUndefined();
+  });
+
+  it("emits NO audit line when the control surface is DISABLED (no adminTokenDigest) — fail-closed no-op", async () => {
+    const bb = await seeded();
+    const records: AuditEvent[] = [];
+    // Surface disabled: adminTokenDigest omitted. A mint attempt 401s and must
+    // NOT produce an audit line (the op can't happen).
+    const res = await dispatch(
+      bb,
+      "POST",
+      "/admin/tokens",
+      { agent_id: "x", owner: "xavier" },
+      {
+        issuer: createIssuer(new Map()),
+        bearer: "anything",
+        audit: (event) => records.push({ ...event, ts: "t" } as AuditEvent),
+      },
+    );
+    expect(res.status).toBe(401);
+    expect(records).toHaveLength(0);
+  });
+
+  it("does NOT audit a non-op shape (wrong method / unknown action)", async () => {
+    const bb = await seeded();
+    const { auth, records } = capturingAuth(ADMIN_TOKEN);
+    // Wrong method on the mint route.
+    await dispatch(bb, "GET", "/admin/tokens", undefined, auth);
+    // Unknown admin action.
+    await dispatch(bb, "POST", "/admin/tokens/frobnicate", { agent_id: "x" }, auth);
+    expect(records).toHaveLength(0);
+  });
+
+  it("the default server installs an auditor (no audit option) without crashing a real mint", async () => {
+    // No `audit` option → the server defaults to its stderr auditor. We only
+    // assert the op still succeeds; the stderr WRITE is asserted in integration.
+    const bb = await seeded();
+    const res = await dispatch(
+      bb,
+      "POST",
+      "/admin/tokens",
+      { agent_id: "x", owner: "xavier" },
+      { ...adminAuth(ADMIN_TOKEN), audit: undefined },
+    );
+    // `dispatch` with `audit: undefined` uses the noop fallback inside
+    // `auditedAdminOp`; the op is unaffected.
+    expect(res.status).toBe(201);
+  });
+});
+
 describe("issuer control routes (CAU-20) — over a real socket", () => {
   let running: RunningServer | undefined;
 

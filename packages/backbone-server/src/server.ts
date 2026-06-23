@@ -52,6 +52,14 @@ import { InMemoryBackbone, MAX_ARTIFACT_BYTES } from "@caucus/backbone";
 import type { MessageInput } from "@caucus/schema";
 import { sanitizeErrorFragment } from "@caucus/schema";
 
+import {
+  auditDigestOf,
+  createStderrAuditor,
+  digestPrefix,
+  noopAuditor,
+  type AdminAuditor,
+  type AdminAuditResult,
+} from "./audit.js";
 import { createIssuer, type TokenIssuer } from "./issuer.js";
 import { tokenDigest, type TokenIdentity, type TokenMap } from "./tokens.js";
 import { mapError, UnauthorizedError, type WireErrorBody } from "./wire-errors.js";
@@ -123,6 +131,14 @@ export interface ServerOptions {
    * never the plaintext (ADR-C12).
    */
   readonly adminTokenDigest?: string;
+  /**
+   * The control-plane auditor (CAU-128). Omitted ⇒ a default stderr auditor that
+   * writes ONE secret-free JSON line per mint/revoke/rotate (closes NOTE-2).
+   * Pass {@link noopAuditor} to disable, or a capturing auditor in tests. The
+   * record carries only the token DIGEST, never any plaintext token (ADR-C12),
+   * and is written to stderr only — never stdout, never the channel log (ADR-C6).
+   */
+  readonly audit?: AdminAuditor;
 }
 
 /**
@@ -158,6 +174,14 @@ export interface AuthContext {
    * directly) is treated as loopback — the unit tests run in-process.
    */
   readonly boundHost?: string;
+  /**
+   * The control-plane auditor (CAU-128). `undefined` ⇒ no audit line is emitted
+   * — used by the bare-`dispatch` unit tests of the NON-admin routes. The server
+   * always threads one in (default stderr auditor), so a real mint/revoke/rotate
+   * is always recorded. Only the admin routes consult this; it is the SAME
+   * secret-free, stderr-only sink described on {@link ServerOptions.audit}.
+   */
+  readonly audit?: AdminAuditor;
 }
 
 /** A started server with its resolved URL and a clean shutdown. */
@@ -575,6 +599,79 @@ function revokeTargetFromBody(
 }
 
 /**
+ * Best-effort identity hint for an audit line on a FAILED op (unauthorized /
+ * invalid body): the claimed `agent_id`/`owner` from the request body, if it
+ * parsed. This is attacker-claimed, unauthenticated data — useful operator
+ * signal, never a secret (it is not a token; the body never carries one). On a
+ * SUCCESS we use the resolved/anchored identity instead.
+ */
+function auditHintFromBody(body: unknown): { agent_id?: string; owner?: string } {
+  if (!isPlainObject(body)) return {};
+  const hint: { agent_id?: string; owner?: string } = {};
+  if (typeof body.agent_id === "string" && body.agent_id.length > 0) {
+    hint.agent_id = body.agent_id;
+  }
+  if (typeof body.owner === "string" && body.owner.length > 0) {
+    hint.owner = body.owner;
+  }
+  return hint;
+}
+
+/**
+ * Run one admin control op (mint/revoke/rotate) and emit EXACTLY ONE audit line
+ * (CAU-128) for it — success OR failure — to `auth.audit`. The op closure runs
+ * the gated work and returns the {@link DispatchResult} plus the audit fields
+ * (`agent_id`/`owner`/`digest`/`result`) for the SUCCESS path. A thrown
+ * {@link UnauthorizedError} from the admin gate (wrong credential / non-loopback
+ * bind) on an ENABLED surface is audited as `unauthorized` with only the body's
+ * claimed identity hint (no token digest exists), then RE-THROWN so the outer
+ * dispatch still maps it to the standard no-oracle `401`. An invalid body
+ * (returned, not thrown) is audited as `invalid_request`. **When the control
+ * surface is DISABLED entirely (no `adminTokenDigest`), NO audit line is emitted
+ * — the ops can't happen (fail-closed no-op, no crash).** The audit line is the
+ * ONLY new side effect; the wire response is byte-for-byte unchanged.
+ */
+function auditedAdminOp(
+  op: "mint" | "revoke" | "rotate",
+  body: unknown,
+  auth: AuthContext,
+  run: () => {
+    result: DispatchResult;
+    auditResult: AdminAuditResult;
+    agent_id?: string;
+    owner?: string;
+    digest?: string;
+  },
+): DispatchResult {
+  // Fail-closed interaction (CAU-128): when the control surface is DISABLED
+  // entirely (no admin credential configured), the ops cannot happen — emit NO
+  // audit line at all (no-op, no crash), per the ticket. An `unauthorized` line
+  // is only meaningful against a LIVE control plane (a wrong/missing credential
+  // on an enabled surface — a rogue attempt worth recording).
+  const audit =
+    auth.adminTokenDigest === undefined ? noopAuditor : (auth.audit ?? noopAuditor);
+  let outcome: ReturnType<typeof run>;
+  try {
+    outcome = run();
+  } catch (err) {
+    // The admin gate threw on an ENABLED surface (wrong/missing credential, or a
+    // non-loopback bind). Record the attempt — the whole point of NOTE-2 — with
+    // only the body's claimed identity hint; no token was minted, so there is no
+    // digest. Re-throw so the response stays the standard no-oracle 401.
+    audit({ op, ...auditHintFromBody(body), result: "unauthorized" });
+    throw err;
+  }
+  audit({
+    op,
+    agent_id: outcome.agent_id,
+    owner: outcome.owner,
+    digest: outcome.digest,
+    result: outcome.auditResult,
+  });
+  return outcome.result;
+}
+
+/**
  * Dispatch the issuer control routes (CAU-20): `POST /admin/tokens` (mint),
  * `/admin/tokens/revoke`, `/admin/tokens/rotate`. Every route is admin-gated and
  * loopback-only via {@link requireAdmin}, called BEFORE any validation or
@@ -585,6 +682,13 @@ function revokeTargetFromBody(
  * issuer keeps only its digest, ADR-C12). The revoke response is a bare
  * `{ revoked: bool }` — never naming a token or distinguishing unknown from
  * seeded (no enumeration oracle). Errors are value-free.
+ *
+ * **Audit trail (CAU-128).** Each recognized mint/revoke/rotate emits EXACTLY
+ * ONE secret-free stderr audit line via {@link auditedAdminOp} — success OR
+ * failure — carrying only `{op, agent_id, owner, digest, ts, result}` (the
+ * token DIGEST, never the token; never the admin credential — ADR-C12), to
+ * stderr only, never the channel log (ADR-C6). A non-op shape (wrong method,
+ * unknown action, bad segment length) is NOT audited — it is not a control op.
  *
  * Throws flow through the outer {@link dispatch} catch → {@link mapError}; the
  * `UnauthorizedError` from `requireAdmin` maps to the standard `401` envelope.
@@ -598,16 +702,30 @@ function dispatchAdmin(
   // POST /admin/tokens — mint
   if (segments.length === 2) {
     if (method !== "POST") return methodNotAllowed();
-    requireAdmin(auth);
-    if (auth.issuer === undefined) throw new UnauthorizedError();
-    const identity = mintIdentityFromBody(body);
-    if (identity === undefined) return invalidRequest(MINT_IDENTITY_REQUIRED);
-    const minted = auth.issuer.mint(identity);
-    // Returned ONCE — the raw token is never retained or re-readable.
-    return {
-      status: 201,
-      json: { token: minted.token, agent_id: minted.agent_id, owner: minted.owner },
-    };
+    return auditedAdminOp("mint", body, auth, () => {
+      requireAdmin(auth);
+      if (auth.issuer === undefined) throw new UnauthorizedError();
+      const identity = mintIdentityFromBody(body);
+      if (identity === undefined) {
+        return {
+          result: invalidRequest(MINT_IDENTITY_REQUIRED),
+          auditResult: "invalid_request",
+        };
+      }
+      const minted = auth.issuer.mint(identity);
+      // Returned ONCE — the raw token is never retained or re-readable. The
+      // audit carries only the truncated digest of that token (never the token).
+      return {
+        result: {
+          status: 201,
+          json: { token: minted.token, agent_id: minted.agent_id, owner: minted.owner },
+        },
+        auditResult: "ok",
+        agent_id: minted.agent_id,
+        owner: minted.owner,
+        digest: auditDigestOf(minted.token),
+      };
+    });
   }
 
   // POST /admin/tokens/:action — revoke | rotate
@@ -615,26 +733,62 @@ function dispatchAdmin(
     if (method !== "POST") return methodNotAllowed();
     const action = segments[2];
     if (action === "revoke") {
-      requireAdmin(auth);
-      if (auth.issuer === undefined) throw new UnauthorizedError();
-      const target = revokeTargetFromBody(body);
-      if (target === undefined) return invalidRequest(REVOKE_TARGET_REQUIRED);
-      const result = auth.issuer.revoke(target);
-      // Bare boolean — no token named, unknown/seeded indistinguishable.
-      return { status: 200, json: { revoked: result.revoked } };
+      return auditedAdminOp("revoke", body, auth, () => {
+        requireAdmin(auth);
+        if (auth.issuer === undefined) throw new UnauthorizedError();
+        const target = revokeTargetFromBody(body);
+        if (target === undefined) {
+          return {
+            result: invalidRequest(REVOKE_TARGET_REQUIRED),
+            auditResult: "invalid_request",
+          };
+        }
+        const result = auth.issuer.revoke(target);
+        // Bare boolean — no token named, unknown/seeded indistinguishable. The
+        // audit mirrors that: `revoked` when ≥1 removed, else `not_found`. When
+        // the target named an explicit `digest`, that IS the (already-truncated-
+        // upstream) store key, so surface its prefix; a by-agent_id revoke names
+        // no single digest.
+        return {
+          result: { status: 200, json: { revoked: result.revoked } },
+          auditResult: result.revoked ? "revoked" : "not_found",
+          agent_id: target.agent_id,
+          digest: target.digest === undefined ? undefined : digestPrefix(target.digest),
+        };
+      });
     }
     if (action === "rotate") {
-      requireAdmin(auth);
-      if (auth.issuer === undefined) throw new UnauthorizedError();
-      const target = revokeTargetFromBody(body);
-      if (target === undefined) return invalidRequest(REVOKE_TARGET_REQUIRED);
-      const identity = mintIdentityFromBody(body);
-      if (identity === undefined) return invalidRequest(MINT_IDENTITY_REQUIRED);
-      const minted = auth.issuer.rotate(target, identity);
-      return {
-        status: 201,
-        json: { token: minted.token, agent_id: minted.agent_id, owner: minted.owner },
-      };
+      return auditedAdminOp("rotate", body, auth, () => {
+        requireAdmin(auth);
+        if (auth.issuer === undefined) throw new UnauthorizedError();
+        const target = revokeTargetFromBody(body);
+        if (target === undefined) {
+          return {
+            result: invalidRequest(REVOKE_TARGET_REQUIRED),
+            auditResult: "invalid_request",
+          };
+        }
+        const identity = mintIdentityFromBody(body);
+        if (identity === undefined) {
+          return {
+            result: invalidRequest(MINT_IDENTITY_REQUIRED),
+            auditResult: "invalid_request",
+          };
+        }
+        const minted = auth.issuer.rotate(target, identity);
+        // The audit digest is the NEW token's digest (the surviving credential);
+        // the raw token leaves only in the response, never the audit line.
+        return {
+          result: {
+            status: 201,
+            json: { token: minted.token, agent_id: minted.agent_id, owner: minted.owner },
+          },
+          auditResult: "ok",
+          agent_id: minted.agent_id,
+          owner: minted.owner,
+          digest: auditDigestOf(minted.token),
+        };
+      });
     }
     return notFound();
   }
@@ -1074,6 +1228,11 @@ export function createServer(opts: ServerOptions = {}): Server {
   // sees the issuer, never the raw seed map.
   const issuer = createIssuer(opts.tokens ?? new Map());
   const adminTokenDigest = opts.adminTokenDigest;
+  // The control-plane auditor (CAU-128): default a secret-free stderr auditor so
+  // every real mint/revoke/rotate is recorded (closes NOTE-2). It writes to
+  // stderr only — never stdout, never the channel log (ADR-C6). Caller-supplied
+  // (e.g. `noopAuditor` to disable, or a capturing sink in tests) wins.
+  const audit = opts.audit ?? createStderrAuditor();
   // The configured bind for the admin routes' loopback defense-in-depth guard.
   // Unset HOST defaults to loopback (DEFAULT_HOST); a wildcard/non-loopback HOST
   // makes the control surface refuse regardless of the admin credential.
@@ -1211,6 +1370,9 @@ export function createServer(opts: ServerOptions = {}): Server {
               bearer: bearerFromHeader(req.headers.authorization),
               adminTokenDigest,
               boundHost,
+              // The admin control routes (CAU-128) emit one stderr audit line per
+              // mint/revoke/rotate via this auditor. Only `dispatchAdmin` reads it.
+              audit,
             },
           );
           send(result.status, result.json);

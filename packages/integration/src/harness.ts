@@ -63,6 +63,12 @@ export interface ServerProcess {
    * failing scenario's error so subprocess failures are not opaque.
    */
   readonly stderrOutput: () => string;
+  /**
+   * Everything the child has written to stdout so far — the listening-URL
+   * banner. Exposed so a scenario can assert the bin's STDOUT discipline (e.g.
+   * CAU-128: control-plane audit lines go to stderr ONLY, never stdout).
+   */
+  readonly stdoutOutput: () => string;
 }
 
 /**
@@ -93,6 +99,14 @@ export function startServerProcess(
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk: string) => {
     stderrBuf += chunk;
+  });
+
+  // Buffer stdout persistently too (not just until the URL is parsed), so a
+  // scenario can assert the bin's STDOUT discipline after startup (CAU-128).
+  let stdoutBuf = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    stdoutBuf += chunk;
   });
 
   /** Resolves when the child process has fully exited. */
@@ -133,15 +147,19 @@ export function startServerProcess(
       fail(`did not start within ${STARTUP_TIMEOUT_MS / 1_000}s`);
     }, STARTUP_TIMEOUT_MS);
 
-    let buf = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      buf += chunk;
-      // bin.ts logs: `caucus-backbone listening on http://127.0.0.1:<port>`
-      const m = buf.match(/listening on (\S+)/);
+    child.stdout.on("data", () => {
+      // bin.ts logs: `caucus-backbone listening on http://127.0.0.1:<port>`.
+      // Match against the persistent stdout buffer (filled by the listener
+      // registered above) so the banner is found regardless of chunking.
+      const m = stdoutBuf.match(/listening on (\S+)/);
       if (m) {
         clearTimeout(timer);
-        resolveServer({ url: m[1]!, stop, stderrOutput: () => stderrBuf });
+        resolveServer({
+          url: m[1]!,
+          stop,
+          stderrOutput: () => stderrBuf,
+          stdoutOutput: () => stdoutBuf,
+        });
       }
     });
     child.on("exit", (code) => {
