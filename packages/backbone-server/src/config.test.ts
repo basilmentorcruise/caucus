@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { noopAuditor } from "./audit.js";
 import { parseEnvConfig } from "./config.js";
 import { DEFAULT_PORT } from "./server.js";
 import { tokenDigest } from "./tokens.js";
@@ -96,5 +97,23 @@ describe("parseEnvConfig", () => {
     } catch (err) {
       expect((err as Error).message).not.toContain("leak-me-admin");
     }
+  });
+
+  // CAU-128: the control-plane audit trail flag (default ON).
+  it("leaves audit undefined by default (server installs its stderr auditor)", () => {
+    expect(parseEnvConfig({}).audit).toBeUndefined();
+    expect(parseEnvConfig({ CAUCUS_ADMIN_AUDIT: "1" }).audit).toBeUndefined();
+  });
+
+  it("installs the no-op auditor when CAUCUS_ADMIN_AUDIT disables it", () => {
+    for (const off of ["0", "false", "off", "no", "OFF"]) {
+      expect(parseEnvConfig({ CAUCUS_ADMIN_AUDIT: off }).audit).toBe(noopAuditor);
+    }
+  });
+
+  it("disabling the audit is a clean no-op even with no admin token configured", () => {
+    const cfg = parseEnvConfig({ CAUCUS_ADMIN_AUDIT: "off" });
+    expect(cfg.audit).toBe(noopAuditor);
+    expect(cfg.adminTokenDigest).toBeUndefined();
   });
 });

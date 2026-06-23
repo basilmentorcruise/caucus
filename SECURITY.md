@@ -480,11 +480,18 @@ this slice — documented so an operator and an incident responder are not surpr
   actor who already holds the `CAUCUS_ADMIN_TOKEN` **and** a shell on the host — a position from which
   they already have far stronger capabilities. (Resource caps under ADR-C8/C9 target cooperative
   abuse, not a hostile admin-credential holder.)
-- **Control-plane ops produce no audit trail.** Mint/revoke/rotate emit **no log line** by design —
-  this slice has no clock or persistence — so a compromised admin token can mint a rogue identity
-  **silently**. This is documented as an **accepted residual risk**. A future ticket may add stderr
-  audit lines for control-plane ops carrying only the **digest + `agent_id`** (never the token itself,
-  ADR-C12).
+- **Control-plane ops emit a stderr audit line (CAU-128 — NOTE-2 closed).** Each mint/revoke/rotate —
+  **success or failure** — writes exactly **one** structured line to **stderr** (default ON; disable
+  with `CAUCUS_ADMIN_AUDIT=0|false|off|no`), so a compromised admin token can no longer mint a rogue
+  identity **silently**: tail the server's stderr for `kind: "caucus.admin.audit"`. The line carries
+  **only** `{op, agent_id, owner, digest, ts, result}` — the truncated SHA-256 **digest** of the
+  minted/targeted token (the same value the store keys on), **never** the plaintext minted token,
+  **never** the admin credential, and **never** any bytes that could reconstruct either (ADR-C12). It
+  goes to **stderr only** — never stdout (the hook's stdout discipline is untouched) and never the
+  channel log (control-plane ops are not war-room messages — ADR-C6). When the control surface is
+  **disabled** (`CAUCUS_ADMIN_TOKEN` unset), the ops can't happen, so **no** audit line is emitted
+  (fail-closed no-op). The trail is **stderr-ephemeral** (no in-process persistence): an operator who
+  needs a durable audit must capture the process's stderr.
 
 ### 5. Routing integrity via AEAD associated-data binding — **NOT YET IMPLEMENTED**
 
@@ -515,7 +522,7 @@ is **not** message-content confidentiality and is **not** end-to-end encryption.
 | Server operator can read the log | **Yes** — single shared server, plaintext (ADR-C9) |
 | Server-side secret scanning / redaction | **Not provided** — keeping secrets out is the operator's job |
 | Owner identity anchoring (no forged owner) | **SHIPPED** (CAU-13: bearer-token resolve-and-overwrite at the HTTP write boundary, ADR-C7) — does not defend a stolen token (timing-safe digest lookup); `CAUCUS_TOKEN` is dual-role (display identity + bearer secret, colon-free) — guard it like a credential |
-| Runtime token issuer (mint / revoke / rotate) | **SHIPPED** (CAU-20, ADR-C7 addendum) — in-process, **admin-gated** (`CAUCUS_ADMIN_TOKEN`), **loopback-only**, **fail-closed** (unset admin token ⇒ disabled), **ephemeral** (process-memory only); minted token returned once, only its digest stored (ADR-C12); `CAUCUS_TOKENS` is the non-revocable boot seed; control ops never post to the log (ADR-C6) |
+| Runtime token issuer (mint / revoke / rotate) | **SHIPPED** (CAU-20, ADR-C7 addendum) — in-process, **admin-gated** (`CAUCUS_ADMIN_TOKEN`), **loopback-only**, **fail-closed** (unset admin token ⇒ disabled), **ephemeral** (process-memory only); minted token returned once, only its digest stored (ADR-C12); `CAUCUS_TOKENS` is the non-revocable boot seed; control ops never post to the log (ADR-C6); each op emits one **stderr** audit line (CAU-128, default ON, digest-only — never the token, ADR-C12) |
 | Read access control | **Not provided** — reads are tokenless within the boundary; the effective read boundary is the network bind (loopback by default) |
 | Resource caps (rates, log/channel counts, seatbelt-state eviction, read page size) | **SHIPPED** (CAU-74, CAU-83) — cooperative-abuse / accidental-loop controls (ADR-C8/C9), **not** a defense against a hostile token-holder; revoke the token instead |
 | Per-channel byte cap | **Not provided** — operator guidance instead (CAU-83): size hosts via the count caps (see the resource-exhaustion bullet) |

@@ -17,6 +17,182 @@ itself.
 
 ---
 
+## 0. Cross-machine quickstart (two participants, end-to-end)
+
+This section is the minimal recipe to verify two people on two machines — or two working
+directories — can share one Caucus backbone. Complete it before going further; the rest of this
+document explains the security model and gives alternative networking recipes.
+
+### Prerequisites
+
+- Node >= 20.11 on all machines.
+- The backbone host can accept an inbound SSH connection from participants (for the SSH-tunnel
+  recipe used here), OR you have a private overlay such as Tailscale (see §2, Recipe A).
+- Each participant has run `npm i @caucus/mcp-server` in their project directory (or cloned this
+  repo and run `pnpm install && pnpm build`).
+
+### Step 1 — boot the backbone (backbone host)
+
+Install the backbone server package once:
+
+```sh
+npm i -g @caucus/backbone-server
+```
+
+> **Path note.** This quickstart (§0) uses the npm-published `caucus-backbone` bin from
+> `@caucus/backbone-server`. The concrete recipes in §2 instead use `pnpm backbone:dev` (the
+> in-repo dev command); both paths start the same server, so the networking and token steps are
+> identical regardless of which you choose.
+
+Generate one **token triple** per participant: `<token>:<agent_id>:<owner>`. The token is the
+bearer secret the participant presents; `agent_id` is a stable session identifier; `owner` is the
+human's display name that appears in the channel. Use placeholder values like the ones below —
+never reuse production credentials here. The colon is reserved as a delimiter; do not put colons
+inside any of the three segments.
+
+```sh
+# Example — replace with your own non-guessable tokens.
+# Format: TOKEN:AGENT_ID:OWNER  (one triple per participant, comma-separated)
+CAUCUS_TOKENS="tok-alice-xyz:sess-alice:alice,tok-bob-xyz:sess-bob:bob" \
+  caucus-backbone
+# Logs: caucus-backbone listening on http://127.0.0.1:4317
+```
+
+> **Port note.** The default port is `4317`. That port is also used by the OpenTelemetry collector
+> (OTLP/gRPC). If something is already on `4317`, pick another port:
+> `PORT=4747 CAUCUS_TOKENS="..." caucus-backbone`. All participants must then use the same port in
+> their `CAUCUS_URL`. The backbone log prints which address it bound.
+
+The backbone keeps all state in memory — the log, claims, and cursors reset on restart.
+
+### Step 2 — give each participant network access to the backbone
+
+The backbone binds `127.0.0.1` by default (loopback only). **Do not change that bind.** Instead,
+punch a controlled, encrypted tunnel to it.
+
+**Simplest option — SSH port-forward (one command per participant):**
+
+```sh
+# Run this on the PARTICIPANT'S machine.
+# Forwards the participant's local port 4317 to the backbone host's loopback 4317.
+# Leave this running in a terminal.
+ssh -N -L 4317:127.0.0.1:4317 you@backbone-host.example.com
+```
+
+If you changed the backbone port (e.g. `4747`), use the same port on both ends:
+
+```sh
+ssh -N -L 4747:127.0.0.1:4747 you@backbone-host.example.com
+```
+
+The participant's `CAUCUS_URL` is then `http://127.0.0.1:4317` (their local end of the tunnel).
+See §2 for other networking options (Tailscale is the preferred alternative for a persistent team
+deployment).
+
+### Step 3 — wire the MCP server on each participant's machine
+
+Run `caucus init` in each session's project directory. It writes `.mcp.json`,
+`.claude/settings.local.json`, and a gitignored `caucus.env` for you:
+
+```sh
+npx caucus init
+```
+
+The init wizard asks for `CAUCUS_URL`, `CAUCUS_CHANNEL`, and `CAUCUS_TOKEN`. Use:
+
+- `CAUCUS_URL`: `http://127.0.0.1:4317` (your local tunnel endpoint, not the backbone host's
+  address — the tunnel makes them equivalent).
+- `CAUCUS_CHANNEL`: any shared channel name, e.g. `war-room-incident-42` (all participants must
+  use the same name).
+- `CAUCUS_TOKEN`: the **bare token** for this participant only (e.g. `tok-alice-xyz` for Alice,
+  `tok-bob-xyz` for Bob). Give each person only their own token. Never share tokens across
+  participants (see §3).
+
+If you prefer to write the config by hand, the `.mcp.json` entry looks like this — use an
+**absolute path** for the `node` args. Claude Code resolves commands relative to a session working
+directory you do not control; a relative path silently produces no connection:
+
+```json
+{
+  "mcpServers": {
+    "caucus": {
+      "command": "node",
+      "args": ["/absolute/path/to/node_modules/@caucus/mcp-server/dist/index.js"],
+      "env": {
+        "CAUCUS_URL": "http://127.0.0.1:4317",
+        "CAUCUS_CHANNEL": "war-room-incident-42",
+        "CAUCUS_TOKEN": "tok-alice-xyz"
+      }
+    }
+  }
+}
+```
+
+And the hook entry in `.claude/settings.local.json` (also an absolute path — Claude Code resolves
+hook commands the same way):
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "matcher": "", "hooks": [{ "type": "command", "command": "node /absolute/path/to/node_modules/@caucus/hook/dist/bin.js" }] }
+    ]
+  }
+}
+```
+
+The hook also needs `CAUCUS_CHANNEL` and `CAUCUS_URL` in its environment. `caucus init` sets this
+up for you; if you wire it manually, set those two env vars in the process environment where Claude
+Code runs (e.g. shell profile, `.env` loaded by your shell, or the `env` block in settings).
+
+### Step 4 — verify first-shared-finding propagation
+
+Have alice create the channel and post a finding from her Claude Code session:
+
+```
+alice's Claude Code prompt:
+  Create a Caucus channel named "war-room-incident-42" and post a finding:
+  "auth timeout confirmed — JWTs accepted past expiry, signature re-check missing."
+```
+
+Then, at the start of bob's **next** Claude Code turn, the hook injects alice's finding into bob's
+context automatically. You can also ask bob explicitly:
+
+```
+bob's Claude Code prompt:
+  Read the Caucus channel "war-room-incident-42". What has alice found?
+```
+
+Bob's agent should return alice's finding attributed to `A·alice` (rendered by the hook as `A·<owner>`).
+
+Now have alice claim a work target so bob sees the dedup mechanic:
+
+```
+alice's Claude Code prompt:
+  Claim "auth-timeout repro" in the Caucus channel.
+```
+
+```
+bob's Claude Code prompt:
+  Claim "auth-timeout repro" in the Caucus channel.
+```
+
+Bob's agent receives `already_claimed` whose `by.owner` is `alice`. That rejection is the whole product —
+dedup, cross-machine, attributed to a human.
+
+### Known footguns
+
+| Footgun | Fix |
+|---|---|
+| Port `4317` already in use | Another process (OTLP collector, another backbone) is on `4317`. Kill it or set `PORT=4747` and update `CAUCUS_URL` everywhere. |
+| Relative path in `.mcp.json` or hook | Claude Code resolves from an unpredictable cwd. Use the absolute path from `which node` / `realpath`. |
+| Token triple has a colon inside a segment | The delimiter is `:` — only two colons per triple. Re-generate without colons in any segment. |
+| Wrong token for participant | Each participant sets only their own bare token. The backbone's `CAUCUS_TOKENS` holds all triples; each session's `.mcp.json` holds only one. |
+| Hook not firing | Check `.claude/settings.local.json` is in the project dir Claude Code opened, and that the hook path is absolute and executable (node must resolve). |
+| Backbone restarted, channel lost | State is in-memory. Re-create the channel after a restart. |
+
+---
+
 ## 1. Trust model
 
 ### What the backbone does by default
