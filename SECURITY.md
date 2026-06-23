@@ -451,6 +451,16 @@ Seed (`CAUCUS_TOKENS`) entries are **non-revocable**: they are the immutable off
 re-established on every restart. To retire a seeded credential, remove it from `CAUCUS_TOKENS` and
 restart; runtime tokens are the rotatable layer.
 
+**Operator ergonomics (CAU-129).** The `caucus token` CLI wraps these three routes
+(`caucus token mint --owner <o> --agent <a>`, `caucus token revoke <digest>`,
+`caucus token rotate <digest> --owner <o> --agent <a>`) so an operator does not hand-roll `curl`.
+It is a **pure wrapper — no new capability and no new trust boundary**: the boundary is unchanged
+(the loopback bind + `CAUCUS_ADMIN_TOKEN`). The CLI reads the admin credential from
+`CAUCUS_ADMIN_TOKEN` (and the backbone URL from `CAUCUS_URL`) — **the admin token is env-only,
+never a flag** (a `--admin-token` flag is rejected) and is never printed. A minted/rotated token is
+printed **once** to stdout with a "copy now — not re-readable" warning and is written to no log or
+history file; all errors are value-free and echo no token bytes (ADR-C12).
+
 **Accepted residual risks (security review, CAU-20).** These are known, deliberate limitations of
 this slice — documented so an operator and an incident responder are not surprised:
 
