@@ -103,7 +103,9 @@ ARGUMENTS
 
 OPTIONS (mint / rotate)
   --owner <owner>      The human the minted token acts for      (required)
-  --agent <agent-id>   The agent id the minted token anchors to (required)
+  --agent <agent-id>   The agent id the minted token anchors to (required).
+                       For rotate this is the SURVIVING identity — an
+                       'agent:<id>' target must have <id> equal to --agent.
   -h, --help           Show this help
 
 ENVIRONMENT
@@ -232,6 +234,32 @@ function normalizeBase(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
+/** Loopback hostnames the admin credential is safe to ride to without a warning. */
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+
+/**
+ * A non-loopback `CAUCUS_URL` ships the admin bearer to that host, so warn (do
+ * NOT refuse — operator-trusts-own-env posture, like the rest of the CLI). This
+ * mirrors the server's `bindExposureWarning` spirit. Value-free (ADR-C12): it
+ * names only the host (operator-controlled, not a secret) — never the token.
+ * Returns `undefined` for loopback, the whole `127.0.0.0/8` block, or an
+ * unparseable URL (we don't warn on something we can't classify).
+ */
+export function nonLoopbackAdminWarning(base: string): string | undefined {
+  let host: string;
+  try {
+    host = new URL(base).hostname;
+  } catch {
+    return undefined;
+  }
+  // `URL` brackets IPv6 literals; strip them for the set lookup.
+  const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  if (LOOPBACK_HOSTS.has(bare)) return undefined;
+  // The whole 127.0.0.0/8 block is loopback.
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(bare)) return undefined;
+  return `WARNING: ${URL_ENV} points at ${host} (not loopback) — the admin token will be sent there as a bearer. Keep ${URL_ENV} on loopback unless you trust that host.`;
+}
+
 /**
  * Classify a network/transport failure into a value-free, actionable message.
  * NEVER includes any token bytes — only the dial URL (which is not a secret) and
@@ -339,6 +367,12 @@ export async function runToken(
 
   const base = normalizeBase((deps.env[URL_ENV] ?? "").trim() || DEFAULT_URL);
 
+  // A non-loopback CAUCUS_URL ships the admin token there — warn, don't refuse.
+  const exposure = nonLoopbackAdminWarning(base);
+  if (exposure !== undefined) {
+    deps.errlog(exposure);
+  }
+
   // Build the route + body per subcommand.
   let route: string;
   let payload: Record<string, unknown>;
@@ -357,6 +391,18 @@ export async function runToken(
     const target = targetBody(command.digest);
     if (target === undefined) {
       deps.errlog(`error: rotate requires a non-empty <digest> (or agent:<id>).`);
+      return 1;
+    }
+    // The wire contract can't express "rotate agent X's tokens into a new agent
+    // Y": the rotate payload's agent_id IS the surviving identity, so an
+    // `agent:<id>` target whose <id> differs from --agent would silently collapse
+    // to rotating --agent's tokens instead. Reject that footgun. The in-place
+    // case (agent:x with --agent x) and any digest target stay supported. The
+    // check is value-free (ADR-C12): it names neither id, only the constraint.
+    if (target.agent_id !== undefined && target.agent_id !== command.agent) {
+      deps.errlog(
+        `error: rotate by agent:<id> requires --agent to equal <id>; rotate replaces an agent's tokens in place — use a digest target to rotate a specific token.`,
+      );
       return 1;
     }
     route = `${base}/admin/tokens/rotate`;

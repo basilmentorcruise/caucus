@@ -459,7 +459,10 @@ It is a **pure wrapper — no new capability and no new trust boundary**: the bo
 `CAUCUS_ADMIN_TOKEN` (and the backbone URL from `CAUCUS_URL`) — **the admin token is env-only,
 never a flag** (a `--admin-token` flag is rejected) and is never printed. A minted/rotated token is
 printed **once** to stdout with a "copy now — not re-readable" warning and is written to no log or
-history file; all errors are value-free and echo no token bytes (ADR-C12).
+history file; all errors are value-free and echo no token bytes (ADR-C12). The admin token is sent
+as a **bearer to whatever `CAUCUS_URL` points at**, so an off-loopback `CAUCUS_URL` ships the admin
+credential to that host — **keep `CAUCUS_URL` on loopback** (the CLI prints a non-blocking stderr
+warning, naming only the host, when it is about to dial a non-loopback URL).
 
 **Accepted residual risks (security review, CAU-20).** These are known, deliberate limitations of
 this slice — documented so an operator and an incident responder are not surprised:

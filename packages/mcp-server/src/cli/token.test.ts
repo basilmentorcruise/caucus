@@ -14,6 +14,7 @@ import {
   ADMIN_TOKEN_ENV,
   URL_ENV,
   USAGE,
+  nonLoopbackAdminWarning,
   parseArgs,
   runToken,
   type FetchLike,
@@ -309,12 +310,29 @@ describe("runToken — rotate", () => {
     assertNoAdminLeak(deps);
   });
 
-  it("rotate agent:<id> sends the by-agent target plus the new identity", async () => {
+  it("rotate agent:<id> in place (--agent equal to <id>) sends the by-agent target", async () => {
     const deps = makeDeps({
-      response: { status: 201, body: { token: "tok_R", agent_id: "a", owner: "o" } },
+      response: { status: 201, body: { token: "tok_R", agent_id: "twin", owner: "o" } },
     });
-    await runToken(["rotate", "agent:twin", "--owner", "o", "--agent", "a"], deps);
-    expect(JSON.parse(deps.calls[0]!.body)).toEqual({ agent_id: "a", owner: "o" });
+    const code = await runToken(["rotate", "agent:twin", "--owner", "o", "--agent", "twin"], deps);
+    expect(code).toBe(0);
+    expect(JSON.parse(deps.calls[0]!.body)).toEqual({ agent_id: "twin", owner: "o" });
+  });
+
+  it("rotate agent:<id> with --agent != <id> is rejected (no silent retarget, no dial)", async () => {
+    const deps = makeDeps({
+      response: { status: 201, body: { token: "tok_R", agent_id: "other", owner: "o" } },
+    });
+    const code = await runToken(["rotate", "agent:twin", "--owner", "o", "--agent", "other"], deps);
+    expect(code).toBe(1);
+    // It must NOT have dialed the server (no token rotated for the wrong agent).
+    expect(deps.calls).toHaveLength(0);
+    const msg = deps.err.join("\n");
+    expect(msg).toMatch(/requires --agent to equal/i);
+    expect(msg).toMatch(/in place/i);
+    // Value-free: the message names neither agent id.
+    expect(msg).not.toContain("twin");
+    expect(msg).not.toContain("other");
   });
 
   it("rejects an empty agent:<id> rotate target before dialing", async () => {
@@ -322,6 +340,52 @@ describe("runToken — rotate", () => {
     const code = await runToken(["rotate", "agent:", "--owner", "o", "--agent", "a"], deps);
     expect(code).toBe(1);
     expect(deps.calls).toHaveLength(0);
+  });
+});
+
+describe("nonLoopbackAdminWarning — the admin token only rides safely to loopback", () => {
+  it("returns undefined for loopback hosts", () => {
+    expect(nonLoopbackAdminWarning("http://127.0.0.1:4747")).toBeUndefined();
+    expect(nonLoopbackAdminWarning("http://localhost:4747")).toBeUndefined();
+    expect(nonLoopbackAdminWarning("http://[::1]:4747")).toBeUndefined();
+    // The whole 127.0.0.0/8 block is loopback.
+    expect(nonLoopbackAdminWarning("http://127.5.6.7:4747")).toBeUndefined();
+  });
+
+  it("warns (naming the host, never refusing) for a non-loopback host", () => {
+    const w = nonLoopbackAdminWarning("http://10.0.0.5:4747");
+    expect(w).toMatch(/WARNING/);
+    expect(w).toContain("10.0.0.5");
+    expect(w).toContain(URL_ENV);
+  });
+
+  it("returns undefined for an unparseable URL (never warns on what it can't classify)", () => {
+    expect(nonLoopbackAdminWarning("not a url")).toBeUndefined();
+  });
+});
+
+describe("runToken — non-loopback CAUCUS_URL warns without leaking the token", () => {
+  it("emits the exposure warning to stderr and still proceeds (warn, not refuse)", async () => {
+    const deps = makeDeps({
+      env: { [ADMIN_TOKEN_ENV]: ADMIN, [URL_ENV]: "http://10.0.0.5:4747" },
+      response: { status: 200, body: { revoked: true } },
+    });
+    const code = await runToken(["revoke", "deadbeef"], deps);
+    expect(code).toBe(0);
+    const msg = deps.err.join("\n");
+    expect(msg).toMatch(/WARNING/);
+    expect(msg).toContain("10.0.0.5");
+    // The warning (and nothing else) must never echo the admin token.
+    assertNoAdminLeak(deps);
+  });
+
+  it("does NOT warn for a loopback CAUCUS_URL", async () => {
+    const deps = makeDeps({
+      env: { [ADMIN_TOKEN_ENV]: ADMIN, [URL_ENV]: "http://127.0.0.1:4747" },
+      response: { status: 200, body: { revoked: true } },
+    });
+    await runToken(["revoke", "deadbeef"], deps);
+    expect(deps.err.join("\n")).not.toMatch(/WARNING/);
   });
 });
 

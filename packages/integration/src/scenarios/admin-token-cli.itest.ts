@@ -21,6 +21,7 @@
  * The bins are built once in the integration `globalSetup`.
  */
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -155,6 +156,46 @@ describe("caucus token (CAU-129) — over a real backbone process", () => {
       owner: "rena",
       msg_id: newMsgId(),
       body: "after-cli-revoke",
+    });
+    expect(afterStatus).toBe(401);
+  });
+
+  it("revoke <digest> (bare, single-token) rejects the SAME bearer end-to-end", async () => {
+    // Mint via the CLI and grab the printed token from stdout.
+    const mint = runCaucusToken(["mint", "--owner", "dana", "--agent", "sess-dana"], {
+      CAUCUS_URL: url,
+      CAUCUS_ADMIN_TOKEN: ADMIN_TOKEN,
+    });
+    expect(mint.status).toBe(0);
+    const token = mint.stdout.split("\n").filter((l) => l.trim() !== "")[0]!.trim();
+
+    // The minted token works as a real bearer.
+    const [appendStatus] = await postJson(`${url}/channels/${CH}/append`, token, {
+      type: "finding",
+      agent_id: "sess-dana",
+      owner: "dana",
+      msg_id: newMsgId(),
+      body: "minted-for-digest-revoke",
+    });
+    expect(appendStatus).toBe(201);
+
+    // The server keys runtime tokens by sha256(token) hex; the bare-digest
+    // revoke path targets exactly that single token (NOT the agent sweep).
+    const digest = createHash("sha256").update(token, "utf8").digest("hex");
+    const revoke = runCaucusToken(["revoke", digest], {
+      CAUCUS_URL: url,
+      CAUCUS_ADMIN_TOKEN: ADMIN_TOKEN,
+    });
+    expect(revoke.status).toBe(0);
+    expect(revoke.stderr).toMatch(/revoked/i);
+
+    // The SAME bearer is now rejected — no server restart.
+    const [afterStatus] = await postJson(`${url}/channels/${CH}/append`, token, {
+      type: "finding",
+      agent_id: "sess-dana",
+      owner: "dana",
+      msg_id: newMsgId(),
+      body: "after-digest-revoke",
     });
     expect(afterStatus).toBe(401);
   });
