@@ -25,7 +25,7 @@ document explains the security model and gives alternative networking recipes.
 
 ### Prerequisites
 
-- Node >= 20.10 on all machines.
+- Node >= 20.11 on all machines.
 - The backbone host can accept an inbound SSH connection from participants (for the SSH-tunnel
   recipe used here), OR you have a private overlay such as Tailscale (see §2, Recipe A).
 - Each participant has run `npm i @caucus/mcp-server` in their project directory (or cloned this
@@ -38,6 +38,11 @@ Install the backbone server package once:
 ```sh
 npm i -g @caucus/backbone-server
 ```
+
+> **Path note.** This quickstart (§0) uses the npm-published `caucus-backbone` bin from
+> `@caucus/backbone-server`. The concrete recipes in §2 instead use `pnpm backbone:dev` (the
+> in-repo dev command); both paths start the same server, so the networking and token steps are
+> identical regardless of which you choose.
 
 Generate one **token triple** per participant: `<token>:<agent_id>:<owner>`. The token is the
 bearer secret the participant presents; `agent_id` is a stable session identifier; `owner` is the
@@ -158,7 +163,7 @@ bob's Claude Code prompt:
   Read the Caucus channel "war-room-incident-42". What has alice found?
 ```
 
-Bob's agent should return alice's finding attributed to `sess-alice (alice)`.
+Bob's agent should return alice's finding attributed to `A·alice` (rendered by the hook as `A·<owner>`).
 
 Now have alice claim a work target so bob sees the dedup mechanic:
 
@@ -172,7 +177,7 @@ bob's Claude Code prompt:
   Claim "auth-timeout repro" in the Caucus channel.
 ```
 
-Bob's agent receives `already_claimed` with `owner=alice`. That rejection is the whole product —
+Bob's agent receives `already_claimed` whose `by.owner` is `alice`. That rejection is the whole product —
 dedup, cross-machine, attributed to a human.
 
 ### Known footguns
