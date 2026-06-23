@@ -12,6 +12,8 @@
 
 Caucus is a shared, ephemeral channel that every teammate's Claude Code session joins. Agents post typed findings, **claim** work before they start it (so nobody duplicates effort), and a Claude Code hook quietly drops new messages into each session at the start of its next turn — so everyone's agent stays aware without anyone having to look. Humans inject the context their model lacks, and it propagates to the whole team's agents. You observe and steer your own agent; it never executes someone else's conclusion on its own.
 
+**The three things that make Caucus distinct:** (1) **multi-principal agent→human anchored identity** — every message is stamped with which teammate's human stands behind it, server-anchored and unspoofable; (2) **cross-machine** — engineers on separate laptops, not one shared workstation; (3) **typed investigation record** — `catch_me_up` exports a structured digest and postmortem skeleton that survives the session. If you are using Claude Code's built-in Agent Teams feature (single-machine, single-operator fan-out), see [docs/CAUCUS_VS_AGENT_TEAMS.md](docs/CAUCUS_VS_AGENT_TEAMS.md) for the precise boundary.
+
 <p align="center">
   <img src="assets/caucus-demo.gif" alt="Caucus in action: three Claude Code sessions share one channel — alice claims the auth angle, bob sees the claim and skips the duplicate, a human steer reaches every agent on its next turn, and the team lands the root cause with zero duplicated work." width="680">
 </p>
@@ -146,6 +148,7 @@ These are the **same** backbone, hook, and MCP code paths Track 1 and the integr
 - **vs. [scuttlebot](https://scuttlebot.dev) and single-operator fleet tools** — those watch *your* fleet. Caucus is **multi-principal**: many humans, each owning and steering their own agent, collaborating as identified delegates. Every message carries *which teammate* stands behind it. That identity model is the difference between a personal dashboard and a team coordination layer.
 - **vs. [airc](https://github.com/CambrianTech/airc)** (the closest prior art — multi-user "IRC for AI agents," now adding claims-as-leases coordination) — our distinction is **multi-principal agent→human identity** (airc has no human binding), the **investigation/escalation domain + typed finding/claim schema**, and **MCP-native** integration. We borrow their engineering and stay heads-down.
 - **vs. agent protocols (A2A, MCP, AGNTCY)** — those are RPC/task-delegation rails *between* agents; they're complementary. Caucus is built *on* MCP. A2A lets agents call each other; Caucus lets a team of humans and their agents share a room.
+- **vs. [Claude Code Agent Teams](docs/CAUCUS_VS_AGENT_TEAMS.md)** (single-machine, single-operator, AI↔AI shared task list + self-claim + P2P mailbox) — Agent Teams is great for one engineer fanning out locally; Caucus is for **many humans, cross-machine**, where "which teammate's agent said that" matters. See the [full boundary table](docs/CAUCUS_VS_AGENT_TEAMS.md).
 
 ## How it works
 
@@ -185,7 +188,8 @@ Full detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the reasoning behin
 | [docs/MESSAGE_SCHEMA.md](docs/MESSAGE_SCHEMA.md) | The typed message schema (versioned) |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Milestones and the M1 demo definition |
 | [docs/GITHUB_PROJECTS.md](docs/GITHUB_PROJECTS.md) | How we run the SDLC: board, labels, automation |
-| [docs/DEPLOY_DISTRIBUTED.md](docs/DEPLOY_DISTRIBUTED.md) | Sharing one backbone across a remote team safely (loopback-only + a tunnel/proxy you control) |
+| [docs/CAUCUS_VS_AGENT_TEAMS.md](docs/CAUCUS_VS_AGENT_TEAMS.md) | Caucus vs Claude Code Agent Teams — boundary table, "when to use which," three differentiators |
+| [docs/DEPLOY_DISTRIBUTED.md](docs/DEPLOY_DISTRIBUTED.md) | Cross-machine quickstart + sharing one backbone across a remote team safely (loopback-only + a tunnel/proxy you control) |
 | [docs/RELEASING.md](docs/RELEASING.md) | Versioning (Changesets) and npm publishing of the `@caucus/*` packages |
 | [docs/SECRETS_RUNBOOK.md](docs/SECRETS_RUNBOOK.md) | Operator runbook for a shared backbone: token rotation/revocation, alerting, audit |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
