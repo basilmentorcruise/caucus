@@ -18,3 +18,20 @@ This project is delivered by a coordinator + specialist agent team. **Run `/coor
 
 ## Tech
 TypeScript pnpm monorepo: `packages/schema | backbone | mcp-server | hook`, `examples/`. Commands: `pnpm lint typecheck test build`, `pnpm test:integration`.
+
+## Backbone
+
+Resolved by the agents at runtime — never hardcoded in their prompts.
+
+- Repo: `basilmentorcruise/caucus`
+- Board: **Caucus #3**  id `PVT_kwHOB4GO_s4BZkEy`
+- Status field id `PVTSSF_lAHOB4GO_s4BZkEyzhUh3Lk` (⚠️ this board uses a richer column set than the canonical
+  Todo/In Progress/Done): Backlog=`af86a0bd` · Ready=`2bb10241` · In Progress=`6ccd66ba` · In Review=`8da7e7f4`
+  · Validating=`209ba226` · Done=`48269c82`.
+  **TODO (confirm mapping):** ready→`Ready`, in a gate→`In Review`/`Validating`, merged→`Done`.
+- Concurrency cap: 3
+- Branch prefix: `ca`  (branches are `ca-<issue>-<slug>`)
+- Branch protection: confirm per repo
+
+> Migration note: the project-local `caucus-*` agents are legacy clones — the canonical roles now run from
+> `~/.claude/agents/`. Retire the `caucus-*` files once you've confirmed the global roles cover them.
