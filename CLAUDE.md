@@ -25,10 +25,14 @@ Resolved by the agents at runtime — never hardcoded in their prompts.
 
 - Repo: `basilmentorcruise/caucus`
 - Board: **Caucus #3**  id `PVT_kwHOB4GO_s4BZkEy`
-- Status field id `PVTSSF_lAHOB4GO_s4BZkEyzhUh3Lk` (⚠️ this board uses a richer column set than the canonical
-  Todo/In Progress/Done): Backlog=`af86a0bd` · Ready=`2bb10241` · In Progress=`6ccd66ba` · In Review=`8da7e7f4`
-  · Validating=`209ba226` · Done=`48269c82`.
-  **TODO (confirm mapping):** ready→`Ready`, in a gate→`In Review`/`Validating`, merged→`Done`.
+- Status field id `PVTSSF_lAHOB4GO_s4BZkEyzhUh3Lk`. This board has a richer column set than the canonical
+  Todo/In Progress/Done; **mapping (finalized):**
+  - icebox / unrefined → `Backlog`=`af86a0bd`
+  - ready to start (= canonical "Todo") → `Ready`=`2bb10241`
+  - implementation underway → `In Progress`=`6ccd66ba`
+  - in a code/arch/security gate (open PR) → `In Review`=`8da7e7f4`
+  - in QA / E2E validation → `Validating`=`209ba226`
+  - merged / closed (= canonical "Done") → `Done`=`48269c82`
 - Concurrency cap: 3
 - Branch prefix: `ca`  (branches are `ca-<issue>-<slug>`)
 - Branch protection: confirm per repo
