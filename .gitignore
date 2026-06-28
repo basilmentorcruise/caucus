@@ -27,4 +27,6 @@ coverage/
 *.swp
 
 # Claude Code: local state, agents, and commands are personal — keep the whole dir private
-.claude/
+.claude/*
+!.claude/agents/
+!.claude/commands/
