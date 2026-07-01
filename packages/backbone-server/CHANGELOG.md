@@ -1,5 +1,15 @@
 # @caucus/backbone-server
 
+## 0.2.1
+
+### Patch Changes
+
+- 7f6538c: CAU-122: revoke/rotate by `agent_id` now affect ALL of an agent's dynamic tokens. Previously the issuer resolved only the FIRST dynamic entry matching a given `agent_id`, so if the same `agent_id` was minted twice (two live tokens) a single `revoke {agent_id}` removed only one and the other survived (same for `rotate`). Now `revoke({agent_id})` sweeps **every** dynamic token anchored to that agent (returns `{revoked:true}` if it removed ≥1, `{revoked:false}` if none), and `rotate({agent_id}, identity)` revokes **all** the agent's existing dynamic tokens before minting one replacement — so the agent ends with exactly one valid token. Revoke/rotate by exact `digest` is unchanged: it remains the precise single-token primitive that removes only the one named entry. Idempotence and the no-enumeration-oracle response shape are preserved (revoking an `agent_id` with no dynamic tokens is a clean `{revoked:false}` no-op). Seed (`CAUCUS_TOKENS`) entries remain non-revocable. No public API or schema change.
+- 466ffbc: CAU-128: control-plane audit trail for the issuer (closes security NOTE-2 from the CAU-20 review). Each mint/revoke/rotate over the admin control surface — **success or failure on an enabled surface** — now emits exactly **one** structured line to **stderr**, so a compromised `CAUCUS_ADMIN_TOKEN` can no longer mint a rogue identity silently. The line is single-line JSON (`{kind:"caucus.admin.audit", op, agent_id, owner, digest, ts, result}`) and carries **only** the truncated SHA-256 **digest** of the minted/targeted token (the same value the store keys on) — **never** the plaintext minted token, **never** the admin credential, and never any bytes that could reconstruct either (ADR-C12). It goes to **stderr only** — never stdout (the hook's stdout discipline is untouched) and never the channel log (control-plane ops are not war-room messages — ADR-C6). The trail is **default ON**; set `CAUCUS_ADMIN_AUDIT=0|false|off|no` to disable it. When the control surface is **disabled** (`CAUCUS_ADMIN_TOKEN` unset) the ops can't happen, so no audit line is emitted (fail-closed no-op, no crash). No new route, no schema change; wire responses are byte-for-byte unchanged.
+- Updated dependencies [0b0554b]
+  - @caucus/backbone@0.2.1
+  - @caucus/schema@0.2.1
+
 ## 0.2.0
 
 ### Minor Changes
