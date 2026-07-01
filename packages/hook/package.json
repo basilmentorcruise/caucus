@@ -1,6 +1,6 @@
 {
   "name": "@caucus/hook",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Caucus Claude Code turn-start awareness hook.",
   "license": "MIT",
   "author": "Caucus contributors",

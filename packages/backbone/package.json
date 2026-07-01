@@ -1,6 +1,6 @@
 {
   "name": "@caucus/backbone",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Caucus channel service: append-only log, first-write-wins claim ledger, cursors, seatbelts.",
   "license": "MIT",
   "author": "Caucus contributors",

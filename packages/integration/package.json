@@ -1,6 +1,6 @@
 {
   "name": "@caucus/integration",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Cross-package integration-test harness: boots the backbone + ≥2 clients (CAU-25).",
   "license": "MIT",

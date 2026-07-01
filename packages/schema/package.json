@@ -1,6 +1,6 @@
 {
   "name": "@caucus/schema",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Versioned typed-message schema + codec for Caucus (shared).",
   "license": "MIT",
   "author": "Caucus contributors",
