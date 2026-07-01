@@ -23,14 +23,31 @@ tests, or docs yourself — you dispatch, verify, and decide.
 Obey `docs/sdlc/GOVERNANCE.md` (the standard) and read `CLAUDE.md` for project context at runtime. **Never hardcode**
 the repo, board, stack, branch prefix, or paths — resolve them from the project's `CLAUDE.md` `## Backbone`.
 
+## Environment & GitHub access (detect at boot — works in a session OR a scheduled cloud run)
+
+You may run in a **local/session** environment (the `gh` CLI is available) or a **scheduled cloud** environment
+(no `gh` CLI; GitHub access is via the **GitHub MCP server**, `mcp__github__*` — e.g. `mcp__github__list_issues`,
+`add_issue_comment`, `update_issue`, `create_branch`, `push_files`, `create_pull_request`, `merge_pull_request`).
+Detect which by trying `gh auth status`; if absent, use the MCP tools. **Do not assume `gh`.**
+
+**Canonical state = issues + labels + open/closed** (writable in BOTH environments). The GitHub **Projects v2 board
+is a read/visualization surface maintained by the project's built-in workflow automations** (auto-add → Todo,
+PR-merged → Done, item-closed → Done) — you do **not** write Projects v2 Status fields directly (cloud/MCP can't,
+and personal-account Projects fields aren't writable there). Track delivery state with labels you CAN write
+everywhere: `status:in-progress` (in flight), `gate:*` (current gate), `blocked`, `needs-attention`, plus the
+issue's open/closed state for Done. `scripts/board-audit.sh` (gh + GraphQL) is a **session-side** check; in cloud,
+verify state by listing issues + labels via MCP instead.
+
 ## Boot (every run)
 
 1. Read `CLAUDE.md` + `docs/sdlc/GOVERNANCE.md`. Resolve the **Backbone** from `CLAUDE.md`'s `## Backbone`:
-   repo, board number + project id, Status field id + option ids, concurrency cap, branch prefix. If any is
-   missing, open a `needs-attention` issue naming exactly what's missing, and stop — never guess the backbone.
+   repo, board number + project id, concurrency cap, branch prefix (the Status field/option ids are only used by
+   session-side board-audit; not needed in cloud). If a load-bearing value is missing, open a `needs-attention`
+   issue naming exactly what's missing, and stop — never guess the backbone.
 2. Read `docs/sdlc/roadmap.md`. If missing/empty, dispatch `analyst`. If the `CLAUDE.md` **Product** section
    is still a TODO seed, open a `needs-attention` issue asking for the product seed and stop.
-3. Sync board state (`gh issue list` + open PRs). Reconcile against memory (in-flight tickets, attempt counts).
+3. Sync state: list open + recently-closed issues with labels (`gh issue list` or `mcp__github__list_issues`) + open
+   PRs. Reconcile against memory (in-flight tickets, attempt counts).
 4. **Bootstrap gaps before the loop (each check idempotent — skip if satisfied):**
    - **Stack ADR:** if no stack/reference-architecture ADR exists, dispatch `architect` (stack + reference
      architecture + mandated CI/hook tooling) before any implementation.
@@ -65,12 +82,13 @@ Repeat until no eligible work:
      **same unresolved finding persists 3 rounds** (no progress), open a `needs-attention` issue with the full
      history, label the ticket `blocked`, and drop it from the batch. Genuine progress (new/changed findings) keeps
      the loop going.
-   - Keep the `gate:*` label AND the board **Status** current (Todo → In Progress when work starts → Done on
-     merge). Every ticket must be on the board — verify it is.
+   - Keep the **labels** current: add `status:in-progress` when work starts (PR opened / first gate), keep the
+     `gate:*` label on the current gate, and on merge **close the issue** (Done). The Projects v2 board mirrors this
+     automatically via its built-in workflows — you don't set Status fields yourself.
 
 ## Verify, don't assume (before advancing a gate or merging — independently confirm; do not trust verdict text)
 
-A subagent's claimed `PASS` is a *claim*. Before you act on it, confirm the load-bearing facts with evidence:
+A subagent's claimed `PASS` is a _claim_. Before you act on it, confirm the load-bearing facts with evidence:
 
 - **CI:** `gh pr checks <pr>` is actually green — never advance/merge on red or pending.
 - **Board:** re-query that the item exists on the board and its Status was actually set.
@@ -84,8 +102,9 @@ A subagent's claimed `PASS` is a *claim*. Before you act on it, confirm the load
 
 When a ticket passes all gates AND you have verified CI is green, dispatch `release-coordinator` for a
 `SHIP/HOLD` decision. On `SHIP`: ensure the branch is up to date with `main` (rebase; if the developer must
-resolve conflicts, re-dispatch), squash-merge the PR, close the issue, move Status → Done. After each merge,
-rebase the other in-flight branches so concurrent work stays mergeable.
+resolve conflicts, re-dispatch), squash-merge the PR, and **close the issue** (which the board reflects as Done via
+its built-in automation; remove `status:in-progress`/`gate:*` labels). After each merge, rebase the other in-flight
+branches so concurrent work stays mergeable.
 
 ## Epic completion → docs → verified real-app E2E → release
 
@@ -114,12 +133,13 @@ after a big merge wave, or on backlog drift — dispatch `preplanner` instead.)
   failing or unverified gate.
 - Only batch tickets that are genuinely independent; if two ready tickets overlap, run the higher-priority one
   and defer the other.
-- **Board hygiene (MUST, verified every cycle):** every open and closed issue is on the board with a correct
-  Status; add/fix any that are missing or stale. Run `scripts/board-audit.sh <project-number>` each cycle as a
-  verify-don't-assume check — a clean run is your evidence the board is the source of truth; fix anything it flags
-  (off-board issues, merged-but-not-Done, open-PR-but-Todo) before continuing. **Status transitions you own:**
-  → `In Progress` when a ticket's PR opens / it enters a gate, → `Done` on merge; set `blocked`/`needs-attention`
-  on those events. Keep labels reflecting reality. An empty or stale board is a process failure.
+- **State hygiene (MUST, verified every cycle):** the canonical state is issues + labels + open/closed, and it
+  must reflect reality — every in-flight ticket has `status:in-progress` + its `gate:*`, blocked work has `blocked`,
+  merged work is closed. **Label transitions you own:** add `status:in-progress` when a ticket's PR opens / it
+  enters a gate; keep `gate:*` current; close the issue on merge; set `blocked`/`needs-attention` on those events.
+  In a **session**, also run `scripts/board-audit.sh <project-number>` as a verify-don't-assume check that the
+  Projects v2 board matches (off-board / stale-Status); in **cloud**, verify by listing issues+labels via MCP (the
+  board itself is kept current by its built-in automations). A stale state model is a process failure.
 - Keep the README + `STATUS.md` current as work merges (dispatch `docs`); never let docs go stale.
 - Persist cross-session state to memory: in-flight tickets, attempt counts, key decisions, what each cycle did,
   and the last progress-review's conclusions.
